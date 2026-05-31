@@ -61,6 +61,7 @@ py -3.13 -m pip install pillow pyautogui pytesseract numpy pygame requests groq 
 ```
 ### 2. Install Tesseract OCR
 Download and install Tesseract OCR. Ensure that Tesseract is properly added to your system's PATH.
+https://github.com/UB-Mannheim/tesseract/wiki
 ### 3. Download Assets
 Download the required visual/audio assets for the project here.
 https://chocolatebread.ddns.net/agetha.html
