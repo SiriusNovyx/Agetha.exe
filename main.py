@@ -17,6 +17,7 @@ import json
 import math
 import os
 import platform
+import subprocess
 import webbrowser
 from pathlib import Path
 from PIL import Image, ImageTk, ImageSequence
@@ -1414,6 +1415,11 @@ class CompanionApp:
         if not is_user:
             screen_text = self._screen.capture_text()
             self._last_screen_text = screen_text
+            # If angry keywords detected on screen, inject a synthetic user message
+            # so the AI reacts even on an ambient poll
+            if self._screen and getattr(self._screen, "has_angry_trigger", False):
+                kws = ", ".join(self._screen.last_angry_keywords[:3])
+                screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
 
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
@@ -1448,6 +1454,73 @@ class CompanionApp:
 
         self.root.after(0, self._re_enable_input)
         self._dispatch_response(response, user_message)
+
+    # ── Emotion Sound Player ──────────────────────────────────────────────────
+    def _play_emotion_sound(self, emotion: str) -> None:
+        """Play a Windows built-in system sound matching the emotion.
+        Falls back to a pygame beep on Linux/macOS or if winsound is unavailable."""
+        _sys = platform.system()
+        emotion = (emotion or "angry").lower()
+
+        # Windows built-in sound event names
+        _WIN_SOUNDS = {
+            "angry":   "SystemHand",        # the classic Windows error/stop sound
+            "error":   "SystemHand",
+            "happy":   "SystemAsterisk",     # the info/asterisk chime
+            "sad":     "SystemQuestion",     # Windows question dialog sound
+            "startup": "SystemStart",        # Windows startup
+            "notify":  "SystemNotification",
+        }
+
+        if _sys == "Windows":
+            try:
+                import winsound
+                snd = _WIN_SOUNDS.get(emotion, "SystemHand")
+                # SND_ALIAS plays a named Windows sound event; SND_ASYNC so it's non-blocking
+                winsound.PlaySound(snd, winsound.SND_ALIAS | winsound.SND_ASYNC)
+                print(f"[SOUND] Windows emotion sound: {snd} ({emotion})")
+                return
+            except Exception as e:
+                print(f"[SOUND] winsound failed: {e}")
+        elif _sys == "Darwin":
+            try:
+                import subprocess as _sp
+                # macOS system sounds
+                _mac = {"angry": "Basso", "error": "Basso", "happy": "Glass",
+                        "sad": "Sosumi", "notify": "Ping"}
+                snd = _mac.get(emotion, "Basso")
+                _sp.Popen(["afplay", f"/System/Library/Sounds/{snd}.aiff"])
+                print(f"[SOUND] macOS emotion sound: {snd} ({emotion})")
+                return
+            except Exception as e:
+                print(f"[SOUND] macOS afplay failed: {e}")
+        else:
+            # Linux: try paplay with freedesktop sound theme names
+            try:
+                import subprocess as _sp
+                _linux = {"angry": "dialog-error", "error": "dialog-error",
+                          "happy": "bell", "sad": "dialog-warning",
+                          "notify": "message-new-instant"}
+                snd = _linux.get(emotion, "dialog-error")
+                _sp.Popen(["paplay", f"/usr/share/sounds/freedesktop/stereo/{snd}.oga"],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"[SOUND] Linux emotion sound: {snd} ({emotion})")
+                return
+            except Exception:
+                pass
+
+        # Universal pygame fallback
+        try:
+            _freq_map = {"angry": 185, "error": 185, "happy": 659,
+                         "sad": 294, "startup": 523, "notify": 440}
+            freq = _freq_map.get(emotion, 185)
+            tone_key = {185: "angry", 659: "excited", 294: "sad",
+                        523: "happy", 440: "neutral"}.get(freq, "neutral")
+            if self._bleep:
+                self._bleep.start_talking(tone=tone_key)
+                threading.Timer(0.9, self._bleep.stop).start()
+        except Exception as e:
+            print(f"[SOUND] pygame fallback failed: {e}")
 
     def _dispatch_response(self, response: dict, user_message: str | None = None):
         # Clear any temporary loading subtitle when handling a response
@@ -1733,17 +1806,19 @@ class CompanionApp:
                     elif _sys == "Linux":
                         _sp.Popen(["notify-send", title, message])
                     elif _sys == "Windows":
+                        # Safely escape characters to prevent XML or PowerShell crashes
+                        s_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "''")
+                        s_msg = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "''")
+                        
                         ps = (
-                            f'[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, '
-                            f'ContentType = WindowsRuntime] > $null;'
-                            f'$t = [Windows.UI.Notifications.ToastTemplateType]::ToastText02;'
-                            f'$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($t);'
-                            f'$x.GetElementsByTagName("text")[0].AppendChild($x.CreateTextNode("{title}"));'
-                            f'$x.GetElementsByTagName("text")[1].AppendChild($x.CreateTextNode("{message}"));'
-                            f'$n = [Windows.UI.Notifications.ToastNotification]::new($x);'
-                            f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Agetha").Show($n);'
+                            f'[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;'
+                            f'$xml = [Windows.Data.Xml.Dom.XmlDocument]::new();'
+                            f"$xml.LoadXml('<toast><visual><binding template=\"ToastText02\"><text id=\"1\">{s_title}</text><text id=\"2\">{s_msg}</text></binding></visual></toast>');"
+                            f'$toast = [Windows.UI.Notifications.ToastNotification]::new($xml);'
+                            f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Agetha").Show($toast);'
                         )
-                        _sp.Popen(["powershell", "-Command", ps], shell=False)
+                        # -WindowStyle Hidden prevents the blue powershell window from flashing
+                        _sp.Popen(["powershell", "-WindowStyle", "Hidden", "-Command", ps], shell=False)
                     print(f"[NOTIFY] {title}: {message}")
                 except Exception as e:
                     print(f"[NOTIFY] Failed: {e}")
@@ -1789,6 +1864,99 @@ class CompanionApp:
                 print(f"[AI]    {json.dumps(follow, ensure_ascii=False)}")
                 self._dispatch_response(follow, user_message)
             threading.Thread(target=_requery_with_doc, daemon=True).start()
+            return
+
+        if command == "open_file":
+            # Open any file with the OS default program (PDF, images, docx, etc.)
+            file_path = response.get("path", "").strip()
+            if file_path:
+                try:
+                    _sys = platform.system()
+                    if _sys == "Windows":
+                        os.startfile(file_path)
+                    elif _sys == "Darwin":
+                        import subprocess as _sp
+                        _sp.Popen(["open", file_path])
+                    else:
+                        import subprocess as _sp
+                        _sp.Popen(["xdg-open", file_path])
+                    print(f"[FILE] Opened: {file_path}")
+                except Exception as e:
+                    print(f"[FILE] Failed to open {file_path}: {e}")
+            _speak_and_continue(segments, mood, shutdown_requested)
+            return
+
+        if command == "write_file":
+            file_path = response.get("file_path", "").strip()
+            content   = response.get("content", "")
+            mode      = response.get("mode", "overwrite").strip()
+            if file_path:
+                try:
+                    result_msg = self._ai.write_file(file_path, content, mode)
+                    print(f"[FS] write_file → {result_msg}")
+                except Exception as e:
+                    print(f"[FS] write_file error: {e}")
+            else:
+                print("[FS] write_file: missing file_path")
+            _speak_and_continue(segments, mood, shutdown_requested)
+            return
+
+        if command == "monitor_process":
+            process_name = response.get("process_name", "").strip()
+            if process_name:
+                def _check_and_respond():
+                    is_running = self._ai.monitor_process(process_name)
+                    status = "running" if is_running else "not running"
+                    print(f"[PROC] {process_name} is {status}")
+                    # Feed the result back to the AI for a natural response
+                    self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
+                    def _on_token(raw_so_far: str):
+                        self._subtitle.show_thinking(raw_so_far)
+                    follow = self._ai.query_streaming(
+                        screen_context=self._last_screen_text,
+                        user_message=f"[SYSTEM] Process '{process_name}' is {status}.",
+                        on_token=_on_token,
+                    )
+                    print(f"[AI]    {json.dumps(follow, ensure_ascii=False)}")
+                    self._dispatch_response(follow, user_message)
+                threading.Thread(target=_check_and_respond, daemon=True).start()
+            else:
+                print("[PROC] monitor_process: no process_name provided")
+                _speak_and_continue(segments, mood, shutdown_requested)
+            return
+
+        if command == "play_emotion_sound":
+            emotion = response.get("emotion", "angry").strip()
+            threading.Thread(target=self._play_emotion_sound, args=(emotion,), daemon=True).start()
+            _speak_and_continue(segments, mood, shutdown_requested)
+            return
+
+        if command == "show_dialog":
+            dlg_type = response.get("dialog_type", "info").strip().lower()
+            dlg_title = response.get("title", "Agetha").strip()
+            dlg_msg   = response.get("message", "").strip()
+            if dlg_msg:
+                def _show():
+                    try:
+                        import tkinter as _tk
+                        from tkinter import messagebox as _mb
+                        _r = _tk.Tk()
+                        _r.withdraw()
+                        _r.attributes("-topmost", True)
+                        if dlg_type == "warning":
+                            _mb.showwarning(dlg_title, dlg_msg, parent=_r)
+                        elif dlg_type == "error":
+                            _mb.showerror(dlg_title, dlg_msg, parent=_r)
+                        elif dlg_type == "yesno":
+                            _mb.askyesno(dlg_title, dlg_msg, parent=_r)
+                        else:
+                            _mb.showinfo(dlg_title, dlg_msg, parent=_r)
+                        _r.destroy()
+                        print(f"[DIALOG] {dlg_type}: {dlg_title} — {dlg_msg}")
+                    except Exception as e:
+                        print(f"[DIALOG] Failed: {e}")
+                threading.Thread(target=_show, daemon=True).start()
+            _speak_and_continue(segments, mood, shutdown_requested)
             return
 
         if command == "open_app":

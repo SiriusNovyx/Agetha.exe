@@ -1,5 +1,6 @@
 """
 screen_reader.py — Cross-platform screen capture + OCR
+Now with keyword-triggered angry mood detection.
 
 pip install mss          (recommended)
 pip install python3-xlib  (X11 Linux alternative)
@@ -13,6 +14,14 @@ import platform
 import subprocess
 import tempfile
 from pathlib import Path
+
+# ── Keywords that make Agetha angry when found on screen ─────────────────────
+ANGRY_KEYWORDS = [
+    "cheating", "error 404", "you have been banned", "access denied",
+    "virus detected", "your account", "suspicious activity",
+    "malware", "unauthorized", "security breach", "account suspended",
+    "payment failed", "your ip has been", "please verify",
+]
 
 
 def _find_tesseract_windows() -> str | None:
@@ -201,10 +210,13 @@ def _grab_screencapture() -> "Image.Image | None":
 
 
 class ScreenReader:
-    """Captures the screen and extracts text via OCR."""
+    """Captures the screen and extracts text via OCR.
+    Now also scans for angry-trigger keywords and exposes them via .last_angry_keywords.
+    """
 
     def __init__(self):
         self._system = platform.system()
+        self.last_angry_keywords: list[str] = []  # populated after each capture_text()
 
         if self._system == "Windows" and TESSERACT_OK:
             tess_path = _find_tesseract_windows()
@@ -243,9 +255,9 @@ class ScreenReader:
         else:
             if _is_wayland():
                 return [
-                    ("spectacle",        _grab_spectacle),       # KDE Plasma
-                    ("grim",             _grab_grim),            # wlroots (sway, Hyprland)
-                    ("gnome-screenshot", _grab_gnome_screenshot), # GNOME
+                    ("spectacle",        _grab_spectacle),
+                    ("grim",             _grab_grim),
+                    ("gnome-screenshot", _grab_gnome_screenshot),
                     ("pyautogui",        _grab_pyautogui),
                 ]
             else:
@@ -290,23 +302,35 @@ class ScreenReader:
         return self._backend_fn()
 
     def capture_text(self, max_chars: int = 3000) -> str:
+        """Capture screen text. Also sets self.last_angry_keywords if any triggers found."""
+        self.last_angry_keywords = []
         if not self._available:
             return ""
         try:
             screenshot = self.capture_image()
             if screenshot is None:
                 return ""
-            # Upscale 2x — Tesseract reads larger images much more accurately.
-            # (The old code halved the resolution, which caused garbled OCR output.)
             w, h = screenshot.size
             screenshot = screenshot.resize((w * 2, h * 2), Image.LANCZOS)
-            # Grayscale removes color noise that confuses Tesseract
             screenshot = screenshot.convert("L")
             text = pytesseract.image_to_string(screenshot, lang="eng", config="--psm 3")
             lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
             result = "\n".join(lines)[:max_chars]
+
+            # ── Keyword scan ──────────────────────────────────────────────
+            low = result.lower()
+            found = [kw for kw in ANGRY_KEYWORDS if kw in low]
+            if found:
+                self.last_angry_keywords = found
+                print(f"[ScreenReader] ANGRY KEYWORDS DETECTED: {found}")
+
             print(f"[ScreenReader] Captured {len(result)} chars:\n{result}\n")
             return result
         except Exception as e:
             print(f"[ScreenReader] OCR error: {e}")
             return ""
+
+    @property
+    def has_angry_trigger(self) -> bool:
+        """True if the last capture_text() found angry keywords."""
+        return len(self.last_angry_keywords) > 0
