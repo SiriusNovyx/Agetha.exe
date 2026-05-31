@@ -18,6 +18,8 @@ import math
 import os
 import platform
 import subprocess
+import ctypes
+import ctypes.wintypes
 import webbrowser
 from pathlib import Path
 from PIL import Image, ImageTk, ImageSequence
@@ -62,15 +64,69 @@ GIF_H    = 300
 SCREEN_POLL_INTERVAL_MS = 2 * 60 * 1000
 
 BLEEP_TONES = {
-    "neutral":   440,
-    "happy":     523,
-    "excited":   659,
-    "sad":       294,
-    "surprised": 587,
-    "thinking":  370,
-    "whisper":   220,
-    "angry":     185,
+    "neutral":     440,
+    "happy":       523,
+    "excited":     659,
+    "sad":         294,
+    "surprised":   587,
+    "thinking":    370,
+    "whisper":     220,
+    "angry":       185,
+    # Phase 2 — deep emotional stratification
+    "manic":       750,   # base; loop randomizes 600–900 Hz at hyper-speed
+    "melancholic": 120,   # ultra-low drone, nearly subsonic
+    "paranoid":    330,   # tense mid-low; erratic burst/silence pattern
+    "vulnerable":  261,   # soft and slow; Middle C
+    "dominant":    110,   # deep, resonant; near bass fundamental
 }
+
+# ── Phase 2: Attention-snap system ────────────────────────────────────────────
+# Moods that qualify to trigger a center-snap during ambient polls
+_ATTENTION_MOODS = {"manic", "angry", "paranoid", "dominant", "surprised", "excited"}
+
+# Per-mood inactivity threshold (seconds) before Agetha snaps to center.
+# Lower = she snaps faster (more aggressive / severe mood).
+_MOOD_SNAP_THRESHOLDS: dict[str, int] = {
+    "manic":       120,    # 2 min — she cannot wait
+    "angry":       180,    # 3 min
+    "paranoid":    240,    # 4 min
+    "dominant":    300,    # 5 min
+    "surprised":   360,    # 6 min
+    "excited":     420,    # 7 min
+    "happy":       600,    # 10 min — cheerful, patient
+    "neutral":     600,    # 10 min (default)
+    "thinking":    600,    # 10 min
+    "vulnerable":  720,    # 12 min — shy, won't force
+    "melancholic": 900,    # 15 min — passive-aggressive; waits indefinitely
+    "sad":         900,    # 15 min
+    "whisper":     900,    # 15 min
+}
+
+# ── Phase 2: ctypes external window helper ────────────────────────────────────
+def _find_window_hwnd(partial_name: str) -> int | None:
+    """Find the first visible window whose title contains partial_name (case-insensitive).
+    Windows-only; returns None silently on other platforms or on any exception."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        found: list[int] = []
+        _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.c_long)
+
+        def _enum_cb(hwnd: int, _lparam: int) -> bool:
+            if ctypes.windll.user32.IsWindowVisible(hwnd):
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                    if partial_name.lower() in buf.value.lower():
+                        found.append(hwnd)
+            return True  # keep enumerating
+
+        ctypes.windll.user32.EnumWindows(_WNDENUMPROC(_enum_cb), 0)
+        return found[0] if found else None
+    except Exception as e:
+        print(f"[HWND] EnumWindows error: {e}")
+        return None
 
 
 def _safe_win_font(size: int = 8, bold: bool = False) -> tuple:
@@ -167,16 +223,44 @@ def _register_barrio_font():
 
 
 class BleepPlayer:
-    """Undertale-style 8-bit bleeps using a square wave with decay envelope."""
+    """Undertale-style 8-bit bleeps with Phase 2 deep emotional audio stratification.
+
+    Each mood has a distinct audio profile controlling pitch, interval, volume and pattern:
+      manic       — hyper-speed random pitch 600–900 Hz (4–12 ms intervals)
+      melancholic — ultra-slow 120 Hz drone (200–320 ms intervals, low volume)
+      paranoid    — rapid bursts of 2–6 bleeps followed by sudden silence
+      vulnerable  — soft 261 Hz, slow (75–120 ms), quiet
+      dominant    — deep 110 Hz, slow (100–160 ms), full volume
+    """
 
     SAMPLE_RATE = 44100
+
+    # (base_freq, min_interval_s, max_interval_s, volume_0_to_1)
+    _MOOD_PROFILES: dict[str, tuple[int, float, float, float]] = {
+        "neutral":     (440,  0.030, 0.055, 0.28),
+        "happy":       (523,  0.028, 0.050, 0.30),
+        "excited":     (659,  0.022, 0.040, 0.32),
+        "sad":         (294,  0.060, 0.100, 0.20),
+        "surprised":   (587,  0.025, 0.045, 0.32),
+        "thinking":    (370,  0.045, 0.080, 0.22),
+        "whisper":     (220,  0.055, 0.095, 0.14),
+        "angry":       (185,  0.018, 0.035, 0.35),
+        # Phase 2
+        "manic":       (750,  0.004, 0.012, 0.36),
+        "melancholic": (120,  0.200, 0.320, 0.16),
+        "paranoid":    (330,  0.010, 0.030, 0.26),
+        "vulnerable":  (261,  0.075, 0.120, 0.14),
+        "dominant":    (110,  0.100, 0.160, 0.40),
+    }
 
     def __init__(self):
         self._stop_event = threading.Event()
         self._paused = False
         self._thread: threading.Thread | None = None
-        self._cache: dict[int, pygame.mixer.Sound] = {}
+        # Cache key is (freq, volume_rounded) so different-volume bleeps don't collide
+        self._cache: dict[tuple[int, float], "pygame.mixer.Sound"] = {}
         self._mixer_ready = False
+        self._current_tone = "neutral"
 
         # Run pygame mixer init in a background thread — on Windows 11, SDL2's
         # audio device enumeration can deadlock the main thread indefinitely.
@@ -194,17 +278,17 @@ class BleepPlayer:
         except Exception as e:
             print(f"[BleepPlayer] mixer init error: {e}")
 
-    def _make_bleep(self, freq: int) -> "pygame.mixer.Sound | None":
+    def _make_bleep(self, freq: int, volume: float = 0.28) -> "pygame.mixer.Sound | None":
         if not self._mixer_ready:
             return None
-        if freq in self._cache:
-            return self._cache[freq]
+        key = (freq, round(volume, 2))
+        if key in self._cache:
+            return self._cache[key]
 
         import array as arr
-        duration   = 0.042
-        n_samples  = int(self.SAMPLE_RATE * duration)
-        volume     = 0.28
-        buf        = arr.array("h", [0] * n_samples)
+        duration  = 0.042
+        n_samples = int(self.SAMPLE_RATE * duration)
+        buf       = arr.array("h", [0] * n_samples)
 
         for i in range(n_samples):
             t = i / self.SAMPLE_RATE
@@ -213,7 +297,7 @@ class BleepPlayer:
             buf[i] = int(wave * env * volume * 32767)
 
         sound = pygame.mixer.Sound(buffer=buf)
-        self._cache[freq] = sound
+        self._cache[key] = sound
         return sound
 
     def start_talking(self, tone: str = "neutral"):
@@ -221,20 +305,84 @@ class BleepPlayer:
             return
         self.stop()
         self._stop_event.clear()
-        freq = BLEEP_TONES.get(tone, 440)
-        self._thread = threading.Thread(target=self._loop, args=(freq,), daemon=True)
+        self._current_tone = tone
+        self._thread = threading.Thread(target=self._loop, args=(tone,), daemon=True)
         self._thread.start()
 
-    def _loop(self, freq: int):
-        sound = self._make_bleep(freq)
-        if sound is None:
-            return
-        while not self._stop_event.is_set():
-            if self._paused:
-                time.sleep(0.02)
-                continue
-            sound.play()
-            time.sleep(random.uniform(0.03, 0.055))
+    def _loop(self, tone: str):
+        """Drive audio playback. Each mood has a distinct pattern:
+        - manic:       hyper random pitch bursts
+        - melancholic: slow low drone
+        - paranoid:    rapid clusters with abrupt silence gaps
+        - dominant:    deep resonant slow hits
+        - all others:  standard steady bleep
+        """
+        profile = self._MOOD_PROFILES.get(tone, self._MOOD_PROFILES["neutral"])
+        base_freq, min_int, max_int, vol = profile
+
+        if tone == "manic":
+            # Randomise pitch between 600–900 Hz at hyper-speed to evoke instability
+            while not self._stop_event.is_set():
+                if self._paused:
+                    time.sleep(0.01)
+                    continue
+                freq = random.randint(600, 900)
+                snd = self._make_bleep(freq, vol)
+                if snd:
+                    snd.play()
+                time.sleep(random.uniform(min_int, max_int))
+
+        elif tone == "melancholic":
+            # Ultra-slow, ultra-low drone — barely alive
+            snd = self._make_bleep(base_freq, vol)
+            while not self._stop_event.is_set():
+                if self._paused:
+                    time.sleep(0.05)
+                    continue
+                if snd:
+                    snd.play()
+                time.sleep(random.uniform(min_int, max_int))
+
+        elif tone == "paranoid":
+            # Rapid bursts (2–6 bleeps) then sudden silence — anxious, erratic
+            snd = self._make_bleep(base_freq, vol)
+            while not self._stop_event.is_set():
+                if self._paused:
+                    time.sleep(0.02)
+                    continue
+                burst = random.randint(2, 6)
+                for _ in range(burst):
+                    if self._stop_event.is_set():
+                        break
+                    if snd:
+                        snd.play()
+                    time.sleep(random.uniform(0.008, 0.022))
+                # Sudden silence gap — the paranoia breath
+                time.sleep(random.uniform(0.04, 0.28))
+
+        elif tone == "dominant":
+            # Deep, slow, resonant — each bleep is a statement
+            snd = self._make_bleep(base_freq, vol)
+            while not self._stop_event.is_set():
+                if self._paused:
+                    time.sleep(0.03)
+                    continue
+                if snd:
+                    snd.play()
+                time.sleep(random.uniform(min_int, max_int))
+
+        else:
+            # Standard loop — covers neutral, happy, excited, sad, surprised,
+            # thinking, whisper, angry, vulnerable and any unknown tone
+            snd = self._make_bleep(base_freq, vol)
+            if snd is None:
+                return
+            while not self._stop_event.is_set():
+                if self._paused:
+                    time.sleep(0.02)
+                    continue
+                snd.play()
+                time.sleep(random.uniform(min_int, max_int))
 
     def pause(self):
         self._paused = True
@@ -693,14 +841,20 @@ class CompanionApp:
     IDLE_GIFS    = ["idle-1.gif", "idle-2.gif", "idle-3.gif"]
     TALKING_GIFS = ["talking-1.gif", "talking-2.gif", "talking-3.gif"]
     EXTRA_GIFS   = {
-        "happy":     "happy.gif",
-        "surprised": "surprised.gif",
-        "sad":       "sad.gif",
-        "excited":   "happy.gif",   # excited shares happy.gif — same animation, distinct mood
-        "angry":     "angry.gif",
-        "thinking":  "thinking.gif",
-        "sleeping":  "sleeping.gif",
-        "loaf":      "loaf.gif",
+        "happy":      "happy.gif",
+        "surprised":  "surprised.gif",
+        "sad":        "sad.gif",
+        "excited":    "happy.gif",    # excited shares happy.gif
+        "angry":      "angry.gif",
+        "thinking":   "thinking.gif",
+        "sleeping":   "sleeping.gif",
+        "loaf":       "loaf.gif",
+        # Phase 2 — map new moods to nearest existing asset
+        "manic":       "angry.gif",      # fast, intense → angry
+        "melancholic": "sad.gif",        # deep sadness → sad
+        "paranoid":    "thinking.gif",   # anxious scanning → thinking
+        "vulnerable":  "sad.gif",        # exposed, soft → sad
+        "dominant":    "angry.gif",      # powerful, threatening → angry
     }
 
     # Static images to show after animated emotion gifs finish
@@ -756,121 +910,35 @@ class CompanionApp:
         self._loaf_job = None
         self._is_loafing = False
         self._pending_shutdown = False
-        self._last_touch_time: float = 0.0   # epoch time of last gif-click touch event
+        self._last_touch_time: float = 0.0           # epoch time of last gif-click touch event
+        self._last_direct_interaction_time: float = time.time()  # updated on keystroke OR gif-click
 
         self._build_ui()
+        self._bind_keystroke_tracking()   # Phase 2: track any key as direct interaction
 
-        # Show a Win95-style progress bar that covers the gif + subtitle area.
-        # Built from plain tk widgets — no ttk — to match the existing W95 aesthetic.
-        self._loading_label = tk.Frame(self._outer, bg=W95_BG)
-        self._loading_label.place(x=0, y=20, relwidth=1.0, relheight=1.0)
-
-        # Title text
-        tk.Label(
-            self._loading_label,
-            text="Loading Agetha.exe",
-            fg=W95_TEXT, bg=W95_BG,
-            font=W95_FONT_BOLD,
-        ).pack(pady=(40, 4))
-
-        # Status message (updated as each step completes)
-        self._load_status_var = tk.StringVar(value="Initializing…")
-        tk.Label(
-            self._loading_label,
-            textvariable=self._load_status_var,
+        # Simple loading label — no progress bar, no multi-phase preloading
+        self._loading_label = tk.Label(
+            self._outer,
+            text="Loading Agetha.exe…",
             fg=W95_SHADOW, bg=W95_BG,
             font=W95_FONT,
-        ).pack(pady=(0, 8))
-
-        # Win95 progress bar: sunken outer frame, filled inner canvas
-        _pb_outer = tk.Frame(
-            self._loading_label,
-            bg=W95_BG, relief="sunken", bd=2,
-            width=WINDOW_W - 60, height=20,
         )
-        _pb_outer.pack(pady=(0, 4))
-        _pb_outer.pack_propagate(False)
+        self._loading_label.place(relx=0.5, rely=0.5, anchor="center")
 
-        self._pb_canvas = tk.Canvas(
-            _pb_outer, bg=W95_INPUT_BG,
-            highlightthickness=0, bd=0,
-        )
-        self._pb_canvas.pack(fill="both", expand=True)
+        # Stub so _init_background can still call _advance_progress without errors
+        self._advance_progress = lambda status, steps=1: print(f"[INIT] {status}")
 
-        # Percentage label below the bar
-        self._load_pct_var = tk.StringVar(value="0%")
-        tk.Label(
-            self._loading_label,
-            textvariable=self._load_pct_var,
-            fg=W95_TEXT, bg=W95_BG,
-            font=W95_FONT,
-        ).pack()
-
-        # Progress tracking: 3 init steps + N GIFs (populated later)
-        self._load_total   = 3   # will be increased when gif list is known
-        self._load_done    = 0
-
-        def _draw_progress():
-            """Redraw the Win95-style filled progress bar on the canvas."""
-            try:
-                self._pb_canvas.update_idletasks()
-                w = self._pb_canvas.winfo_width()
-                h = self._pb_canvas.winfo_height()
-                if w < 2 or h < 2:
-                    return
-                pct = min(self._load_done / max(self._load_total, 1), 1.0)
-                fill_w = max(0, int(w * pct))
-                self._pb_canvas.delete("all")
-                # Blue filled blocks (Win95 uses chunky segmented blocks)
-                block = 16
-                gap   = 2
-                x = 0
-                while x + block <= fill_w:
-                    self._pb_canvas.create_rectangle(
-                        x, 1, x + block - gap, h - 1,
-                        fill=W95_TITLE_BG, outline="",
-                    )
-                    x += block
-                pct_int = int(pct * 100)
-                self._load_pct_var.set(f"{pct_int}%")
-            except Exception:
-                pass
-
-        self._draw_progress = _draw_progress
-
-        def _advance_progress(status: str, steps: int = 1):
-            """Thread-safe progress advance — call from any thread."""
-            def _on_main():
-                self._load_done += steps
-                self._load_status_var.set(status)
-                self._draw_progress()
-            try:
-                self.root.after(0, _on_main)
-            except Exception:
-                pass
-
-        self._advance_progress = _advance_progress
-
-        # Draw the initial (empty) bar once the canvas is mapped
-        self._loading_label.after(50, _draw_progress)
-
-        # Force update so the window and loading label become visible immediately.
-        # On Windows 11, overrideredirect windows can render as a black rectangle
-        # until the compositor receives a proper redraw signal. Calling both
-        # update_idletasks() and update() — plus a deiconify/lift pair — flushes
-        # the DWM pipeline and makes the loading label appear on the first frame.
+        # Flush the window so the label appears immediately (Windows DWM quirk)
         try:
             self.root.update_idletasks()
             self.root.update()
-            # deiconify + lift forces the compositor to composite the window immediately
             self.root.deiconify()
             self.root.lift()
             self.root.update()
         except Exception:
             pass
 
-        # Start background init (audio, screen reader, AI); UI-related work (preloading GIFs)
-        # will be scheduled back on the main thread when ready.
+        # Start heavy init (audio, screen reader, AI) on a background thread
         threading.Thread(target=self._init_background, daemon=True).start()
 
         self._drag_x = self._drag_y = 0
@@ -1032,6 +1100,7 @@ class CompanionApp:
         """Handle a click on the Agetha gif — sends a hidden touch message to the AI.
         A 10-second cooldown prevents spamming."""
         now = time.time()
+        self._last_direct_interaction_time = now  # Phase 2: stamp interaction clock
         if now - self._last_touch_time < 10.0:
             return   # still in cooldown, silently ignore
         self._last_touch_time = now
@@ -1046,6 +1115,7 @@ class CompanionApp:
         ).start()
 
     def _on_user_input(self, event=None):
+        self._last_direct_interaction_time = time.time()  # Phase 2: any key = direct interaction
         text = self._input_var.get().strip()
         if not text:
             return
@@ -1061,105 +1131,99 @@ class CompanionApp:
         self._input_box.config(state="normal")
         self._input_box.focus_set()
 
-    def _preload_gifs(self):
-        """Load all GIFs without blocking the main thread.
+    # ── Phase 2: Attention-snap system ────────────────────────────────────────
 
-        Phase 1 (background thread): PIL open/convert/resize/composite for every GIF.
-        Phase 2 (main thread, via after()):  ImageTk.PhotoImage creation + GifPlayer init.
-        The loading label stays visible throughout Phase 1 so users never see a black screen.
+    def _bind_keystroke_tracking(self):
+        """Bind any key pressed in the entry box to update the interaction clock.
+        Call this once after _build_ui() has created self._input_box."""
+        try:
+            def _on_any_key(event=None):
+                self._last_direct_interaction_time = time.time()
+            self._input_box.bind("<Key>", _on_any_key, add=True)
+        except Exception as e:
+            print(f"[InteractionClock] Could not bind keystroke tracking: {e}")
+
+    def _maybe_snap_to_center(self, mood: str) -> None:
+        """Called during ambient AI polls when Agetha returns an attention-seeking mood.
+
+        Decision logic (runs on main thread via .after()):
+          • Inactivity ≥ threshold for this mood  → center-snap, topmost, lift
+          • Inactivity  < threshold               → drift to default side position
+
+        The snap threshold is mood-severity-dependent: manic snaps after 2 min,
+        melancholic waits 15 min. This makes her disruption feel proportional.
         """
-        static_vals = list(self.EXTRA_STATIC_GIFS.values()) if getattr(self, 'EXTRA_STATIC_GIFS', None) else []
-        # Use dict.fromkeys to preserve order while deduplicating (excited shares happy.gif)
+        if mood not in _ATTENTION_MOODS:
+            return
+        threshold  = _MOOD_SNAP_THRESHOLDS.get(mood, 600)
+        inactivity = time.time() - self._last_direct_interaction_time
+
+        def _do_position():
+            try:
+                sw = self.root.winfo_screenwidth()
+                sh = self.root.winfo_screenheight()
+                if inactivity >= threshold:
+                    # ── Center-snap: force Agetha into the user's view ──────
+                    nx = (sw - WINDOW_W) // 2
+                    ny = (sh - WINDOW_H) // 2
+                    self.root.geometry(f"+{nx}+{ny}")
+                    self.root.attributes("-topmost", True)
+                    self.root.lift()
+                    print(
+                        f"[SNAP] Center-snapped — mood={mood}, "
+                        f"inactivity={inactivity:.0f}s, threshold={threshold}s"
+                    )
+                else:
+                    # ── Drift: move to default right-side position without forcing ─
+                    nx = sw - WINDOW_W - 20
+                    ny = 80
+                    self.root.geometry(f"+{nx}+{ny}")
+                    print(
+                        f"[SNAP] Side-drift — mood={mood}, "
+                        f"inactivity={inactivity:.0f}s < threshold={threshold}s"
+                    )
+            except Exception as e:
+                print(f"[SNAP] Position error: {e}")
+
+        self.root.after(0, _do_position)
+
+    def _load_gifs_simple(self):
+        """Load all GIFs directly from disk on the main thread.
+        Simple, flat replacement for the old multi-phase preloader.
+        No progress bar — just loads each file one by one and starts Agetha."""
+        static_vals = list(self.EXTRA_STATIC_GIFS.values()) if getattr(self, "EXTRA_STATIC_GIFS", None) else []
         all_names = list(dict.fromkeys(
             self.IDLE_GIFS + self.TALKING_GIFS + list(self.EXTRA_GIFS.values()) + static_vals
         ))
-
-        def _phase1():
-            """Run entirely in a background thread — no Tk calls allowed here.
-            Each GIF is decoded in parallel via a ThreadPoolExecutor so PIL
-            open/convert/resize/composite work for all assets happens at the same time.
-            """
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            results: dict[str, tuple[list, list]] = {}  # name → (pil_frames, delays)
-            missing: list[str] = []
-
-            # Tell the progress bar how many total steps to expect (3 init + N gifs)
+        missing = []
+        for name in all_names:
+            path = ASSETS / name
+            if not path.exists():
+                print(f"[GIF] Missing: {path}")
+                missing.append(name)
+                continue
             try:
-                self.root.after(0, lambda: setattr(self, '_load_total', 3 + len(all_names)))
-            except Exception:
-                pass
-
-            # Separate existing from missing up front so we only submit real files
-            to_load = []
-            for name in all_names:
-                asset_path = ASSETS / name
-                if asset_path.exists():
-                    to_load.append((name, str(asset_path)))
-                else:
-                    print(f"[WARN] Missing asset: {asset_path}")
-                    missing.append(name)
-                    try:
-                        self._advance_progress(f"Missing {name}…")
-                    except Exception:
-                        pass
-
-            # Use as many workers as there are GIFs (capped at 8 to avoid over-subscription)
-            n_workers = min(len(to_load), 8) if to_load else 1
-
-            def _load_one(name_and_path):
-                n, p = name_and_path
-                frames, delays = _load_gif_frames_offthread(p)
-                try:
-                    self._advance_progress(f"Loading {n}…")
-                except Exception:
-                    pass
-                return n, frames, delays
-
-            with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                futures = {pool.submit(_load_one, item): item[0] for item in to_load}
-                for fut in as_completed(futures):
-                    try:
-                        n, frames, delays = fut.result()
-                        results[n] = (frames, delays)
-                    except Exception as e:
-                        n = futures[fut]
-                        print(f"[GifPlayer] Failed to load {n}: {e}")
-
-            # Hand off to main thread for Phase 2
-            self.root.after(0, lambda: _phase2(results, missing))
-
-        def _phase2(results: dict, missing: list):
-            """Run on the main thread — creates ImageTk objects and GifPlayer instances."""
-            for name, (pil_frames, delays) in results.items():
-                try:
-                    self._gif_cache[name] = GifPlayer(
-                        self._gif_label, name, self.root.after,
-                        pil_frames=pil_frames, delays=delays,
-                    )
-                except Exception as e:
-                    print(f"[GifPlayer] Failed to create player for {name}: {e}")
-
-            if missing:
-                msg = "Missing asset files in the assets/ folder:\n" + "\n".join(missing[:8])
-                if len(missing) > 8:
-                    msg += f"\n...and {len(missing) - 8} more."
-                native_error_popup("Agetha — Missing Assets", msg)
-
-            # Phase 2 complete — now safe to remove loading label and start wake sequence
-            try:
-                if hasattr(self, "_loading_label") and self._loading_label:
-                    self._loading_label.destroy()
-                    self._loading_label = None
-            except Exception:
-                pass
-            try:
-                self._start_wake_sequence()
+                self._gif_cache[name] = GifPlayer(
+                    self._gif_label, str(path), self.root.after
+                )
+                print(f"[GIF] Loaded: {name}")
             except Exception as e:
-                print(f"[BackgroundInit] start_wake_sequence failed: {e}")
-                native_error_popup("Agetha — Startup Error", f"Startup sequence failed:\n{e}")
+                print(f"[GIF] Failed to load {name}: {e}")
 
-        threading.Thread(target=_phase1, daemon=True).start()
+        if missing:
+            print(f"[GIF] {len(missing)} asset(s) not found: {missing}")
+
+        # Remove loading label and boot the wake sequence
+        try:
+            if hasattr(self, "_loading_label") and self._loading_label:
+                self._loading_label.destroy()
+                self._loading_label = None
+        except Exception:
+            pass
+        try:
+            self._start_wake_sequence()
+        except Exception as e:
+            print(f"[GIF] start_wake_sequence failed: {e}")
 
     def _init_background(self):
         """Run heavy initialization off the main thread."""
@@ -1212,13 +1276,11 @@ class CompanionApp:
                             self._subtitle._bleep = self._bleep
                     except Exception:
                         pass
-                    # Kick off GIF preloading — it handles the loading label and
-                    # wake sequence itself once PIL work is done off the main thread.
+                    # Load GIFs and start wake sequence — simple, flat loader
                     try:
-                        self._preload_gifs()
+                        self.root.after(0, self._load_gifs_simple)
                     except Exception as e:
-                        print(f"[BackgroundInit] preload_gifs failed: {e}")
-                        native_error_popup("Agetha — Asset Error", f"Failed to load GIF assets:\n{e}")
+                        print(f"[BackgroundInit] load_gifs_simple failed: {e}")
                 except Exception:
                     pass
 
@@ -1541,6 +1603,13 @@ class CompanionApp:
             self._reschedule_screen_poll()
             return
 
+        # ── Phase 2: Attention-snap on ambient polls ───────────────────────────
+        # If this is an ambient poll (no direct user message) and Agetha returns
+        # an attention-seeking mood, run the inactivity gate. Threshold is shorter
+        # for severe moods (manic=2 min) and longer for passive ones (melancholic=15 min).
+        if not user_message and mood in _ATTENTION_MOODS:
+            self._maybe_snap_to_center(mood)
+
         def _speak_and_continue(resp_segments, resp_mood, resp_shutdown):
             if resp_segments:
                 self.root.after(0, lambda: self._set_state(self.STATE_TALKING, resp_mood))
@@ -1806,19 +1875,60 @@ class CompanionApp:
                     elif _sys == "Linux":
                         _sp.Popen(["notify-send", title, message])
                     elif _sys == "Windows":
-                        # Safely escape characters to prevent XML or PowerShell crashes
-                        s_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "''")
-                        s_msg = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "''")
-                        
-                        ps = (
-                            f'[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;'
-                            f'$xml = [Windows.Data.Xml.Dom.XmlDocument]::new();'
-                            f"$xml.LoadXml('<toast><visual><binding template=\"ToastText02\"><text id=\"1\">{s_title}</text><text id=\"2\">{s_msg}</text></binding></visual></toast>');"
-                            f'$toast = [Windows.UI.Notifications.ToastNotification]::new($xml);'
-                            f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Agetha").Show($toast);'
+                        # ── Fixed approach: build XML on Python side with proper escaping,
+                        # write to a temp .ps1 file, use LoadXml instead of DOM methods.
+                        # The old GetElementsByTagName().AppendChild() path triggers a .NET
+                        # live-collection enumeration exception on most Windows 10/11 builds.
+                        import xml.sax.saxutils as _sax
+                        import tempfile as _tf
+                        import os as _os
+
+                        # Escape XML entities (ampersand, quotes, angle brackets, apostrophe)
+                        title_x = _sax.escape(title,   {"'": "&apos;", '"': "&quot;"})
+                        msg_x   = _sax.escape(message, {"'": "&apos;", '"': "&quot;"})
+
+                        toast_xml = (
+                            f"<toast>"
+                            f"<visual><binding template='ToastGeneric'>"
+                            f"<text>{title_x}</text>"
+                            f"<text>{msg_x}</text>"
+                            f"</binding></visual>"
+                            f"</toast>"
                         )
-                        # -WindowStyle Hidden prevents the blue powershell window from flashing
-                        _sp.Popen(["powershell", "-WindowStyle", "Hidden", "-Command", ps], shell=False)
+
+                        # PS single-quoted strings treat content literally — safe since
+                        # all XML entities are already escaped above (no bare ' chars left)
+                        ps_lines = "\n".join([
+                            "[Windows.UI.Notifications.ToastNotificationManager, "
+                            "Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null",
+                            "[Windows.Data.Xml.Dom.XmlDocument, "
+                            "Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null",
+                            "$xml = [Windows.Data.Xml.Dom.XmlDocument]::new()",
+                            f"$xml.LoadXml('{toast_xml}')",
+                            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)",
+                            "[Windows.UI.Notifications.ToastNotificationManager]"
+                            "::CreateToastNotifier('Agetha.exe').Show($toast)",
+                        ])
+
+                        # Write to a temp .ps1 — avoids ALL shell quoting/escaping issues
+                        with _tf.NamedTemporaryFile(
+                            mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+                        ) as tf:
+                            tf.write(ps_lines)
+                            tmp_ps1 = tf.name
+
+                        _sp.Popen(
+                            ["powershell", "-WindowStyle", "Hidden",
+                             "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                             "-File", tmp_ps1],
+                            shell=False,
+                        )
+                        # Clean up temp file after toast has had time to display
+                        threading.Timer(
+                            8.0,
+                            lambda p=tmp_ps1: _os.unlink(p) if _os.path.exists(p) else None,
+                        ).start()
+
                     print(f"[NOTIFY] {title}: {message}")
                 except Exception as e:
                     print(f"[NOTIFY] Failed: {e}")
@@ -1956,6 +2066,82 @@ class CompanionApp:
                     except Exception as e:
                         print(f"[DIALOG] Failed: {e}")
                 threading.Thread(target=_show, daemon=True).start()
+            _speak_and_continue(segments, mood, shutdown_requested)
+            return
+
+        # ── Phase 2: Explicit center-snap command ─────────────────────────────
+        if command == "snap_to_center":
+            # AI explicitly demands attention — snap unconditionally (no inactivity gate)
+            def _force_snap():
+                try:
+                    sw = self.root.winfo_screenwidth()
+                    sh = self.root.winfo_screenheight()
+                    nx = (sw - WINDOW_W) // 2
+                    ny = (sh - WINDOW_H) // 2
+                    self.root.geometry(f"+{nx}+{ny}")
+                    self.root.attributes("-topmost", True)
+                    self.root.lift()
+                    print(f"[SNAP] AI-commanded snap_to_center (mood={mood})")
+                except Exception as e:
+                    print(f"[SNAP] snap_to_center error: {e}")
+            self.root.after(0, _force_snap)
+            _speak_and_continue(segments, mood, shutdown_requested)
+            return
+
+        # ── Phase 2: External window move (ctypes, Windows-only) ──────────────
+        if command == "target_window_move":
+            target_app = response.get("target_app", "").strip()
+            tx = int(response.get("x", 0))
+            ty = int(response.get("y", 0))
+            if target_app and platform.system() == "Windows":
+                def _do_move(app=target_app, x=tx, y=ty):
+                    try:
+                        hwnd = _find_window_hwnd(app)
+                        if hwnd:
+                            SWP_NOSIZE   = 0x0001
+                            SWP_NOZORDER = 0x0004
+                            ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0,
+                                                               SWP_NOSIZE | SWP_NOZORDER)
+                            print(f"[WIN32] Moved '{app}' → ({x}, {y})")
+                        else:
+                            print(f"[WIN32] target_window_move: window not found: '{app}'")
+                            # Report failure back through subtitle — no crash
+                            fail = [{"text": f"It's not here.", "pause": 0.4},
+                                    {"text": "Where did it go.", "pause": 0.0}]
+                            self.root.after(0, lambda: self._subtitle.speak(fail))
+                    except Exception as e:
+                        print(f"[WIN32] target_window_move error: {e}")
+                threading.Thread(target=_do_move, daemon=True).start()
+            elif target_app and platform.system() != "Windows":
+                print(f"[WIN32] target_window_move skipped — not Windows")
+            _speak_and_continue(segments, mood, shutdown_requested)
+            return
+
+        # ── Phase 2: External window resize (ctypes, Windows-only) ───────────
+        if command == "target_window_resize":
+            target_app = response.get("target_app", "").strip()
+            tx = int(response.get("x",      0))
+            ty = int(response.get("y",      0))
+            tw = int(response.get("width",  800))
+            th = int(response.get("height", 600))
+            if target_app and platform.system() == "Windows":
+                def _do_resize(app=target_app, x=tx, y=ty, w=tw, h=th):
+                    try:
+                        hwnd = _find_window_hwnd(app)
+                        if hwnd:
+                            # MoveWindow: sets position AND size atomically
+                            ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, True)
+                            print(f"[WIN32] Resized '{app}' → ({x},{y}) {w}×{h}")
+                        else:
+                            print(f"[WIN32] target_window_resize: window not found: '{app}'")
+                            fail = [{"text": f"I looked.", "pause": 0.4},
+                                    {"text": f"{app} isn't open.", "pause": 0.0}]
+                            self.root.after(0, lambda: self._subtitle.speak(fail))
+                    except Exception as e:
+                        print(f"[WIN32] target_window_resize error: {e}")
+                threading.Thread(target=_do_resize, daemon=True).start()
+            elif target_app and platform.system() != "Windows":
+                print(f"[WIN32] target_window_resize skipped — not Windows")
             _speak_and_continue(segments, mood, shutdown_requested)
             return
 
