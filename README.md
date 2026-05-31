@@ -22,9 +22,7 @@ Agetha uses native OS tools (tasklist for Windows, pgrep for Linux/macOS) in a b
 | play_emotion_sound | emotion | Triggers a real OS sound matching Agetha's mood, with fallbacks to pygame bleeps. |
 | show_dialog | title, message, type | Displays a native OS dialog box (info, warning, error, or yesno). |
 ## 🔄 Architecture & Changelog
-This is a massive and technically impressive update. You’ve introduced deep psychological mechanics (variable severity durations, mood-based audio patterns) and direct window manipulation, while cleaning up some nasty asynchronous bugs.
-
-Here is how you can integrate these new patch notes directly into your GitHub README. I have organized them into a clean, professional "Phase 2 Update" changelog format that matches the styling of your previous document.
+"Phase 2 Update" changelog format that matches the styling of your previous document.
 
 ---
 ## 5/31/2026 8:41 PM
