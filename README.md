@@ -1,4 +1,4 @@
-Agetha Overhaul
+# Agetha Overhaul
 
 «A modified fork of Agetha.exe with enhanced desktop integration, OCR awareness, emotional reactions, process monitoring, and expanded operating system interaction.»
 
@@ -8,7 +8,7 @@ Agetha Overhaul
 
 ---
 
-About
+## About
 
 Agetha Overhaul is an experimental fork of Agetha.exe designed to make Agetha feel more aware, reactive, and integrated with the desktop environment.
 
@@ -24,7 +24,7 @@ This fork expands Agetha's capabilities with:
 
 ---
 
-Features
+## Features
 
 OCR-Based Awareness
 
@@ -42,7 +42,7 @@ Detected keywords are automatically injected into Agetha's context, allowing mor
 
 ---
 
-Desktop Integration
+## Desktop Integration
 
 Agetha can interact with your operating system through supported commands.
 
@@ -57,7 +57,7 @@ Current capabilities include:
 
 ---
 
-Emotional Reactions
+## Emotional Reactions
 
 Agetha can react to situations using platform-native sound effects.
 
@@ -71,7 +71,7 @@ Fallback audio is provided through pygame when native sounds are unavailable.
 
 ---
 
-Process Monitoring
+## Process Monitoring
 
 Agetha can check whether a process is currently running.
 
@@ -87,7 +87,7 @@ Results are fed back into the AI conversation for contextual responses.
 
 ---
 
-Commands
+## Commands
 
 Command| Description
 "open_file"| Opens a file using the default operating system application
@@ -98,7 +98,7 @@ Command| Description
 
 ---
 
-Changelog
+## Changelog
 
 AI Engine
 
@@ -126,7 +126,7 @@ Improved
 
 ---
 
-Main Application
+## Main Application
 
 Added
 
@@ -166,7 +166,7 @@ Improved
 
 ---
 
-Requirements
+## Requirements
 
 Python
 
@@ -176,13 +176,13 @@ Python 3.14 may not be fully compatible with all dependencies.
 
 ---
 
-Install Dependencies
+## Install Dependencies
 
 py -3.13 -m pip install pillow pyautogui pytesseract numpy pygame requests groq tkextrafont mss
 
 ---
 
-Install Tesseract OCR
+## Install Tesseract OCR
 
 Download and install Tesseract OCR:
 
@@ -192,7 +192,7 @@ Make sure Tesseract is available in your system PATH.
 
 ---
 
-Assets
+## Assets
 
 Download required assets:
 
@@ -200,7 +200,7 @@ https://chocolatebread.ddns.net/agetha.html
 
 ---
 
-Warning & Disclaimer
+## Warning & Disclaimer
 
 ⚠️ Agetha Overhaul is an experimental project.
 
@@ -221,7 +221,7 @@ The author shall not be held responsible for:
 
 ---
 
-Current Safety Notes
+## Current Safety Notes
 
 At the time of release:
 
@@ -250,7 +250,7 @@ Unexpected behavior may occur.
 
 ---
 
-Recommended Usage
+## Recommended Usage
 
 Before running Agetha Overhaul:
 
@@ -263,7 +263,7 @@ If you do not understand what a feature does, do not enable or use it.
 
 ---
 
-License
+## License
 
 This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
 
@@ -281,7 +281,7 @@ See the LICENSE file for details.
 
 ---
 
-Credits
+## Credits
 
 Original Project
 
