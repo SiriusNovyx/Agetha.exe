@@ -63,6 +63,7 @@ py -3.13 -m pip install pillow pyautogui pytesseract numpy pygame requests groq 
 Download and install Tesseract OCR. Ensure that Tesseract is properly added to your system's PATH.
 ### 3. Download Assets
 Download the required visual/audio assets for the project here.
+https://chocolatebread.ddns.net/agetha.html
 ## ⚠️ Warning & Disclaimer
 **Agetha Overhaul is an experimental project.**
 > This software is provided "as is", without warranty of any kind. By using this software, you agree that you do so entirely at your own risk.
