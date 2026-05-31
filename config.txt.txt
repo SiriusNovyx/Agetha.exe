@@ -1,4 +1,4 @@
-# Agetha v4.0.2 config — github @tomiszivacs
+# Agetha v4.2.0 (Mod) config — original author is @tomiszivacs github
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── AI Backend ────────────────────────────────────────────────────────────────
