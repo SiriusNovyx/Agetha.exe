@@ -1,4 +1,4 @@
-This project is a fork of Agetha_overhaul.
+This project is a fork of Agetha.exe.
 
 Original project copyright belongs to the original author.
 
