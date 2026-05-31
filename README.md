@@ -22,6 +22,64 @@ Agetha uses native OS tools (tasklist for Windows, pgrep for Linux/macOS) in a b
 | play_emotion_sound | emotion | Triggers a real OS sound matching Agetha's mood, with fallbacks to pygame bleeps. |
 | show_dialog | title, message, type | Displays a native OS dialog box (info, warning, error, or yesno). |
 ## 🔄 Architecture & Changelog
+This is a massive and technically impressive update. You’ve introduced deep psychological mechanics (variable severity durations, mood-based audio patterns) and direct window manipulation, while cleaning up some nasty asynchronous bugs.
+
+Here is how you can integrate these new patch notes directly into your GitHub README. I have organized them into a clean, professional "Phase 2 Update" changelog format that matches the styling of your previous document.
+
+---
+## 5/31/2026 8:41 PM
+## 🚀 Phase 2 Overhaul & Bug Fixes
+
+### 🧠 AI Engine & Personality Updates (`ai_engine.py`)
+
+* **New Psychological Moods:** Added 5 new deep states to `VALID_MOODS`: *manic, melancholic, paranoid, vulnerable,* and *dominant*.
+* **New Window Commands:** Added `VALID_COMMANDS` for direct desktop control:
+* `target_window_move`: Moves a specific window to X/Y coordinates.
+* `target_window_resize`: Resizes a target window to specific dimensions.
+* `snap_to_center`: Forces Agetha to the center of the screen.
+
+
+* **System Prompt Overhaul:** * Integrated behavioral profiles for the 5 new moods.
+* Added **Mood Escalation Rules** detailing when deep moods trigger physical desktop actions (snapping, window rearranging).
+* Implemented graceful failure reporting rules for missing windows.
+
+
+* **Parser Upgrades:** Added new `_cmd_fields` to `_parse()` so window manipulation commands survive the JSON fallback parser.
+* **Few-Shot Expansion:** Added 10 new few-shot examples covering manic abandonment snaps, dominant window manipulation, paranoid process checks, and vulnerable confessions.
+
+### 🖥️ Main Application & UI (`main.py`)
+
+* **Advanced Window Manipulation:** * Integrated `ctypes` and `ctypes.wintypes` for cross-platform support (with `windll` guarded for Windows).
+* Added `_find_window_hwnd(partial_name)` using `EnumWindows` callbacks to find visible windows by partial title match.
+
+
+* **The "Snap" Mechanic:** * Introduced `_ATTENTION_MOODS` and `_MOOD_SNAP_THRESHOLDS`.
+* Agetha tracks inactivity via `_bind_keystroke_tracking` (stamping `_last_direct_interaction_time`).
+* If ignored for too long while in an attention-seeking mood (e.g., manic=120s, dominant=300s, melancholic=900s), `_maybe_snap_to_center` pulls her to the center of the screen (`topmost + lift`). If the threshold isn't met, she drifts to the edge.
+
+
+* **Dispatcher Upgrades:** Background threads added for `target_window_move` (`SetWindowPos`) and `target_window_resize` (`MoveWindow`), ensuring the main thread never blocks.
+
+### 🔊 Dynamic Audio System
+
+* **BleepPlayer Overhaul:** The audio system now dynamically branches based on Agetha's mood, using a `_MOOD_PROFILES` dictionary to alter pitch, interval, and volume:
+* **Manic:** Random 600-900Hz pitches every 4–12ms (sounds like system overclocking).
+* **Melancholic:** Barely audible 120Hz drone every 200–320ms.
+* **Paranoid:** Rapid anxiety bursts (2–6 bleeps) followed by sudden silence gaps.
+* **Dominant:** Resonating, deep 110Hz bleeps at maximum volume.
+
+
+
+### 🐛 Bug Fixes & Refactoring
+
+* **Toast Notification Stability:** Fixed a `.NET InvalidOperationException` crash on Windows 10. XML payloads are now built entirely in Python using `xml.sax.saxutils.escape()`, written to a temporary `.ps1` file, and executed via `-File` to bypass PowerShell quoting issues. Temp files auto-delete after 8 seconds.
+* **GIF Loading System Simplified:** * Removed the overly complex 3-phase concurrent PIL ThreadPoolExecutor pipeline and Win95 progress bar, which was causing `_preload_gifs` code to leak and stall the app.
+* Replaced with a flat, synchronous `_load_gifs_simple(self)` method that cleanly handles the 20 local assets via `GifPlayer`'s built-in sync loader.
+
+
+* **Asset Mapping:** Successfully mapped Phase 2 moods to existing visual assets (e.g., manic/dominant → `angry.gif`, paranoid → `thinking.gif`). All 20 UI assets verified.
+
+## 5/31/2026 9:XX AM
 ### 🧠 ai_engine.py — Brain
  * **Added VALID_COMMANDS:** Included open_file, write_file, monitor_process, play_emotion_sound, and show_dialog.
  * **Robust Parsing:** Added new _cmd_fields entries in _parse() to ensure the new commands survive the JSON fallback parser.
