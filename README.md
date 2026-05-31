@@ -56,6 +56,8 @@ Agetha uses native OS tools (tasklist for Windows, pgrep for Linux/macOS) in a b
 ### 1. Install Dependencies
 Run the following command in your terminal to install the required Python packages:
 ```bash
+py -3.13 -m venv venv
+venv\Scripts\activate
 py -3.13 -m pip install pillow pyautogui pytesseract numpy pygame requests groq tkextrafont mss
 
 ```
