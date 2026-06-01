@@ -112,7 +112,7 @@ When executed, the script runs through a rigorous 6-step diagnostic process to e
 
 
 2. Double-click the file to run it.
-3. The script will automatically launch Agetha once all checks pass.
+3. The script will automatically launch Agetha once all checks pass. (Agetha still not run automatic for now)
 
 
 
