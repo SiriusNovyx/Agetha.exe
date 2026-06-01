@@ -1246,7 +1246,7 @@ class CompanionApp:
             except Exception:
                 pass
             try:
-                screen = ScreenReader()
+                screen = ScreenReader(own_tk_root=self.root)
             except Exception as e:
                 print(f"[BackgroundInit] ScreenReader init failed: {e}")
                 native_error_popup("Agetha — Screen Reader Error", f"Screen reader failed to start:\n{e}\n\nScreen reading will be disabled.")
@@ -1477,11 +1477,48 @@ class CompanionApp:
         if not is_user:
             screen_text = self._screen.capture_text()
             self._last_screen_text = screen_text
-            # If angry keywords detected on screen, inject a synthetic user message
-            # so the AI reacts even on an ambient poll
-            if self._screen and getattr(self._screen, "has_angry_trigger", False):
-                kws = ", ".join(self._screen.last_angry_keywords[:3])
-                screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
+
+            if self._screen:
+                # ── Phase 3: Rich context injection ───────────────────────────
+
+                # 1. Regex pattern matches (IDE errors, terminal failures, crashes)
+                #    Each match carries a suggested mood the AI can act on.
+                _matches = getattr(self._screen, "last_pattern_matches", [])
+                if _matches:
+                    tags = "\n".join(
+                        f"[{m.label}: {m.snippet[:80]}]"
+                        for m in _matches[:4]
+                    )
+                    screen_text = tags + "\n" + screen_text
+                elif getattr(self._screen, "has_angry_trigger", False):
+                    # 2. Fallback: legacy flat keyword list
+                    kws = ", ".join(self._screen.last_angry_keywords[:3])
+                    screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
+
+                # 3. Active window title  →  "Active: Visual Studio Code"
+                _title = getattr(self._screen, "last_active_window_title", "")
+                if _title:
+                    screen_text = f"[Active: {_title}]\n" + screen_text
+
+                # 4. Spatial positions for key error words  →  Agetha can use
+                #    these coords in a move_window command to position herself
+                #    right next to the error on screen.
+                _KEY_WORDS = {
+                    "error", "warning", "failed", "exception", "traceback",
+                    "fatal", "crash", "denied", "undefined", "null",
+                    "undefined", "critical",
+                }
+                _positions = getattr(self._screen, "last_word_positions", [])
+                _important = [
+                    p for p in _positions
+                    if p.get("text", "").lower() in _KEY_WORDS
+                ][:5]
+                if _important:
+                    pos_str = " | ".join(
+                        f"{p['text']}@({p['screen_x']},{p['screen_y']})"
+                        for p in _important
+                    )
+                    screen_text = f"[Error positions: {pos_str}]\n" + screen_text
 
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
@@ -1883,32 +1920,21 @@ class CompanionApp:
                         import tempfile as _tf
                         import os as _os
 
-                        # Escape XML entities (ampersand, quotes, angle brackets, apostrophe)
-                        title_x = _sax.escape(title,   {"'": "&apos;", '"': "&quot;"})
-                        msg_x   = _sax.escape(message, {"'": "&apos;", '"': "&quot;"})
+                        # 1. Safely escape the text for XML
+                        title_safe = _sax.escape(title, {"'": "&apos;", '"': "&quot;"})
+                        msg_safe = _sax.escape(message, {"'": "&apos;", '"': "&quot;"})
+                        
+                        # 2. Load WinRT assemblies and use Here-String for safe quotes
+                        ps_lines = f"""[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null
+$xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
+$xmlString = @"
+<toast><visual><binding template="ToastGeneric"><text>{title_safe}</text><text>{msg_safe}</text></binding></visual></toast>
+"@
+$xml.LoadXml($xmlString)
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Agetha.exe").Show($toast)"""
 
-                        toast_xml = (
-                            f"<toast>"
-                            f"<visual><binding template='ToastGeneric'>"
-                            f"<text>{title_x}</text>"
-                            f"<text>{msg_x}</text>"
-                            f"</binding></visual>"
-                            f"</toast>"
-                        )
-
-                        # PS single-quoted strings treat content literally — safe since
-                        # all XML entities are already escaped above (no bare ' chars left)
-                        ps_lines = "\n".join([
-                            "[Windows.UI.Notifications.ToastNotificationManager, "
-                            "Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null",
-                            "[Windows.Data.Xml.Dom.XmlDocument, "
-                            "Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null",
-                            "$xml = [Windows.Data.Xml.Dom.XmlDocument]::new()",
-                            f"$xml.LoadXml('{toast_xml}')",
-                            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)",
-                            "[Windows.UI.Notifications.ToastNotificationManager]"
-                            "::CreateToastNotifier('Agetha.exe').Show($toast)",
-                        ])
 
                         # Write to a temp .ps1 — avoids ALL shell quoting/escaping issues
                         with _tf.NamedTemporaryFile(
