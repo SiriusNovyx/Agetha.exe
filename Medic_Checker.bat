@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
-title Agetha.exe  —  Startup
+title Agetha.exe HealthCheck
 color 0A
 cls
 
@@ -181,25 +181,11 @@ echo  [    ]  You will need to add your Groq API key before she can respond.
 echo  [    ]  Free key: https://console.groq.com
 color 0A
 ) else (
-:: Use Python (already active in venv) for a reliable key check
-python -c "
-import re, sys
-try:
-txt = open('config.txt', encoding='utf-8', errors='replace').read()
-local_m = re.search(r'USE_LOCAL_AI\s*=\s*(\S+)', txt)
-if local_m and local_m.group(1).lower() == 'yes':
-model_m = re.search(r'LOCAL_AI_MODEL\s*=\s*(\S+)', txt)
-print('LOCAL' if model_m and model_m.group(1).strip() else 'LOCAL_NO_MODEL')
-else:
-key_m = re.search(r'GROQ_API_KEY\s*=\s*(.+)', txt)
-v = key_m.group(1).strip() if key_m else ''
-print('SET' if len(v) > 20 else 'EMPTY')
-except Exception:
-print('READ_ERROR')
-" > agetha_cfgcheck.tmp 2>nul
+    :: Use Python (already active in venv) for a reliable key check
+    %PYTHON_CMD% -c "import re; txt=open('config.txt',encoding='utf-8',errors='replace').read(); local_m=re.search(r'USE_LOCAL_AI\s*=\s*(\S+)',txt); print('LOCAL' if local_m and local_m.group(1).lower()=='yes' and (lambda x: x.group(1).strip() if x else '')(re.search(r'LOCAL_AI_MODEL\s*=\s*(\S+)',txt)) else 'LOCAL_NO_MODEL' if local_m and local_m.group(1).lower()=='yes' else 'SET' if len((lambda x: x.group(1).strip() if x else '')(re.search(r'GROQ_API_KEY\s*=\s*(.+)',txt)))>20 else 'EMPTY')" > agetha_cfgcheck.tmp 2>nul
 
-for /f "tokens=*" %%R in (agetha_cfgcheck.tmp) do set "CFG_STATUS=%%R"
-del agetha_cfgcheck.tmp >nul 2>&1
+    for /f "tokens=*" %%R in (agetha_cfgcheck.tmp) do set "CFG_STATUS=%%R"
+    del agetha_cfgcheck.tmp >nul 2>&1
 
 if "!CFG_STATUS!"=="SET" (
     echo  [ OK ]  config.txt  —  Groq API key is configured.
@@ -236,15 +222,15 @@ echo   Health check done.  Launching Agetha...
 echo  ================================================================
 echo.
 
-python main.py
+%PYTHON_CMD% main.py
 
 if !errorlevel! NEQ 0 (
-color 0C
-echo.
-echo  [----]  Agetha exited with error code: !errorlevel!
-echo  [----]  Scroll up to read the crash details.
-echo.
-pause
+    color 0C
+    echo.
+    echo  [----]  Agetha exited with error code: !errorlevel!
+    echo  [----]  Scroll up to read the crash details.
+    echo.
+    pause
 )
 
 endlocal
