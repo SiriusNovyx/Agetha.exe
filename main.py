@@ -1545,11 +1545,11 @@ class CompanionApp:
             self._reschedule_screen_poll()
             return
 
-        print("\n" + "─" * 52)
+        print("\n" + "-" * 52)
         if user_message and user_message != "__touch__":
             print(f"[USER]  {user_message}")
         print(f"[AI]    {json.dumps(response, ensure_ascii=False)}")
-        print("─" * 52)
+        print("-" * 52)
 
         self.root.after(0, self._re_enable_input)
         self._dispatch_response(response, user_message)
