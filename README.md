@@ -1,7 +1,3 @@
-Here is the updated README. I have seamlessly integrated the massive Phase 3 updates—including the focused window scanning, multi-monitor DPI support, regex pattern registry (with Luau successfully stripped out), and the spatial text mapping.
-
-The "Features" section has been upgraded to reflect her new spatial abilities, and the "Changelog" is now cleanly divided into development phases to show the project's evolution.
-
 ---
 
 # Agetha Overhaul
