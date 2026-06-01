@@ -97,7 +97,7 @@ When executed, the script runs through a rigorous 6-step diagnostic process to e
 * **Pre-Flight Check:** Ensures the script is running in the correct directory alongside `main.py`.
 * **Step 1: Python Validation:** Detects whether Python is installed and accessible via the `python` or `py -3` commands.
 * **Step 2: Virtual Environment Management:** Looks for an existing Python virtual environment (`venv`). If one is not found, it automatically creates and activates it to keep dependencies isolated.
-* **Step 3: Smart Dependency Installation:** Scans for the exact required packages (`pillow`, `pyautogui`, `pytesseract`, `numpy`, `pygame`, `requests`, `groq`, `mss`) and seamlessly installs only the missing ones, saving startup time on subsequent launches.
+* **Step 3: "Smart" Dependency Installation:** Scans for the exact required packages (`pillow`, `pyautogui`, `pytesseract`, `numpy`, `pygame`, `requests`, `groq`, `mss`) and seamlessly installs only the missing ones, saving startup time on subsequent launches.
 * **Step 4: Tesseract OCR Detection:** Checks system PATH and default installation directories for Tesseract OCR. It flags a warning if missing, but allows Agetha to launch (without screen-reading capabilities).
 * **Step 5: Asset Verification:** Scans the `assets\` folder to ensure all 20 necessary UI elements (GIFs, fonts, icons) are present, preventing invisible or broken animations during runtime.
 * **Step 6: Configuration & Memory Check:**
