@@ -2,6 +2,8 @@
 
 > A modified fork of Agetha.exe with enhanced desktop integration, spatial OCR awareness, emotional reactions, process monitoring, and expanded operating system interaction.
 
+
+
 ## 📖 About
 
 Agetha Overhaul is an experimental fork of Agetha.exe designed to make Agetha feel more aware, reactive, and integrated with the desktop environment. Her personality has been revised to be **sharper, darker, and more autonomous-feeling**.
@@ -35,16 +37,143 @@ Agetha features a deep psychological state machine with variable severity durati
 
 ## 🛠️ Commands
 
+Agetha's command library has been drastically expanded. She is capable of executing the following actions dynamically based on context:
+
+### File System & Execution
+
 | Command | Parameters | Description |
 | --- | --- | --- |
-| `open_file` | `filepath` | Opens any file (PDF, image, docx, etc.) using the OS default application. |
-| `write_file` | `filepath, content, mode` | Creates, overwrites, or appends text to files. |
-| `monitor_process` | `process_name` | Checks if a named process is running and feeds the result back to the AI. |
-| `play_emotion_sound` | `emotion` | Triggers a real OS sound matching Agetha's mood, with `pygame` fallbacks. |
-| `show_dialog` | `title, message, type` | Displays a native OS dialog box (`info`, `warning`, `error`, or `yesno`). |
-| `target_window_move` | `window_name, x, y` | Moves a specific application window to exact X/Y coordinates. |
-| `target_window_resize` | `window_name, w, h` | Resizes a target window to specific dimensions. |
-| `snap_to_center` | `None` | Forces Agetha's window to the exact center of the screen. |
+| `open_file` | `path` | Opens any file (PDF, image, docx, etc.) using the OS default application.
+
+ |
+| `write_file` | `file_path, content, mode` | Creates, overwrites, or appends text to files.
+
+ |
+| `create_folder` | `path` | Creates a new directory on the system.
+
+ |
+| `create_file` | `file_path, content` | Creates a file with specific content, automatically generating parent directories if needed.
+
+ |
+| `delete_file` | `path` | Deletes a specified file or completely removes a directory.
+
+ |
+| `rename_file` | `path, new_name` | Renames a file or moves it to a new location.
+
+ |
+| `list_dir` | `path` | Lists the contents of a directory and displays them in an Agetha popup.
+
+ |
+| `read_document` | `path` | Reads the content of a document and feeds it back into Agetha's AI context.
+
+ |
+| `run_command` | `cmd, shell` | Executes arbitrary terminal/shell commands (`subprocess.run`) and reads stdout/stderr.
+
+ |
+
+### App, Web & Process Management
+
+| Command | Parameters | Description |
+| --- | --- | --- |
+| `open_app` | `app` | Launches an application executable directly.
+
+ |
+| `force_close` | `app/process/name` | Force-kills a running application using `taskkill` (Windows) or `pkill` (Mac/Linux).
+
+ |
+| `monitor_process` | `process_name` | Checks if a named process is running and feeds the result back to the AI.
+
+ |
+| `open_browser` | `url, search, engine` | Opens a URL directly or searches queries via Google, DuckDuckGo, or Bing.
+
+ |
+
+### Desktop & Window Manipulation
+
+| Command | Parameters | Description |
+| --- | --- | --- |
+| `target_window_move` | `target_app, x, y` | Moves a specific application window to exact X/Y coordinates via `ctypes`.
+
+ |
+| `target_window_resize` | `target_app, w, h` | Resizes a target window to specific dimensions via `ctypes`.
+
+ |
+| `move_window` | `x, y, direction` | Moves Agetha's own window to specific coordinates or relative positions (left, right, up, down, center).
+
+ |
+| `snap_to_center` | `None` | Forces Agetha's window to the exact center of the screen, pulling her to the top layer.
+
+ |
+
+### Media, Interface & OS Interaction
+
+| Command | Parameters | Description |
+| --- | --- | --- |
+| `take_screenshot` | `save_path` | Captures the current screen state and saves it as a PNG image.
+
+ |
+| `set_clipboard` | `text` | Clears the OS clipboard and appends the specified text.
+
+ |
+| `show_notification` | `title, message` | Triggers native OS Toast Notifications (PowerShell XML on Windows, `osascript` on Mac, `notify-send` on Linux).
+
+ |
+| `show_dialog` | `title, message, type` | Displays a native OS dialog box (`info`, `warning`, `error`, or `yesno`).
+
+ |
+| `play_emotion_sound` | `emotion` | Triggers a real OS sound matching Agetha's mood, with `pygame` fallbacks.
+
+ |
+| `play_sound` | `sound` | Plays built-in Agetha frequencies (`beep`, `chime`, `error`, `notify`).
+
+ |
+| `show_error_gif` | `path` | Overrides the current animation with an error visual and locks Agetha in an always-on-top idle state.
+
+ |
+| `request_path` | `path_hint` | Displays a popup hinting at a file path.
+
+ |
+| `request_screen_read` | `None` | Forces an immediate manual OCR screen capture.
+
+ |
+
+---
+
+## ⚕️ Medic_Checker.bat (Agetha Startup & Diagnostic Tool)
+
+**Medic_Checker.bat** is the startup and diagnostic wrapper for Agetha.exe. Instead of blindly launching the application, this script acts as a pre-flight checklist. It automatically sets up your environment, verifies system dependencies, auto-installs missing packages, and validates your configuration files before handing control over to `main.py`.
+
+### 🚀 Features & Health Check Pipeline
+
+When executed, the script runs through a rigorous 6-step diagnostic process to ensure a crash-free launch:
+
+* **Pre-Flight Check:** Ensures the script is running in the correct directory alongside `main.py`.
+* **Step 1: Python Validation:** Detects whether Python is installed and accessible via the `python` or `py -3` commands.
+* **Step 2: Virtual Environment Management:** Looks for an existing Python virtual environment (`venv`). If one is not found, it automatically creates and activates it to keep dependencies isolated.
+* **Step 3: Smart Dependency Installation:** Scans for the exact required packages (`pillow`, `pyautogui`, `pytesseract`, `numpy`, `pygame`, `requests`, `groq`, `mss`) and seamlessly installs only the missing ones, saving startup time on subsequent launches.
+* **Step 4: Tesseract OCR Detection:** Checks system PATH and default installation directories for Tesseract OCR. It flags a warning if missing, but allows Agetha to launch (without screen-reading capabilities).
+* **Step 5: Asset Verification:** Scans the `assets\` folder to ensure all 20 necessary UI elements (GIFs, fonts, icons) are present, preventing invisible or broken animations during runtime.
+* **Step 6: Configuration & Memory Check:**
+* Automatically generates the `memory\` folder if it doesn't exist.
+* Uses a lightweight inline Python script to parse `config.txt` and verify that either a Groq API key is present or that a Local AI (Ollama) model is properly defined.
+
+
+
+### 🛠️ Usage
+
+1. Place `Medic_Checker.bat` in the root directory of your Agetha Overhaul project (it must be in the same folder as `main.py`).
+2. Double-click the file to run it.
+3. The script will automatically launch Agetha once all checks pass. *(Agetha still not run automatic for now)*
+
+*Note: If Agetha crashes during runtime, the batch window will remain open and display the exact error code to help with debugging*.
+
+### ⚠️ Troubleshooting Warnings
+
+The checker uses color-coded terminal output to help you diagnose issues:
+
+* **[FAIL] (Red):** Critical errors that halt the launch (e.g., Python not installed, `main.py` missing, or venv creation failed).
+* **[WARN] (Yellow):** Non-critical issues that allow Agetha to run with limited functionality (e.g., missing Tesseract OCR, missing visual assets, or an unconfigured API key).
+* **[ OK ] (Green):** System checks passed successfully.
 
 ---
 
@@ -61,79 +190,6 @@ Agetha features a deep psychological state machine with variable severity durati
 
 * **`main.py` Context Injection:** Implemented a 4-layer context block injected every ambient scan: *Pattern Match Tags → Fallback Keywords → Active Window Title → Error Positions*.
 * **`ai_engine.py` Upgrades:** Added new screen context tag rules to `SYSTEM_PROMPT`. Added 5 new few-shots (VS Code commentary, spatial `move_window` to error coords, build failure reactions).
-
-## introducing Medic_Checker.bat (Agetha Startup & Diagnostic Tool)
-
-**Medic_Checker.bat** is the startup and diagnostic wrapper for Agetha.exe. Instead of blindly launching the application, this script acts as a pre-flight checklist. It automatically sets up your environment, verifies system dependencies, auto-installs missing packages, and validates your configuration files before handing control over to `main.py`.
-
----
-
-## 🚀 Features & Health Check Pipeline
-
-When executed, the script runs through a rigorous 6-step diagnostic process to ensure a crash-free launch:
-
-* 
-**Pre-Flight Check:** Ensures the script is running in the correct directory alongside `main.py`.
-
-
-* 
-**Step 1: Python Validation:** Detects whether Python is installed and accessible via the `python` or `py -3` commands.
-
-
-* **Step 2: Virtual Environment Management:** Looks for an existing Python virtual environment (`venv`). If one is not found, it automatically creates and activates it to keep dependencies isolated.
-
-
-* 
-**Step 3: Smart Dependency Installation:** Scans for the exact required packages (`pillow`, `pyautogui`, `pytesseract`, `numpy`, `pygame`, `requests`, `groq`, `mss`) and seamlessly installs only the missing ones, saving startup time on subsequent launches.
-
-
-* **Step 4: Tesseract OCR Detection:** Checks system PATH and default installation directories for Tesseract OCR. It flags a warning if missing, but allows Agetha to launch (without screen-reading capabilities).
-
-
-* 
-**Step 5: Asset Verification:** Scans the `assets\` folder to ensure all 20 necessary UI elements (GIFs, fonts, icons) are present, preventing invisible or broken animations during runtime.
-
-
-* 
-**Step 6: Configuration & Memory Check:** * Automatically generates the `memory\` folder if it doesn't exist.
-
-
-* Uses a lightweight inline Python script to parse `config.txt` and verify that either a Groq API key is present or that a Local AI (Ollama) model is properly defined.
-
-
-
-
-
----
-
-## 🛠️ Usage
-
-1. Place `Medic_Checker.bat` in the root directory of your Agetha Overhaul project (it must be in the same folder as `main.py`).
-
-
-2. Double-click the file to run it.
-3. The script will automatically launch Agetha once all checks pass. (Agetha still not run automatic for now)
-
-
-
-*Note: If Agetha crashes during runtime, the batch window will remain open and display the exact error code to help with debugging*.
-
----
-
-## ⚠️ Troubleshooting Warnings
-
-The checker uses color-coded terminal output to help you diagnose issues:
-
-* 
-**[FAIL] (Red):** Critical errors that halt the launch (e.g., Python not installed, `main.py` missing, or venv creation failed).
-
-
-* 
-**[WARN] (Yellow):** Non-critical issues that allow Agetha to run with limited functionality (e.g., missing Tesseract OCR, missing visual assets, or an unconfigured API key).
-
-
-* 
-**[ OK ] (Green):** System checks passed successfully.
 
 ### 🚀 Phase 2: Psychology & Window Mechanics
 
