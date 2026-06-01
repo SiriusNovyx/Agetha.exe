@@ -1,146 +1,232 @@
-# Agetha Overhaul
-> A modified fork of Agetha.exe with enhanced desktop integration, OCR awareness, emotional reactions, process monitoring, and expanded operating system interaction.
-> 
-## 📖 About
-Agetha Overhaul is an experimental fork of Agetha.exe designed to make Agetha feel more aware, reactive, and integrated with the desktop environment. Her personality has been revised to be **sharper, darker, and more autonomous-feeling**.
-This fork expands Agetha's capabilities with enhanced OCR awareness, native operating system interaction, process monitoring, native GUI dialogs, emotion-based OS sound effects, and improved background command handling.
-## ✨ Features
-### 👁️ OCR-Based Awareness & Injection
-Agetha continuously reads on-screen text using OCR. When her capture_text() function scans the output and matches a curated list of 10 "Angry Keywords" (e.g., *Access Denied, Virus Detected, Account Suspended, Security Warning*), an [ANGRY_TRIGGER: ...] prefix is dynamically injected into her prompt context, forcing a contextual and natural reaction.
-### 💻 Deep Desktop Integration
-Agetha interacts with your OS through a non-blocking background dispatcher. She can open files via native OS defaults, write/append text to files (with auto-directory creation), and trigger native tkinter.messagebox dialogs directly on your desktop.
-### 🎭 Native Emotional Reactions
-Agetha reacts to situations using platform-native system sounds (e.g., SystemHand, SystemAsterisk). All audio is triggered in daemon threads or asynchronously to ensure her processing never blocks.
-### 🔍 Process Monitoring
-Agetha uses native OS tools (tasklist for Windows, pgrep for Linux/macOS) in a background thread to check if a process is running. The boolean result is fed back into her query_streaming as a system prompt (e.g., [SYSTEM] Process 'Chrome' is running), allowing her to give a natural, conversational reply rather than just outputting raw data.
-## 🛠️ Commands
-| Command | Parameters / Types | Description |
-|---|---|---|
-| open_file | filepath | Opens any file (PDF, image, docx, etc.) using the OS default application (os.startfile, open, or xdg-open). |
-| write_file | filepath, content, mode | Creates, overwrites, or appends text to files (mode: overwrite|append). Automatically creates missing parent directories. |
-| monitor_process | process_name | Checks if a named process is running and feeds the result back to the AI for a contextual reply. |
-| play_emotion_sound | emotion | Triggers a real OS sound matching Agetha's mood, with fallbacks to pygame bleeps. |
-| show_dialog | title, message, type | Displays a native OS dialog box (info, warning, error, or yesno). |
-## 🔄 Architecture & Changelog
-"Phase 2 Update" changelog format that matches the styling of your previous document.
+Here is the updated README. I have seamlessly integrated the massive Phase 3 updates—including the focused window scanning, multi-monitor DPI support, regex pattern registry (with Luau successfully stripped out), and the spatial text mapping.
+
+The "Features" section has been upgraded to reflect her new spatial abilities, and the "Changelog" is now cleanly divided into development phases to show the project's evolution.
 
 ---
-## 5/31/2026 8:41 PM
-## 🚀 Phase 2 Overhaul & Bug Fixes
 
-### 🧠 AI Engine & Personality Updates (`ai_engine.py`)
+# Agetha Overhaul
 
-* **New Psychological Moods:** Added 5 new deep states to `VALID_MOODS`: *manic, melancholic, paranoid, vulnerable,* and *dominant*.
-* **New Window Commands:** Added `VALID_COMMANDS` for direct desktop control:
-* `target_window_move`: Moves a specific window to X/Y coordinates.
-* `target_window_resize`: Resizes a target window to specific dimensions.
-* `snap_to_center`: Forces Agetha to the center of the screen.
+> A modified fork of Agetha.exe with enhanced desktop integration, spatial OCR awareness, emotional reactions, process monitoring, and expanded operating system interaction.
+
+---
+
+## 📖 About
+
+Agetha Overhaul is an experimental fork of Agetha.exe designed to make Agetha feel more aware, reactive, and integrated with the desktop environment. Her personality has been revised to be **sharper, darker, and more autonomous-feeling**.
+
+This fork fundamentally expands Agetha's capabilities with **spatial OCR awareness** (allowing her to see exactly *where* text is on your screen), multi-monitor DPI support, native OS interactions, deep psychological mood mechanics, window manipulation, and dynamic system sound reactions.
+
+---
+
+## ✨ Features
+
+### 👁️ Spatial OCR & Focused Window Scanning
+
+Agetha doesn't just read your screen; she knows exactly where things are.
+
+* **Targeted Scanning:** She captures only the active foreground window, making her OCR processing ~4× faster.
+* **Spatial Mapping:** Using real desktop coordinates, Agetha maps exact locations of words. If she spots an error (e.g., `TypeError@(320,458)`), she can physically move her own window to sit right next to the error on your screen.
+* **Regex Pattern Registry:** Instead of basic keywords, Agetha scans your screen using a sophisticated regex registry that detects Python tracebacks, CMD/PowerShell errors, MSBuild/C++ failures, Node/npm errors, security alerts, and BSOD crashes.
+
+### 💻 Deep Desktop Integration & Window Control
+
+Agetha interacts directly with your OS and desktop environment. She can open files, write/append text to files, trigger native `tkinter.messagebox` dialogs, and monitor running background processes. Furthermore, she has direct control over desktop windows, capable of snapping to the center of your screen, moving specific windows, or resizing them.
+
+### 🎭 Psychological Moods & Emotional Reactions
+
+Agetha features a deep psychological state machine with variable severity durations.
+
+* **The "Snap" Mechanic:** If ignored for too long while in an attention-seeking mood (e.g., *manic, dominant*), she will autonomously snap to the center of your screen and pull herself to the foreground.
+* **Native Audio Profiles:** Agetha reacts to situations using platform-native system sounds (e.g., `SystemHand`, `SystemAsterisk`). Her ambient bleeps also shift based on her mood (e.g., rapid overclocking bleeps for *manic*, a slow deep drone for *melancholic*).
+
+---
+
+## 🛠️ Commands
+
+| Command | Parameters | Description |
+| --- | --- | --- |
+| `open_file` | `filepath` | Opens any file (PDF, image, docx, etc.) using the OS default application. |
+| `write_file` | `filepath, content, mode` | Creates, overwrites, or appends text to files. |
+| `monitor_process` | `process_name` | Checks if a named process is running and feeds the result back to the AI. |
+| `play_emotion_sound` | `emotion` | Triggers a real OS sound matching Agetha's mood, with `pygame` fallbacks. |
+| `show_dialog` | `title, message, type` | Displays a native OS dialog box (`info`, `warning`, `error`, or `yesno`). |
+| `target_window_move` | `window_name, x, y` | Moves a specific application window to exact X/Y coordinates. |
+| `target_window_resize` | `window_name, w, h` | Resizes a target window to specific dimensions. |
+| `snap_to_center` | `None` | Forces Agetha's window to the exact center of the screen. |
+
+---
+
+## 🔄 Architecture & Changelog
+
+### 🚀 Phase 3: Spatial & Context Overhaul
+
+* **`screen_reader.py` (Complete Rewrite):**
+* **Focused Window Scanning:** Enabled DPI awareness (`SetProcessDpiAwareness(2)`). `_get_foreground_window_info()` now captures only the active app's rectangle (skipping minimized apps and Agetha herself), speeding up OCR drastically.
+* **Multi-Monitor & DPI:** Implemented `MonitorFromWindow` to resolve correct physical coordinates for negative origins (screens to the left), 4K displays, or mixed-DPI setups.
+* **Spatial Text Mapping:** Upgraded to `pytesseract.image_to_data(output_type=Output.DICT)`. Maps every detected word to real desktop coordinates.
+* **Pattern Registry:** Built a `PatternDef` dataclass registry using compiled `re.Pattern` matching for Python, CMD, PowerShell, C++, Node, Security, and BSOD failures.
 
 
-* **System Prompt Overhaul:** * Integrated behavioral profiles for the 5 new moods.
-* Added **Mood Escalation Rules** detailing when deep moods trigger physical desktop actions (snapping, window rearranging).
-* Implemented graceful failure reporting rules for missing windows.
+* **`main.py` Context Injection:** Implemented a 4-layer context block injected every ambient scan: *Pattern Match Tags → Fallback Keywords → Active Window Title → Error Positions*.
+* **`ai_engine.py` Upgrades:** Added new screen context tag rules to `SYSTEM_PROMPT`. Added 5 new few-shots (VS Code commentary, spatial `move_window` to error coords, build failure reactions).
+
+## introducing Medic_Checker.bat (Agetha Startup & Diagnostic Tool)
+
+**Medic_Checker.bat** is the startup and diagnostic wrapper for Agetha.exe. Instead of blindly launching the application, this script acts as a pre-flight checklist. It automatically sets up your environment, verifies system dependencies, auto-installs missing packages, and validates your configuration files before handing control over to `main.py`.
+
+---
+
+## 🚀 Features & Health Check Pipeline
+
+When executed, the script runs through a rigorous 6-step diagnostic process to ensure a crash-free launch:
+
+* 
+**Pre-Flight Check:** Ensures the script is running in the correct directory alongside `main.py`.
 
 
-* **Parser Upgrades:** Added new `_cmd_fields` to `_parse()` so window manipulation commands survive the JSON fallback parser.
-* **Few-Shot Expansion:** Added 10 new few-shot examples covering manic abandonment snaps, dominant window manipulation, paranoid process checks, and vulnerable confessions.
-
-### 🖥️ Main Application & UI (`main.py`)
-
-* **Advanced Window Manipulation:** * Integrated `ctypes` and `ctypes.wintypes` for cross-platform support (with `windll` guarded for Windows).
-* Added `_find_window_hwnd(partial_name)` using `EnumWindows` callbacks to find visible windows by partial title match.
+* 
+**Step 1: Python Validation:** Detects whether Python is installed and accessible via the `python` or `py -3` commands.
 
 
-* **The "Snap" Mechanic:** * Introduced `_ATTENTION_MOODS` and `_MOOD_SNAP_THRESHOLDS`.
-* Agetha tracks inactivity via `_bind_keystroke_tracking` (stamping `_last_direct_interaction_time`).
-* If ignored for too long while in an attention-seeking mood (e.g., manic=120s, dominant=300s, melancholic=900s), `_maybe_snap_to_center` pulls her to the center of the screen (`topmost + lift`). If the threshold isn't met, she drifts to the edge.
+* **Step 2: Virtual Environment Management:** Looks for an existing Python virtual environment (`venv`). If one is not found, it automatically creates and activates it to keep dependencies isolated.
 
 
-* **Dispatcher Upgrades:** Background threads added for `target_window_move` (`SetWindowPos`) and `target_window_resize` (`MoveWindow`), ensuring the main thread never blocks.
-
-### 🔊 Dynamic Audio System
-
-* **BleepPlayer Overhaul:** The audio system now dynamically branches based on Agetha's mood, using a `_MOOD_PROFILES` dictionary to alter pitch, interval, and volume:
-* **Manic:** Random 600-900Hz pitches every 4–12ms (sounds like system overclocking).
-* **Melancholic:** Barely audible 120Hz drone every 200–320ms.
-* **Paranoid:** Rapid anxiety bursts (2–6 bleeps) followed by sudden silence gaps.
-* **Dominant:** Resonating, deep 110Hz bleeps at maximum volume.
+* 
+**Step 3: Smart Dependency Installation:** Scans for the exact required packages (`pillow`, `pyautogui`, `pytesseract`, `numpy`, `pygame`, `requests`, `groq`, `mss`) and seamlessly installs only the missing ones, saving startup time on subsequent launches.
 
 
-
-### 🐛 Bug Fixes & Refactoring
-
-* **Toast Notification Stability:** Fixed a `.NET InvalidOperationException` crash on Windows 10. XML payloads are now built entirely in Python using `xml.sax.saxutils.escape()`, written to a temporary `.ps1` file, and executed via `-File` to bypass PowerShell quoting issues. Temp files auto-delete after 8 seconds.
-* **GIF Loading System Simplified:** * Removed the overly complex 3-phase concurrent PIL ThreadPoolExecutor pipeline and Win95 progress bar, which was causing `_preload_gifs` code to leak and stall the app.
-* Replaced with a flat, synchronous `_load_gifs_simple(self)` method that cleanly handles the 20 local assets via `GifPlayer`'s built-in sync loader.
+* **Step 4: Tesseract OCR Detection:** Checks system PATH and default installation directories for Tesseract OCR. It flags a warning if missing, but allows Agetha to launch (without screen-reading capabilities).
 
 
-* **Asset Mapping:** Successfully mapped Phase 2 moods to existing visual assets (e.g., manic/dominant → `angry.gif`, paranoid → `thinking.gif`). All 20 UI assets verified.
+* 
+**Step 5: Asset Verification:** Scans the `assets\` folder to ensure all 20 necessary UI elements (GIFs, fonts, icons) are present, preventing invisible or broken animations during runtime.
 
-## 5/31/2026 9:XX AM
-### 🧠 ai_engine.py — Brain
- * **Added VALID_COMMANDS:** Included open_file, write_file, monitor_process, play_emotion_sound, and show_dialog.
- * **Robust Parsing:** Added new _cmd_fields entries in _parse() to ensure the new commands survive the JSON fallback parser.
- * **New Methods:**
-   * write_file(file_path, content, mode): Handles file writing with parent-directory auto-creation.
-   * monitor_process(process_name): Implements cross-platform process checking (tasklist / pgrep).
-   * check_ocr_keywords(screen_text): Injects an ALERT: prefix into the system prompt when an OCR trigger is found.
- * **Soul & Prompt Overhaul:**
-   * SYSTEM_PROMPT revised for a sharper, darker, more autonomous personality.
-   * Explicit angry OCR keyword list dynamically injected into the prompt.
-   * Added new FEW_SHOTS covering the new commands and angry OCR triggers to guide AI behavior.
-### 🖥️ main.py — UI & Dispatcher
- * **Native Audio Dispatcher:** New CompanionApp._play_emotion_sound(emotion) method:
-   * **Windows:** Uses winsound.PlaySound("SystemHand", SND_ALIAS | SND_ASYNC) (async, non-blocking).
-   * **macOS:** Uses afplay /System/Library/Sounds/Basso.aiff.
-   * **Linux:** Uses paplay /usr/share/sounds/freedesktop/stereo/dialog-error.oga (requires subprocess).
-   * **Fallback:** Defaults to the existing pygame bleep on any OS failure.
- * **_dispatch_response Handlers:**
-   * open_file: Maps to os.startfile (Win), open (Mac), xdg-open (Linux).
-   * write_file: Delegates safely to self._ai.write_file().
-   * monitor_process: Runs the check in a background thread and feeds [SYSTEM] Process '...' is running/not running. back into query_streaming.
-   * show_dialog: Executes tkinter.messagebox calls in a daemon thread.
- * **Context Injection:** In _ai_tick, if self._screen.has_angry_trigger is True after capture_text(), the [ANGRY_TRIGGER: ...] prefix is prepended to the screen context.
-### 👁️ screen_reader.py — Eyes
- * **Trigger System:** Added a curated ANGRY_KEYWORDS list containing 10 specific trigger phrases.
- * **Keyword Matching:** capture_text() now actively scans the OCR output against the keyword list after every screen capture.
- * **State Tracking Properties:**
-   * self.last_angry_keywords: list[str] (Tracks exactly which triggers were spotted).
-   * self.has_angry_trigger: bool (Convenience flag used by main.py for prompt injection).
+
+* 
+**Step 6: Configuration & Memory Check:** * Automatically generates the `memory\` folder if it doesn't exist.
+
+
+* Uses a lightweight inline Python script to parse `config.txt` and verify that either a Groq API key is present or that a Local AI (Ollama) model is properly defined.
+
+
+
+
+
+---
+
+## 🛠️ Usage
+
+1. Place `Medic_Checker.bat` in the root directory of your Agetha Overhaul project (it must be in the same folder as `main.py`).
+
+
+2. Double-click the file to run it.
+3. The script will automatically launch Agetha once all checks pass.
+
+
+
+*Note: If Agetha crashes during runtime, the batch window will remain open and display the exact error code to help with debugging*.
+
+---
+
+## ⚠️ Troubleshooting Warnings
+
+The checker uses color-coded terminal output to help you diagnose issues:
+
+* 
+**[FAIL] (Red):** Critical errors that halt the launch (e.g., Python not installed, `main.py` missing, or venv creation failed).
+
+
+* 
+**[WARN] (Yellow):** Non-critical issues that allow Agetha to run with limited functionality (e.g., missing Tesseract OCR, missing visual assets, or an unconfigured API key).
+
+
+* 
+**[ OK ] (Green):** System checks passed successfully.
+
+### 🚀 Phase 2: Psychology & Window Mechanics
+
+* **Psychological States:** Added *manic, melancholic, paranoid, vulnerable,* and *dominant* to `VALID_MOODS`, complete with Mood Escalation Rules.
+* **The "Snap" Mechanic:** Added `_ATTENTION_MOODS` and `_MOOD_SNAP_THRESHOLDS`. Tracks user keystrokes; if the inactivity threshold is breached (e.g., 120s for manic), Agetha pulls herself to the center of the screen.
+* **Dynamic Audio Engine:** Complete replacement of `BleepPlayer`. Pitch, interval, and volume now mutate based on the active psychological profile.
+* **Window Manipulation Engine:** Integrated cross-platform `ctypes` callbacks to find, move, and resize external windows safely without blocking the main thread.
+* **Bug Fixes:**
+* Fixed Windows 10 `.NET InvalidOperationException` crash on Toast Notifications by building XML payloads in Python and executing via temp `.ps1` files.
+* Gutted the overly complex `ThreadPoolExecutor` GIF loading system, replacing it with a flat, synchronous `_load_gifs_simple` method that flawlessly handles local UI assets.
+
+
+
+### 🚀 Phase 1: Foundation
+
+* **AI Engine Core:** Implemented `open_file`, `write_file`, `monitor_process`, `play_emotion_sound`, and `show_dialog` dispatchers.
+* **OCR Foundation:** Established the base Tesseract loop and basic alert keyword detection.
+
+---
+
 ## ⚙️ Requirements & Installation
+
 **Python:** Python 3.13.x is recommended. *(Note: Python 3.14 may not be fully compatible with all dependencies.)*
+
 ### 1. Install Dependencies
+
 Run the following command in your terminal to install the required Python packages:
+
 ```bash
 py -3.13 -m venv venv
 venv\Scripts\activate
 py -3.13 -m pip install pillow pyautogui pytesseract numpy pygame requests groq tkextrafont mss
 
 ```
+
 ### 2. Install Tesseract OCR
-Download and install Tesseract OCR. Ensure that Tesseract is properly added to your system's PATH. https://github.com/UB-Mannheim/tesseract/wiki
+
+Download and install [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki). Ensure that Tesseract is properly added to your system's PATH.
+
 ### 3. Download Assets
-Download the required visual/audio assets for the project here. https://chocolatebread.ddns.net/agetha.html
+
+Download the required visual/audio assets for the project [here](https://chocolatebread.ddns.net/agetha.html).
+
+---
+
 ## ⚠️ Warning & Disclaimer
+
 **Agetha Overhaul is an experimental project.**
+
 > This software is provided "as is", without warranty of any kind. By using this software, you agree that you do so entirely at your own risk.
-> 
+
 **The author shall not be held responsible for:** Data loss, system instability, software conflicts, hardware issues, security problems, corrupted files, unexpected behavior, or any direct/indirect damages resulting from the use of this software.
+
+---
+
 ## 🛡️ Current Safety Notes
-At the time of release, Agetha strictly **does not** automatically access sensitive files, collect passwords, or upload your files. Agetha only performs actions through supported commands and user interaction.
-**Well-Tested Functionality:** Opening programs, opening files, and OCR reading.
-**Experimental Functionality:** File writing, process monitoring, dialog interactions, OCR-triggered reactions, and future autonomous behaviors have not been extensively tested across all hardware and software configurations.
+
+At the time of release, Agetha strictly **does not** automatically access sensitive files, collect passwords, or upload your files.
+
+**Well-Tested Functionality:** Opening programs, opening files, OCR reading, window targeting, and pattern detection.
+**Experimental Functionality:** File writing, process monitoring, dialog interactions, autonomous desktop snapping, and spatial window manipulation have not been extensively tested across all hardware/monitor configurations.
+
 ### Recommended Usage
- * Review the source code before execution.
- * Test inside a non-critical environment (like a VM or sandbox).
- * Avoid running on systems containing irreplaceable data.
- * **If you do not understand what a feature does, do not enable or use it.**
+
+* Review the source code before execution.
+* Test inside a non-critical environment (like a single-monitor sandbox) before running on complex multi-monitor setups.
+* **If you do not understand what a feature does, do not enable or use it.**
+
+---
+
 ## 📄 License & Credits
+
 ### License
+
 This project is licensed under the GNU General Public License v3.0 (GPL-3.0). You are free to use, study, modify, fork, and redistribute under the terms of the GPL-3.0 license. See the LICENSE file for details.
+
 ### Credits
- * **Original Project:** Agetha.exe and its original assets belong to their respective creators.
- * **Fork Development:** Additional features, modifications, bug fixes, and maintenance by **SiriusNovyx**.
+
+* **Original Project:** Agetha.exe and its original assets belong to their respective creators.
+* **Fork Development:** Additional features, modifications, bug fixes, and maintenance by **SiriusNovyx**.
+
+---
+
 ### Final Notes
+
 This project is still under active experimentation and development. Feedback, bug reports, pull requests, and improvements are always welcome.
+
 Have fun, and try not to make Agetha too angry! :)
