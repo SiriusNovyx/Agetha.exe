@@ -3,7 +3,6 @@
 > A modified fork of Agetha.exe with enhanced desktop integration, spatial OCR awareness, emotional reactions, process monitoring, and expanded operating system interaction.
 
 
-
 ## 📖 About
 
 Agetha Overhaul is an experimental fork of Agetha.exe designed to make Agetha feel more aware, reactive, and integrated with the desktop environment. Her personality has been revised to be **sharper, darker, and more autonomous-feeling**.
@@ -43,99 +42,47 @@ Agetha's command library has been drastically expanded. She is capable of execut
 
 | Command | Parameters | Description |
 | --- | --- | --- |
-| `open_file` | `path` | Opens any file (PDF, image, docx, etc.) using the OS default application.
-
- |
-| `write_file` | `file_path, content, mode` | Creates, overwrites, or appends text to files.
-
- |
-| `create_folder` | `path` | Creates a new directory on the system.
-
- |
-| `create_file` | `file_path, content` | Creates a file with specific content, automatically generating parent directories if needed.
-
- |
-| `delete_file` | `path` | Deletes a specified file or completely removes a directory.
-
- |
-| `rename_file` | `path, new_name` | Renames a file or moves it to a new location.
-
- |
-| `list_dir` | `path` | Lists the contents of a directory and displays them in an Agetha popup.
-
- |
-| `read_document` | `path` | Reads the content of a document and feeds it back into Agetha's AI context.
-
- |
-| `run_command` | `cmd, shell` | Executes arbitrary terminal/shell commands (`subprocess.run`) and reads stdout/stderr.
-
- |
+| `open_file` | `path` | Opens any file (PDF, image, docx, etc.) using the OS default application. |
+| `write_file` | `file_path, content, mode` | Creates, overwrites, or appends text to files. |
+| `create_folder` | `path` | Creates a new directory on the system. |
+| `create_file` | `file_path, content` | Creates a file with specific content, automatically generating parent directories if needed. |
+| `delete_file` | `path` | Deletes a specified file or completely removes a directory. |
+| `rename_file` | `path, new_name` | Renames a file or moves it to a new location. |
+| `list_dir` | `path` | Lists the contents of a directory and displays them in an Agetha popup. |
+| `read_document` | `path` | Reads the content of a document and feeds it back into Agetha's AI context. |
+| `run_command` | `cmd, shell` | Executes arbitrary terminal/shell commands (`subprocess.run`) and reads stdout/stderr. |
 
 ### App, Web & Process Management
 
 | Command | Parameters | Description |
 | --- | --- | --- |
-| `open_app` | `app` | Launches an application executable directly.
-
- |
-| `force_close` | `app/process/name` | Force-kills a running application using `taskkill` (Windows) or `pkill` (Mac/Linux).
-
- |
-| `monitor_process` | `process_name` | Checks if a named process is running and feeds the result back to the AI.
-
- |
-| `open_browser` | `url, search, engine` | Opens a URL directly or searches queries via Google, DuckDuckGo, or Bing.
-
- |
+| `open_app` | `app` | Launches an application executable directly. |
+| `force_close` | `app/process/name` | Force-kills a running application using `taskkill` (Windows) or `pkill` (Mac/Linux). |
+| `monitor_process` | `process_name` | Checks if a named process is running and feeds the result back to the AI. |
+| `open_browser` | `url, search, engine` | Opens a URL directly or searches queries via Google, DuckDuckGo, or Bing. |
 
 ### Desktop & Window Manipulation
 
 | Command | Parameters | Description |
 | --- | --- | --- |
-| `target_window_move` | `target_app, x, y` | Moves a specific application window to exact X/Y coordinates via `ctypes`.
-
- |
-| `target_window_resize` | `target_app, w, h` | Resizes a target window to specific dimensions via `ctypes`.
-
- |
-| `move_window` | `x, y, direction` | Moves Agetha's own window to specific coordinates or relative positions (left, right, up, down, center).
-
- |
-| `snap_to_center` | `None` | Forces Agetha's window to the exact center of the screen, pulling her to the top layer.
-
- |
+| `target_window_move` | `target_app, x, y` | Moves a specific application window to exact X/Y coordinates via `ctypes`. |
+| `target_window_resize` | `target_app, w, h` | Resizes a target window to specific dimensions via `ctypes`. |
+| `move_window` | `x, y, direction` | Moves Agetha's own window to specific coordinates or relative positions (left, right, up, down, center). |
+| `snap_to_center` | `None` | Forces Agetha's window to the exact center of the screen, pulling her to the top layer. |
 
 ### Media, Interface & OS Interaction
 
 | Command | Parameters | Description |
 | --- | --- | --- |
-| `take_screenshot` | `save_path` | Captures the current screen state and saves it as a PNG image.
-
- |
-| `set_clipboard` | `text` | Clears the OS clipboard and appends the specified text.
-
- |
-| `show_notification` | `title, message` | Triggers native OS Toast Notifications (PowerShell XML on Windows, `osascript` on Mac, `notify-send` on Linux).
-
- |
-| `show_dialog` | `title, message, type` | Displays a native OS dialog box (`info`, `warning`, `error`, or `yesno`).
-
- |
-| `play_emotion_sound` | `emotion` | Triggers a real OS sound matching Agetha's mood, with `pygame` fallbacks.
-
- |
-| `play_sound` | `sound` | Plays built-in Agetha frequencies (`beep`, `chime`, `error`, `notify`).
-
- |
-| `show_error_gif` | `path` | Overrides the current animation with an error visual and locks Agetha in an always-on-top idle state.
-
- |
-| `request_path` | `path_hint` | Displays a popup hinting at a file path.
-
- |
-| `request_screen_read` | `None` | Forces an immediate manual OCR screen capture.
-
- |
+| `take_screenshot` | `save_path` | Captures the current screen state and saves it as a PNG image. |
+| `set_clipboard` | `text` | Clears the OS clipboard and appends the specified text. |
+| `show_notification` | `title, message` | Triggers native OS Toast Notifications (PowerShell XML on Windows, `osascript` on Mac, `notify-send` on Linux). |
+| `show_dialog` | `title, message, type` | Displays a native OS dialog box (`info`, `warning`, `error`, or `yesno`). |
+| `play_emotion_sound` | `emotion` | Triggers a real OS sound matching Agetha's mood, with `pygame` fallbacks. |
+| `play_sound` | `sound` | Plays built-in Agetha frequencies (`beep`, `chime`, `error`, `notify`). |
+| `show_error_gif` | `path` | Overrides the current animation with an error visual and locks Agetha in an always-on-top idle state. |
+| `request_path` | `path_hint` | Displays a popup hinting at a file path. |
+| `request_screen_read` | `None` | Forces an immediate manual OCR screen capture. |
 
 ---
 
