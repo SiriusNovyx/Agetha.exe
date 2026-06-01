@@ -110,7 +110,7 @@ When executed, the script runs through a rigorous 6-step diagnostic process to e
 
 1. Place `Medic_Checker.bat` in the root directory of your Agetha Overhaul project (it must be in the same folder as `main.py`).
 2. Double-click the file to run it.
-3. The script will automatically launch Agetha once all checks pass. *(Agetha still not run automatic for now)*
+3. The script will automatically launch Agetha once all checks pass.
 
 *Note: If Agetha crashes during runtime, the batch window will remain open and display the exact error code to help with debugging*.
 
