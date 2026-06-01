@@ -1,10 +1,6 @@
----
-
 # Agetha Overhaul
 
 > A modified fork of Agetha.exe with enhanced desktop integration, spatial OCR awareness, emotional reactions, process monitoring, and expanded operating system interaction.
-
----
 
 ## 📖 About
 
