@@ -19,7 +19,7 @@ Agetha doesn't just read your screen; she knows exactly where things are.
 
 * **Targeted Scanning:** She captures only the active foreground window, making her OCR processing ~4× faster.
 * **Spatial Mapping:** Using real desktop coordinates, Agetha maps exact locations of words. If she spots an error (e.g., `TypeError@(320,458)`), she can physically move her own window to sit right next to the error on your screen.
-* **Regex Pattern Registry:** Instead of basic keywords, Agetha scans your screen using a sophisticated regex registry that detects Python tracebacks, CMD/PowerShell errors, MSBuild/C++ failures, Node/npm errors, security alerts, and BSOD crashes.
+* **Regex Pattern Registry:** Instead of basic keywords, Agetha scans your screen using a sophisticated regex registry that detects Python tracebacks, CMD/PowerShell errors, MSBuild/C++ failures, Node/npm errors, security alerts, and BSOD crashes (i dont know how she gonna detect lol).
 
 ### 💻 Deep Desktop Integration & Window Control
 
