@@ -53,7 +53,7 @@ echo.
 :: ─────────────────────────────────────────────────────────────────
 echo  [2 / 6]  Virtual environment
 if not exist "venv\Scripts\activate.bat" (
-echo  [    ]  Not found — creating venv ^(first run only^)...
+echo  [    ]  Not found - creating venv ^(first run only^)...
 !PYTHON_CMD! -m venv venv
 if !errorlevel! NEQ 0 (
 color 0C
@@ -98,7 +98,7 @@ if "!MISSING!"=="" (
 echo  [ OK ]  All required packages already installed.
 ) else (
 echo  [    ]  Missing:!MISSING!
-echo  [    ]  Installing — this may take a moment...
+echo  [    ]  Installing - this may take a moment...
 pip install !MISSING! --quiet --disable-pip-version-check
 if !errorlevel! NEQ 0 (
 color 0C
@@ -114,7 +114,7 @@ echo  [ OK ]  Packages installed successfully.
 echo.
 
 :: ─────────────────────────────────────────────────────────────────
-::  4 / 6  Tesseract OCR  (screen reader — optional but recommended)
+::  4 / 6  Tesseract OCR  (screen reader - optional but recommended)
 :: ─────────────────────────────────────────────────────────────────
 echo  [4 / 6]  Tesseract OCR  (screen reader)
 set "TESS=0"
@@ -130,7 +130,7 @@ echo  [WARN]  Tesseract is not installed.
 echo  [    ]  Agetha will run but cannot read your screen.
 echo  [    ]  Install it here ^(use the Windows .exe installer^):
 echo  [    ]  https://github.com/UB-Mannheim/tesseract/wiki
-echo  [    ]  Default install path is fine — no extra config needed.
+echo  [    ]  Default install path is fine - no extra config needed.
 color 0A
 )
 echo.
@@ -165,7 +165,7 @@ echo.
 :: ─────────────────────────────────────────────────────────────────
 echo  [6 / 6]  Config ^& runtime files
 
-:: memory\ — stores long-term memories between sessions
+:: memory\ - stores long-term memories between sessions
 if not exist "memory\" (
 mkdir memory
 echo  [ OK ]  memory\ directory created.
@@ -173,7 +173,7 @@ echo  [ OK ]  memory\ directory created.
 echo  [ OK ]  memory\ exists.
 )
 
-:: config.txt — check if API key or local AI is configured
+:: config.txt - check if API key or local AI is configured
 if not exist "config.txt" (
 color 0E
 echo  [WARN]  config.txt not found.
@@ -189,9 +189,9 @@ color 0A
     del agetha_cfgcheck.tmp >nul 2>&1
 
 if "!CFG_STATUS!"=="SET" (
-    echo  [ OK ]  config.txt  —  Groq API key is configured.
+    echo  [ OK ]  config.txt  -  Groq API key is configured.
 ) else if "!CFG_STATUS!"=="LOCAL" (
-    echo  [ OK ]  config.txt  —  Local AI ^(Ollama^) mode is set.
+    echo  [ OK ]  config.txt  -  Local AI ^(Ollama^) mode is set.
 ) else if "!CFG_STATUS!"=="LOCAL_NO_MODEL" (
     color 0E
     echo  [WARN]  USE_LOCAL_AI = yes but LOCAL_AI_MODEL is blank.
