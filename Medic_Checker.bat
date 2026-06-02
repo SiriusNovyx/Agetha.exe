@@ -92,6 +92,7 @@ pip show pygame       >nul 2>&1 || set "MISSING=!MISSING! pygame"
 pip show requests     >nul 2>&1 || set "MISSING=!MISSING! requests"
 pip show groq         >nul 2>&1 || set "MISSING=!MISSING! groq"
 pip show mss          >nul 2>&1 || set "MISSING=!MISSING! mss"
+pip show tkextrafont  >nul 2>&1 || set "MISSING=!MISSING! tkextrafont"
 
 if "!MISSING!"=="" (
 echo  [ OK ]  All required packages already installed.
@@ -165,7 +166,7 @@ echo.
 echo  [6 / 6]  Config ^& runtime files
 
 :: memory\ — stores long-term memories between sessions
-if not exist "memory" (
+if not exist "memory\" (
 mkdir memory
 echo  [ OK ]  memory\ directory created.
 ) else (
