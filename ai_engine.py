@@ -20,6 +20,24 @@ try:
 except ImportError:
     GROQ_OK = False
 
+# ── Dual-layer memory subsystem ───────────────────────────────────────────────
+# Standard-library only (os, json, datetime, threading) — no binary dependencies.
+# Provides soul.md (static identity) + episodic_memory.json (dynamic context).
+# Falls back gracefully if the module is missing so ai_engine.py still boots.
+try:
+    from memory_system import (
+        build_system_prompt as _ms_build_system_prompt,
+        log_memory          as _ms_log_memory,
+        get_recent_memories as _ms_get_recent_memories,
+        get_memory_stats    as _ms_get_memory_stats,
+        clear_episodic      as _ms_clear_episodic,
+    )
+    _MEMORY_SYSTEM_AVAILABLE = True
+    print("[AIEngine] memory_system loaded — dual-layer memory active.")
+except ImportError:
+    _MEMORY_SYSTEM_AVAILABLE = False
+    print("[AIEngine] memory_system.py not found — falling back to legacy memory.txt.")
+
 
 def native_error_popup(title: str, message: str) -> None:
     """Show a native OS error dialog (Windows MessageBoxW with error icon, or tkinter fallback)."""
@@ -699,7 +717,20 @@ ANIMATION_SPEED = 0.6
                     summary = summary[:247].rsplit(" ", 1)[0] + "..."
                 if not summary.endswith('.'):
                     summary += '.'
+
+                # ── Write condensed history to both memory layers ─────────
+                # Legacy flat file (always kept for backward compatibility
+                # with users who do not have memory_system.py installed).
                 self._save_memory(summary)
+
+                # New episodic JSON layer: tagged as "system" source since
+                # this is an internal condensation event, not a user statement.
+                if _MEMORY_SYSTEM_AVAILABLE:
+                    _ms_log_memory(
+                        f"[condensed history] {summary}",
+                        source="system",
+                    )
+
                 print(f"[AIEngine] Condensed {len(to_condense)} turns → memory ({len(snippets)} user msgs)")
             self._history = self._history[-limit:]
 
@@ -784,24 +815,53 @@ ANIMATION_SPEED = 0.6
         inactivity_min = self._get_inactivity_seconds() // 60
         now = datetime.now().strftime("%A, %B %d %Y - %H:%M")
 
-        memories = self._load_memories()
-        system = SYSTEM_PROMPT
+        # ── System prompt construction ────────────────────────────────────────
+        # Dual-layer build when memory_system is available:
+        #   Layer 1 — soul.md        : static identity, personality, mood rules
+        #   Layer 2 — SYSTEM_PROMPT  : command format, valid JSON shapes
+        #   Layer 3 — episodic JSON  : recent interaction context (last 10)
+        #
+        # Falls back to the legacy memory.txt path when memory_system.py is
+        # absent (e.g. partial installation) so the engine never silently breaks.
+        if _MEMORY_SYSTEM_AVAILABLE:
+            system = _ms_build_system_prompt(SYSTEM_PROMPT)
+        else:
+            # ── Legacy path: flat memory.txt ──────────────────────────────
+            memories = self._load_memories()
+            system   = SYSTEM_PROMPT
+            if memories:
+                system = (
+                    f"MEMORY:\n{memories}\n\n"
+                    "MEMORY_INSTRUCTIONS: summary_memory key only, "
+                    "one concise sentence (5–30 words).\n\n"
+                    + system
+                )
 
-        # Inject OCR anger flag into system context
+        # ── Context modifiers applied on top of the base system prompt ────────
+        # These are injected AFTER the soul/command/memory merge so they always
+        # appear at the top of the final prompt, giving them highest priority.
+
+        # Phase 3 OCR pattern-match alert: tell the LLM a known trigger was seen
         if screen_context and check_ocr_keywords(screen_context):
-            system = "ALERT: ANGRY KEYWORD DETECTED IN SCREEN. React with angry mood + play_emotion_sound angry.\n\n" + system
+            system = (
+                "ALERT: ANGRY KEYWORD DETECTED IN SCREEN. "
+                "React with angry mood + play_emotion_sound angry.\n\n"
+                + system
+            )
 
+        # Character list from characters.txt (optional companion feature)
         if getattr(self, "_compact_chars", ""):
             system = (
                 f"CHARACTERS: {self._compact_chars}\n\n"
-                "To move the app window, emit a JSON command: {\"command\":\"move_window\", \"direction\":\"left\"} "
+                "To move the app window, emit a JSON command: "
+                "{\"command\":\"move_window\", \"direction\":\"left\"} "
                 "or provide coordinates: {\"command\":\"move_window\", \"x\":100, \"y\":200}.\n\n"
-                "If the user has been idle a long time, you may say 'I'm still waiting' or 'I'm bored'.\n\n"
+                "If the user has been idle a long time, you may say "
+                "'I'm still waiting' or 'I'm bored'.\n\n"
                 + system
             )
-        if memories:
-            system = f"MEMORY:\n{memories}\n\nMEMORY_INSTRUCTIONS: summary_memory key only, one concise sentence (5–30 words).\n\n{system}"
 
+        # ── Build the user-turn string ─────────────────────────────────────────
         parts = [f"Time: {now}"]
         if not is_user and inactivity_min >= 60:
             parts.append(f"Inactive: {inactivity_min} minutes.")
@@ -1078,13 +1138,26 @@ ANIMATION_SPEED = 0.6
             result["segments"] = _filter_segments(result["segments"], raw)
             if not result["segments"]: result["command"] = "idle"
 
-        # Persist model-supplied memory
+        # ── Persist model-supplied memory ─────────────────────────────────────
+        # When the LLM includes a "summary_memory" key in its JSON response
+        # (e.g. after the user says their name), we save it to both layers:
+        #   - legacy memory.txt  : backward-compat for existing installations
+        #   - episodic JSON      : structured, timestamped, token-efficient
         try:
             if isinstance(obj, dict):
                 mem = obj.get("summary_memory") or obj.get("summary")
                 if mem and isinstance(mem, str) and mem.strip():
-                    self._save_memory(mem.strip())
-        except Exception: pass
+                    clean_mem = mem.strip()
+
+                    # Legacy flat-file write (always performed)
+                    self._save_memory(clean_mem)
+
+                    # Structured episodic write (new system)
+                    if _MEMORY_SYSTEM_AVAILABLE:
+                        _ms_log_memory(clean_mem, source="ai")
+
+        except Exception:
+            pass
 
         # Translate run_command move_window invocations into structured move_window
         try:
