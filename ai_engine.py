@@ -53,7 +53,10 @@ def native_error_popup(title: str, message: str) -> None:
         from tkinter import messagebox as _mb
         _r = _tk.Tk()
         _r.withdraw()
-        _r.attributes("-topmost", True)
+        try:
+            _r.attributes("-topmost", True)
+        except Exception:
+            pass
         _mb.showerror(title, message, parent=_r)
         _r.destroy()
     except Exception:
@@ -555,7 +558,11 @@ ANIMATION_SPEED = 0.6
         try:
             import tkinter as tk
             from tkinter import messagebox
-            root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+            root = tk.Tk(); root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
             messagebox.showinfo(title, msg, parent=root); root.destroy()
         except Exception as e:
             print(f"[AIEngine] Could not show setup popup: {e}")
