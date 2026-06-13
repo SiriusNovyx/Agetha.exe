@@ -2123,8 +2123,11 @@ class CompanionApp:
         # ── Phase 2: External window move (ctypes, Windows-only) ──────────────
         if command == "target_window_move":
             target_app = response.get("target_app", "").strip()
-            tx = int(response.get("x", 0))
-            ty = int(response.get("y", 0))
+            try:
+                tx = int(response.get("x", 0) or 0)
+                ty = int(response.get("y", 0) or 0)
+            except (ValueError, TypeError):
+                tx, ty = 0, 0
             if target_app and platform.system() == "Windows":
                 def _do_move(app=target_app, x=tx, y=ty):
                     try:
@@ -2152,10 +2155,13 @@ class CompanionApp:
         # ── Phase 2: External window resize (ctypes, Windows-only) ───────────
         if command == "target_window_resize":
             target_app = response.get("target_app", "").strip()
-            tx = int(response.get("x",      0))
-            ty = int(response.get("y",      0))
-            tw = int(response.get("width",  800))
-            th = int(response.get("height", 600))
+            try:
+                tx = int(response.get("x", 0) or 0)
+                ty = int(response.get("y", 0) or 0)
+                tw = int(response.get("width", 800) or 800)
+                th = int(response.get("height", 600) or 600)
+            except (ValueError, TypeError):
+                tx, ty, tw, th = 0, 0, 800, 600
             if target_app and platform.system() == "Windows":
                 def _do_resize(app=target_app, x=tx, y=ty, w=tw, h=th):
                     try:
