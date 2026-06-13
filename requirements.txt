@@ -1,0 +1,9 @@
+pillow
+pyautogui
+pytesseract
+numpy
+pygame
+requests
+groq
+mss
+tkextrafont
