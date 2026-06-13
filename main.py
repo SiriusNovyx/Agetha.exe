@@ -8,6 +8,7 @@ Assets folder must contain: idle-1.gif, idle-2.gif, idle-3.gif,
 Font: barrio.ttf must be in assets/ folder
 """
 
+import sys
 import tkinter as tk
 from tkinter import font as tkfont
 import threading
@@ -18,12 +19,29 @@ import math
 import os
 import platform
 import subprocess
-import ctypes
-import ctypes.wintypes
 import webbrowser
 from pathlib import Path
 from PIL import Image, ImageTk, ImageSequence
-import pygame
+
+# Platform Detection Setup
+IS_WINDOWS = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
+
+# Conditional Win32 imports for Linux safety
+ctypes = None
+if IS_WINDOWS:
+    import ctypes
+    try:
+        import ctypes.wintypes
+    except ImportError:
+        pass
+
+# Safe Pygame import
+try:
+    import pygame
+    PYGAME_OK = True
+except ImportError:
+    PYGAME_OK = False
 
 from ai_engine import AIEngine
 from screen_reader import ScreenReader
@@ -50,7 +68,10 @@ def native_error_popup(title: str, message: str) -> None:
         from tkinter import messagebox as _mb
         _r = _tk.Tk()
         _r.withdraw()
-        _r.attributes("-topmost", True)
+        try:
+            _r.attributes("-topmost", True)
+        except Exception:
+            pass
         _mb.showerror(title, message, parent=_r)
         _r.destroy()
     except Exception:
@@ -106,7 +127,7 @@ _MOOD_SNAP_THRESHOLDS: dict[str, int] = {
 def _find_window_hwnd(partial_name: str) -> int | None:
     """Find the first visible window whose title contains partial_name (case-insensitive).
     Windows-only; returns None silently on other platforms or on any exception."""
-    if platform.system() != "Windows":
+    if not IS_WINDOWS:
         return None
     try:
         found: list[int] = []
@@ -262,6 +283,10 @@ class BleepPlayer:
         self._mixer_ready = False
         self._current_tone = "neutral"
 
+        if not PYGAME_OK:
+            print("[BleepPlayer] pygame is not installed — audio disabled.")
+            return
+
         # Run pygame mixer init in a background thread — on Windows 11, SDL2's
         # audio device enumeration can deadlock the main thread indefinitely.
         t = threading.Thread(target=self._init_mixer, daemon=True)
@@ -271,6 +296,8 @@ class BleepPlayer:
             print("[BleepPlayer] WARNING: pygame mixer init timed out — audio disabled.")
 
     def _init_mixer(self):
+        if not PYGAME_OK:
+            return
         try:
             pygame.mixer.pre_init(self.SAMPLE_RATE, -16, 1, 256)
             pygame.mixer.init()
@@ -730,7 +757,10 @@ class AgethaPopup:
     def __init__(self, parent: tk.Tk, messages: list, mood: str = "neutral"):
         self._win = tk.Toplevel(parent)
         self._win.overrideredirect(True)   # we draw our own chrome
-        self._win.attributes("-topmost", True)
+        try:
+            self._win.attributes("-topmost", True)
+        except Exception:
+            pass
         self._win.configure(bg=W95_BG)
         self._win.resizable(False, False)
         self._drag_x = self._drag_y = 0
@@ -893,7 +923,10 @@ class CompanionApp:
         self.root.configure(bg=W95_BG)
         self.root.overrideredirect(True)
         self.root.resizable(False, False)
-        self.root.attributes("-topmost", True)
+        try:
+            self.root.attributes("-topmost", True)
+        except Exception:
+            pass
 
         self._state      = self.STATE_SLEEPING
         self._current_gif_player: GifPlayer | None = None
@@ -1075,26 +1108,45 @@ class CompanionApp:
 
     def _minimize(self):
         """Minimize the overrideredirect window.
-        On Windows, overrideredirect windows can't be iconified directly — we
-        temporarily restore normal chrome, iconify, then re-apply our settings
-        once the window is mapped again. A short delay avoids a race with DWM."""
-        try:
-            self.root.overrideredirect(False)
-            self.root.iconify()
-        except Exception:
-            return
-        def _bind_restore():
-            def _on_map(event):
-                try:
-                    if self.root.state() != "iconic":
-                        self.root.overrideredirect(True)
-                        self.root.attributes("-topmost", True)
-                        self.root.lift()
-                        self.root.unbind("<Map>")
-                except Exception:
-                    pass
-            self.root.bind("<Map>", _on_map)
-        self.root.after(250, _bind_restore)
+        Handles Windows and Linux (compositors/window managers) safely."""
+        if IS_WINDOWS:
+            try:
+                self.root.overrideredirect(False)
+                self.root.iconify()
+            except Exception:
+                return
+            def _bind_restore():
+                def _on_map(event):
+                    try:
+                        if self.root.state() != "iconic":
+                            self.root.overrideredirect(True)
+                            try:
+                                self.root.attributes("-topmost", True)
+                            except Exception:
+                                pass
+                            self.root.lift()
+                            self.root.unbind("<Map>")
+                    except Exception:
+                        pass
+                self.root.bind("<Map>", _on_map)
+            self.root.after(250, _bind_restore)
+        else:
+            try:
+                self.root.overrideredirect(False)
+                self.root.iconify()
+            except Exception:
+                pass
+            def _bind_restore_linux():
+                def _on_map(event):
+                    try:
+                        if self.root.state() != "iconic":
+                            self.root.overrideredirect(True)
+                            self.root.lift()
+                            self.root.unbind("<Map>")
+                    except Exception:
+                        pass
+                self.root.bind("<Map>", _on_map)
+            self.root.after(250, _bind_restore_linux)
 
     def _on_gif_click(self, event=None):
         """Handle a click on the Agetha gif — sends a hidden touch message to the AI.
@@ -1167,7 +1219,10 @@ class CompanionApp:
                     nx = (sw - WINDOW_W) // 2
                     ny = (sh - WINDOW_H) // 2
                     self.root.geometry(f"+{nx}+{ny}")
-                    self.root.attributes("-topmost", True)
+                    try:
+                        self.root.attributes("-topmost", True)
+                    except Exception:
+                        pass
                     self.root.lift()
                     print(
                         f"[SNAP] Center-snapped — mood={mood}, "
@@ -1571,7 +1626,7 @@ class CompanionApp:
             "notify":  "SystemNotification",
         }
 
-        if _sys == "Windows":
+        if IS_WINDOWS:
             try:
                 import winsound
                 snd = _WIN_SOUNDS.get(emotion, "SystemHand")
@@ -1609,17 +1664,20 @@ class CompanionApp:
                 pass
 
         # Universal pygame fallback
-        try:
-            _freq_map = {"angry": 185, "error": 185, "happy": 659,
-                         "sad": 294, "startup": 523, "notify": 440}
-            freq = _freq_map.get(emotion, 185)
-            tone_key = {185: "angry", 659: "excited", 294: "sad",
-                        523: "happy", 440: "neutral"}.get(freq, "neutral")
-            if self._bleep:
-                self._bleep.start_talking(tone=tone_key)
-                threading.Timer(0.9, self._bleep.stop).start()
-        except Exception as e:
-            print(f"[SOUND] pygame fallback failed: {e}")
+        if PYGAME_OK:
+            try:
+                _freq_map = {"angry": 185, "error": 185, "happy": 659,
+                             "sad": 294, "startup": 523, "notify": 440}
+                freq = _freq_map.get(emotion, 185)
+                tone_key = {185: "angry", 659: "excited", 294: "sad",
+                            523: "happy", 440: "neutral"}.get(freq, "neutral")
+                if self._bleep:
+                    self._bleep.start_talking(tone=tone_key)
+                    threading.Timer(0.9, self._bleep.stop).start()
+            except Exception as e:
+                print(f"[SOUND] pygame fallback failed: {e}")
+        else:
+            print("[SOUND] Pygame not available; sound fallback skipped.")
 
     def _dispatch_response(self, response: dict, user_message: str | None = None):
         # Clear any temporary loading subtitle when handling a response
@@ -2084,7 +2142,10 @@ class CompanionApp:
                         from tkinter import messagebox as _mb
                         _r = _tk.Tk()
                         _r.withdraw()
-                        _r.attributes("-topmost", True)
+                        try:
+                            _r.attributes("-topmost", True)
+                        except Exception:
+                            pass
                         if dlg_type == "warning":
                             _mb.showwarning(dlg_title, dlg_msg, parent=_r)
                         elif dlg_type == "error":
@@ -2111,7 +2172,10 @@ class CompanionApp:
                     nx = (sw - WINDOW_W) // 2
                     ny = (sh - WINDOW_H) // 2
                     self.root.geometry(f"+{nx}+{ny}")
-                    self.root.attributes("-topmost", True)
+                    try:
+                        self.root.attributes("-topmost", True)
+                    except Exception:
+                        pass
                     self.root.lift()
                     print(f"[SNAP] AI-commanded snap_to_center (mood={mood})")
                 except Exception as e:
@@ -2120,7 +2184,7 @@ class CompanionApp:
             _speak_and_continue(segments, mood, shutdown_requested)
             return
 
-        # ── Phase 2: External window move (ctypes, Windows-only) ──────────────
+        # ── Phase 2: External window move (ctypes on Windows, xdotool/wmctrl on Linux) ──────────────
         if command == "target_window_move":
             target_app = response.get("target_app", "").strip()
             try:
@@ -2128,31 +2192,54 @@ class CompanionApp:
                 ty = int(response.get("y", 0) or 0)
             except (ValueError, TypeError):
                 tx, ty = 0, 0
-            if target_app and platform.system() == "Windows":
-                def _do_move(app=target_app, x=tx, y=ty):
-                    try:
-                        hwnd = _find_window_hwnd(app)
-                        if hwnd:
-                            SWP_NOSIZE   = 0x0001
-                            SWP_NOZORDER = 0x0004
-                            ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0,
-                                                               SWP_NOSIZE | SWP_NOZORDER)
-                            print(f"[WIN32] Moved '{app}' → ({x}, {y})")
-                        else:
-                            print(f"[WIN32] target_window_move: window not found: '{app}'")
-                            # Report failure back through subtitle — no crash
-                            fail = [{"text": f"It's not here.", "pause": 0.4},
-                                    {"text": "Where did it go.", "pause": 0.0}]
-                            self.root.after(0, lambda: self._subtitle.speak(fail))
-                    except Exception as e:
-                        print(f"[WIN32] target_window_move error: {e}")
-                threading.Thread(target=_do_move, daemon=True).start()
-            elif target_app and platform.system() != "Windows":
-                print(f"[WIN32] target_window_move skipped — not Windows")
+            if target_app:
+                if IS_WINDOWS:
+                    def _do_move_win(app=target_app, x=tx, y=ty):
+                        try:
+                            hwnd = _find_window_hwnd(app)
+                            if hwnd:
+                                SWP_NOSIZE   = 0x0001
+                                SWP_NOZORDER = 0x0004
+                                ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0,
+                                                                   SWP_NOSIZE | SWP_NOZORDER)
+                                print(f"[WIN32] Moved '{app}' → ({x}, {y})")
+                            else:
+                                print(f"[WIN32] target_window_move: window not found: '{app}'")
+                                fail = [{"text": f"It's not here.", "pause": 0.4},
+                                        {"text": "Where did it go.", "pause": 0.0}]
+                                self.root.after(0, lambda: self._subtitle.speak(fail))
+                        except Exception as e:
+                            print(f"[WIN32] target_window_move error: {e}")
+                    threading.Thread(target=_do_move_win, daemon=True).start()
+                elif IS_LINUX:
+                    def _do_move_linux(app=target_app, x=tx, y=ty):
+                        # Try xdotool
+                        try:
+                            res = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", app], capture_output=True, text=True, timeout=2)
+                            if res.returncode == 0 and res.stdout.strip():
+                                first_win = res.stdout.splitlines()[0].strip()
+                                subprocess.run(["xdotool", "windowmove", first_win, str(x), str(y)], timeout=2)
+                                print(f"[Linux] xdotool moved '{app}' to ({x}, {y})")
+                                return
+                        except Exception:
+                            pass
+                        # Try wmctrl fallback
+                        try:
+                            res = subprocess.run(["wmctrl", "-r", app, "-e", f"0,{x},{y},-1,-1"], timeout=2)
+                            if res.returncode == 0:
+                                print(f"[Linux] wmctrl moved '{app}' to ({x}, {y})")
+                                return
+                        except Exception:
+                            pass
+                        print(f"[Linux] target_window_move failed: window not found or xdotool/wmctrl missing for '{app}'")
+                        fail = [{"text": f"It's not here.", "pause": 0.4},
+                                {"text": "Where did it go.", "pause": 0.0}]
+                        self.root.after(0, lambda: self._subtitle.speak(fail))
+                    threading.Thread(target=_do_move_linux, daemon=True).start()
             _speak_and_continue(segments, mood, shutdown_requested)
             return
 
-        # ── Phase 2: External window resize (ctypes, Windows-only) ───────────
+        # ── Phase 2: External window resize (ctypes on Windows, xdotool/wmctrl on Linux) ───────────
         if command == "target_window_resize":
             target_app = response.get("target_app", "").strip()
             try:
@@ -2162,24 +2249,49 @@ class CompanionApp:
                 th = int(response.get("height", 600) or 600)
             except (ValueError, TypeError):
                 tx, ty, tw, th = 0, 0, 800, 600
-            if target_app and platform.system() == "Windows":
-                def _do_resize(app=target_app, x=tx, y=ty, w=tw, h=th):
-                    try:
-                        hwnd = _find_window_hwnd(app)
-                        if hwnd:
-                            # MoveWindow: sets position AND size atomically
-                            ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, True)
-                            print(f"[WIN32] Resized '{app}' → ({x},{y}) {w}×{h}")
-                        else:
-                            print(f"[WIN32] target_window_resize: window not found: '{app}'")
-                            fail = [{"text": f"I looked.", "pause": 0.4},
-                                    {"text": f"{app} isn't open.", "pause": 0.0}]
-                            self.root.after(0, lambda: self._subtitle.speak(fail))
-                    except Exception as e:
-                        print(f"[WIN32] target_window_resize error: {e}")
-                threading.Thread(target=_do_resize, daemon=True).start()
-            elif target_app and platform.system() != "Windows":
-                print(f"[WIN32] target_window_resize skipped — not Windows")
+            if target_app:
+                if IS_WINDOWS:
+                    def _do_resize_win(app=target_app, x=tx, y=ty, w=tw, h=th):
+                        try:
+                            hwnd = _find_window_hwnd(app)
+                            if hwnd:
+                                # MoveWindow: sets position AND size atomically
+                                ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, True)
+                                print(f"[WIN32] Resized '{app}' → ({x},{y}) {w}×{h}")
+                            else:
+                                print(f"[WIN32] target_window_resize: window not found: '{app}'")
+                                fail = [{"text": f"I looked.", "pause": 0.4},
+                                        {"text": f"{app} isn't open.", "pause": 0.0}]
+                                self.root.after(0, lambda: self._subtitle.speak(fail))
+                        except Exception as e:
+                            print(f"[WIN32] target_window_resize error: {e}")
+                    threading.Thread(target=_do_resize_win, daemon=True).start()
+                elif IS_LINUX:
+                    def _do_resize_linux(app=target_app, x=tx, y=ty, w=tw, h=th):
+                        # Try xdotool
+                        try:
+                            res = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", app], capture_output=True, text=True, timeout=2)
+                            if res.returncode == 0 and res.stdout.strip():
+                                first_win = res.stdout.splitlines()[0].strip()
+                                subprocess.run(["xdotool", "windowsize", first_win, str(w), str(h)], timeout=2)
+                                subprocess.run(["xdotool", "windowmove", first_win, str(x), str(y)], timeout=2)
+                                print(f"[Linux] xdotool resized & moved '{app}' to ({x},{y}) {w}x{h}")
+                                return
+                        except Exception:
+                            pass
+                        # Try wmctrl fallback
+                        try:
+                            res = subprocess.run(["wmctrl", "-r", app, "-e", f"0,{x},{y},{w},{h}"], timeout=2)
+                            if res.returncode == 0:
+                                print(f"[Linux] wmctrl resized & moved '{app}' to ({x},{y}) {w}x{h}")
+                                return
+                        except Exception:
+                            pass
+                        print(f"[Linux] target_window_resize failed: window not found or xdotool/wmctrl missing for '{app}'")
+                        fail = [{"text": f"I looked.", "pause": 0.4},
+                                {"text": f"{app} isn't open.", "pause": 0.0}]
+                        self.root.after(0, lambda: self._subtitle.speak(fail))
+                    threading.Thread(target=_do_resize_linux, daemon=True).start()
             _speak_and_continue(segments, mood, shutdown_requested)
             return
 
