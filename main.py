@@ -1925,15 +1925,21 @@ class CompanionApp:
                         msg_safe = _sax.escape(message, {"'": "&apos;", '"': "&quot;"})
                         
                         # 2. Load WinRT assemblies and use Here-String for safe quotes
-                        ps_lines = f"""[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null
-$xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
-$xmlString = @"
+                        ps_lines = f"""try {{
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+    $null = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
+    $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
+    $xmlString = @"
 <toast><visual><binding template="ToastGeneric"><text>{title_safe}</text><text>{msg_safe}</text></binding></visual></toast>
 "@
-$xml.LoadXml($xmlString)
-$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Agetha.exe").Show($toast)"""
+    $xml.LoadXml($xmlString)
+    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\\WindowsPowerShell\\v1.0\\powershell.exe").Show($toast)
+}} catch {{
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show("{msg_safe}", "{title_safe}")
+}}"""
 
 
                         # Write to a temp .ps1 — avoids ALL shell quoting/escaping issues
