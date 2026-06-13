@@ -27,13 +27,15 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+import sys
+
+# Platform Detection Setup
+IS_WINDOWS = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
 
 # ── 4. DPI Awareness — must run before ANY Win32 geometry call ─────────────────
-# PROCESS_PER_MONITOR_DPI_AWARE (value 2) forces GetWindowRect etc. to return
-# physical pixel coords that match mss's coordinate space.  Without this, a 150 %-
-# scaled laptop screen returns logical coords that are off by a factor of 1.5.
 def _setup_dpi_awareness() -> None:
-    if platform.system() != "Windows":
+    if not IS_WINDOWS:
         return
     try:
         import ctypes
@@ -47,8 +49,14 @@ def _setup_dpi_awareness() -> None:
 
 _setup_dpi_awareness()
 
-import ctypes
-import ctypes.wintypes
+# Conditional Win32 imports for Linux safety
+ctypes = None
+if IS_WINDOWS:
+    import ctypes
+    try:
+        import ctypes.wintypes
+    except ImportError:
+        pass
 
 # ── Optional third-party imports ──────────────────────────────────────────────
 try:
@@ -262,7 +270,7 @@ def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
     Returns {left, top, width, height, title, hwnd} in physical pixels, or None.
     skip_hwnd: pass Agetha's own HWND to avoid capturing herself.
     """
-    if platform.system() != "Windows" or not PIL_OK:
+    if not IS_WINDOWS or not PIL_OK:
         return None
     try:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -305,6 +313,92 @@ def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
     except Exception as e:
         print(f"[ScreenReader] _get_foreground_window_info: {e}")
         return None
+
+
+def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | None:
+    """Return mss-compatible capture dict + metadata for the focused window on Linux.
+    Uses xdotool, xprop, or wmctrl.
+    """
+    if not IS_LINUX or not PIL_OK:
+        return None
+
+    # 1. Try xdotool
+    try:
+        res = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0:
+            window_id_str = res.stdout.strip()
+            if window_id_str.isdigit():
+                window_id = int(window_id_str)
+                if skip_hwnd and window_id == skip_hwnd:
+                    return None  # Don't capture ourselves
+
+                title = ""
+                res_title = subprocess.run(["xdotool", "getwindowname", window_id_str], capture_output=True, text=True, timeout=2)
+                if res_title.returncode == 0:
+                    title = res_title.stdout.strip()
+
+                res_geom = subprocess.run(["xdotool", "getwindowgeometry", window_id_str], capture_output=True, text=True, timeout=2)
+                if res_geom.returncode == 0:
+                    geom_out = res_geom.stdout
+                    pos_match = re.search(r"Position:\s*(-?\d+),(-?\d+)", geom_out)
+                    size_match = re.search(r"Geometry:\s*(\d+)x(\d+)", geom_out)
+                    if pos_match and size_match:
+                        left = int(pos_match.group(1))
+                        top = int(pos_match.group(2))
+                        w = int(size_match.group(1))
+                        h = int(size_match.group(2))
+                        return {
+                            "left": left,
+                            "top": top,
+                            "width": w,
+                            "height": h,
+                            "title": title,
+                            "hwnd": window_id,
+                        }
+    except Exception as e:
+        print(f"[ScreenReader] xdotool failed: {e}")
+
+    # 2. Fallback to wmctrl + xprop
+    try:
+        res_xprop = subprocess.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"], capture_output=True, text=True, timeout=2)
+        if res_xprop.returncode == 0:
+            m = re.search(r"_NET_ACTIVE_WINDOW\(WINDOW\):\s*window id #\s*(0x[0-9a-fA-F]+)", res_xprop.stdout)
+            if m:
+                active_hex = m.group(1)
+                active_dec = int(active_hex, 16)
+                if skip_hwnd and active_dec == skip_hwnd:
+                    return None
+
+                res_wmctrl = subprocess.run(["wmctrl", "-l", "-G"], capture_output=True, text=True, timeout=2)
+                if res_wmctrl.returncode == 0:
+                    for line in res_wmctrl.stdout.splitlines():
+                        parts = line.split(maxsplit=6)
+                        if len(parts) >= 7:
+                            line_hex = parts[0]
+                            try:
+                                line_dec = int(line_hex, 16)
+                            except ValueError:
+                                continue
+                            if line_dec == active_dec:
+                                left = int(parts[2])
+                                top = int(parts[3])
+                                w = int(parts[4])
+                                h = int(parts[5])
+                                title = parts[6]
+                                return {
+                                    "left": left,
+                                    "top": top,
+                                    "width": w,
+                                    "height": h,
+                                    "title": title,
+                                    "hwnd": active_dec,
+                                }
+    except Exception as e:
+        print(f"[ScreenReader] wmctrl fallback failed: {e}")
+
+    # Log non-blocking warning and fall back to full screen
+    print("[ScreenReader] WARNING: Active window scanning failed or tools are missing on Linux. Falling back to full desktop capture.")
+    return None
 
 
 def _find_monitor_for_window(hwnd: int) -> dict | None:
@@ -557,14 +651,20 @@ class ScreenReader:
         """Cache and return Agetha's own top-level window HWND."""
         if self._own_hwnd:
             return self._own_hwnd
-        if self._own_root and self._system == "Windows":
-            try:
-                canvas_id = self._own_root.winfo_id()
-                # GA_ROOT = 2: walk up to the overrideredirect top-level
-                top = ctypes.windll.user32.GetAncestor(canvas_id, 2)
-                self._own_hwnd = top or canvas_id
-            except Exception:
-                pass
+        if self._own_root:
+            if IS_WINDOWS:
+                try:
+                    canvas_id = self._own_root.winfo_id()
+                    # GA_ROOT = 2: walk up to the overrideredirect top-level
+                    top = ctypes.windll.user32.GetAncestor(canvas_id, 2)
+                    self._own_hwnd = top or canvas_id
+                except Exception:
+                    pass
+            elif IS_LINUX:
+                try:
+                    self._own_hwnd = self._own_root.winfo_id()
+                except Exception:
+                    pass
         return self._own_hwnd
 
     # ── 1 + 4. Focused capture ────────────────────────────────────────────────
@@ -572,15 +672,20 @@ class ScreenReader:
     def capture_image(self, focused_only: bool = True) -> "Image.Image | None":
         """Capture a screenshot.
 
-        focused_only=True  — Windows: grabs only the active foreground window.
+        focused_only=True  — Windows/Linux: grabs only the active foreground window.
                              Falls back to full-monitor if window can't be resolved.
         focused_only=False — Always captures the full primary monitor.
         """
         self._capture_left = 0
         self._capture_top  = 0
 
-        if focused_only and self._system == "Windows":
-            win = _get_foreground_window_info(skip_hwnd=self._get_own_hwnd())
+        if focused_only:
+            win = None
+            if IS_WINDOWS:
+                win = _get_foreground_window_info(skip_hwnd=self._get_own_hwnd())
+            elif IS_LINUX:
+                win = _get_foreground_window_info_linux(skip_hwnd=self._get_own_hwnd())
+
             if win:
                 self.last_active_window_title = win["title"]
                 self._capture_left = win["left"]
