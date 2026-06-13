@@ -7,4 +7,4 @@ requests
 groq
 mss
 tkextrafont
-skbuild
+scikit-build
