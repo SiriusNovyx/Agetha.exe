@@ -4,7 +4,6 @@
 - `[ ]` Create `.gitignore`
 - `[ ]` Create `.env.example` with API key template
 - `[ ]` Sanitize `config.txt` (remove hardcoded API keys)
-- `[ ]` Delete duplicate `config.txt.txt`
 - `[ ]` Fix BUG-1: Guard `self._bleep.stop()` in `_shutdown()`
 - `[ ]` Fix BUG-2: Guard `self._screen.capture_text()` in `_ai_tick()`
 - `[ ]` Fix BUG-3: Guard `self._ai.query_streaming()` in `_ai_tick()`
