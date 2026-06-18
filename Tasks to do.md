@@ -60,3 +60,5 @@
 ## Verification
 - `[ ]` py_compile all files
 - `[ ]` Launch test
+
+Note: This Major update takes about 3-4 days :3
