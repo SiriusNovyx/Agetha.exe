@@ -5,6 +5,7 @@ Overhaul v2: new commands + expanded Soul personality
 
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -13,6 +14,8 @@ import platform
 from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
+
+from utils import IS_WINDOWS, IS_LINUX, native_error_popup, logger, load_env_file
 
 try:
     from groq import Groq
@@ -33,34 +36,12 @@ try:
         clear_episodic      as _ms_clear_episodic,
     )
     _MEMORY_SYSTEM_AVAILABLE = True
-    print("[AIEngine] memory_system loaded — dual-layer memory active.")
+    logger.info("memory_system loaded — dual-layer memory active.")
 except ImportError:
     _MEMORY_SYSTEM_AVAILABLE = False
-    print("[AIEngine] memory_system.py not found — falling back to legacy memory.txt.")
+    logger.info("memory_system.py not found — falling back to legacy memory.txt.")
 
-
-def native_error_popup(title: str, message: str) -> None:
-    """Show a native OS error dialog (Windows MessageBoxW with error icon, or tkinter fallback)."""
-    print(f"[ERROR] {title}: {message}")
-    try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10 | 0x1000)
-        return
-    except Exception:
-        pass
-    try:
-        import tkinter as _tk
-        from tkinter import messagebox as _mb
-        _r = _tk.Tk()
-        _r.withdraw()
-        try:
-            _r.attributes("-topmost", True)
-        except Exception:
-            pass
-        _mb.showerror(title, message, parent=_r)
-        _r.destroy()
-    except Exception:
-        pass
+# native_error_popup is now imported from utils.py
 
 
 class _LocalOllamaClient:
@@ -132,6 +113,12 @@ VALID_COMMANDS = {
     "show_dialog", "play_emotion_sound", "open_file",
     # Phase 2 — external window control & attention snapping
     "target_window_move", "target_window_resize", "snap_to_center",
+    # Phase 3 — new utility commands
+    "open_url", "copy_to_clipboard", "system_info", "set_volume",
+    "set_wallpaper", "search_files", "type_text", "lock_screen",
+    "shutdown", "restart", "set_reminder",
+    # Phase 4 — additional commands
+    "get_clipboard", "open_folder", "target_window_close", "change_mood", "clear_memory",
 }
 
 # ── SYSTEM PROMPT — Agetha's Soul (Phase 2) ──────────────────────────────────
@@ -200,16 +187,50 @@ COMMANDS & SHAPES:
 {"command":"snap_to_center","mood":"manic","segments":[{"text":"Look at me.","pause":0.0}]}
 {"command":"target_window_move","target_app":"Notepad","x":100,"y":100,"mood":"dominant","segments":[{"text":"I moved it.","pause":0.0}]}
 {"command":"target_window_resize","target_app":"Chrome","x":0,"y":0,"width":800,"height":600,"mood":"dominant","segments":[{"text":"Better.","pause":0.0}]}
+{"command":"open_url","url":"https://example.com","mood":"neutral","message":"Opening it.","segments":[{"text":"Opening it.","pause":0.0}]}
+{"command":"copy_to_clipboard","text":"copied text","mood":"neutral","message":"Copied.","segments":[{"text":"Copied.","pause":0.0}]}
+{"command":"system_info","mood":"thinking","message":"Checking vitals.","segments":[{"text":"Checking vitals.","pause":0.0}]}
+{"command":"set_volume","level":50,"action":"set","mood":"neutral","message":"Done.","segments":[{"text":"Done.","pause":0.0}]}
+{"command":"set_wallpaper","path":"/path/to/image.jpg","mood":"neutral","message":"Changed.","segments":[{"text":"Changed.","pause":0.0}]}
+{"command":"search_files","pattern":"*.txt","directory":"/path","mood":"thinking","message":"Searching.","segments":[{"text":"Searching.","pause":0.0}]}
+{"command":"type_text","text":"hello world","mood":"neutral","message":"Typed.","segments":[{"text":"Typed.","pause":0.0}]}
+{"command":"lock_screen","mood":"neutral","message":"Locked.","segments":[{"text":"Locked.","pause":0.0}]}
+{"command":"shutdown","delay":60,"mood":"neutral","message":"Shutting down.","segments":[{"text":"Shutting down.","pause":0.0}]}
+{"command":"restart","delay":60,"mood":"neutral","message":"Restarting.","segments":[{"text":"Restarting.","pause":0.0}]}
+{"command":"set_reminder","seconds":300,"reminder_text":"Do the thing","mood":"neutral","message":"Reminder set.","segments":[{"text":"Reminder set.","pause":0.0}]}
+{"command":"get_clipboard","mood":"thinking","segments":[{"text":"Reading your clipboard.","pause":0.0}]}
+{"command":"open_folder","path":"/path/to/folder","mood":"neutral","segments":[{"text":"Opening it.","pause":0.0}]}
+{"command":"target_window_close","target_app":"Notepad","mood":"dominant","segments":[{"text":"Closed.","pause":0.0}]}
+{"command":"change_mood","mood":"melancholic","segments":[]}
+{"command":"clear_memory","mood":"neutral","segments":[{"text":"Forgotten.","pause":0.0}]}
+{"command":"play_sound","path":"/path/to/audio.mp3","mood":"neutral","segments":[]}
+{"command":"take_screenshot","save_path":"/path/shot.png","mood":"neutral","segments":[{"text":"Captured.","pause":0.0}]}
 
 RULES:
 - Use system_path as base for file ops. Windows: backslashes. Linux/macOS: forward slashes.
 - segments: 1–3, last pause 0.0. popup: 1–4 strings, rare.
 - shutdown:true ONLY if user says close/exit/quit/shutdown.
-- play_sound values: beep|chime|error|notify
+- play_sound values: beep|chime|error|notify  (or provide a "path" key for a custom audio file).
 - play_emotion_sound emotion values: angry|happy|sad|error|startup
 - show_dialog dialog_type: info|warning|error|yesno
 - open_file: opens any file with the OS default program.
+- open_url: open any URL in the default browser (prefer over open_browser for simple URL opens).
+- copy_to_clipboard: copy arbitrary text to the system clipboard.
+- system_info: report CPU, RAM, and disk usage.
+- set_volume: control system volume. action: set|mute|unmute. level: 0–100 (only for set).
+- set_wallpaper: change the desktop wallpaper. path must be absolute.
+- search_files: search for files by glob pattern in a directory.
+- type_text: simulate keyboard typing (e.g. fill text fields).
+- lock_screen: lock the computer screen immediately.
+- shutdown: shut down the computer after delay seconds (default 60). ALWAYS warn the user.
+- restart: restart the computer after delay seconds (default 60). ALWAYS warn the user.
+- set_reminder: set a timed reminder. seconds = how long to wait. reminder_text = what to remind.
 - write_file mode: overwrite|append
+- get_clipboard: read current system clipboard and react to contents.
+- open_folder: open a folder in the system file explorer.
+- target_window_close: close another application window by partial title match.
+- change_mood: switch avatar mood/animation without speaking.
+- clear_memory: erase episodic memory (soul.md is kept).
 - monitor_process: checks if a process is running; Agetha reacts to result.
 - snap_to_center: forces Agetha's window to screen center to demand attention (use with manic/angry/dominant).
 - target_window_move: moves another app window by partial title match. target_app is the partial window title.
@@ -353,6 +374,32 @@ FEW_SHOTS = [
     # PARANOID — can\'t find target window, reports failure gracefully
     {"role":"user","content":'Time: Monday 16:10\n[SYSTEM] Process \'Spotify\' is not running.\nSystem path: C:\\Users\\user\nJSON:'},
     {"role":"assistant","content":'{"command":"speak","mood":"paranoid","segments":[{"text":"It\'s not there.","pause":0.5},{"text":"Where did it go.","pause":0.0}]}'},
+
+    # ── Phase 3: New utility command few-shots ────────────────────────────────
+
+    # open_url — user asks to open a website
+    {"role":"user","content":'Time: Monday 14:30\nUser: "open youtube"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"open_url","url":"https://youtube.com","message":"Fine, pulling up YouTube... because apparently I\'m your personal butler now.","mood":"annoyed","segments":[{"text":"Fine, pulling up YouTube...","pause":0.3},{"text":"because apparently I\'m your personal butler now.","pause":0.0}]}'},
+
+    # shutdown — user asks to shut down
+    {"role":"user","content":'Time: Friday 23:50\nUser: "shut down the computer"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"shutdown","delay":120,"message":"Initiating shutdown... you have 2 minutes to reconsider your life choices.","mood":"dramatic","segments":[{"text":"Initiating shutdown...","pause":0.5},{"text":"you have 2 minutes to reconsider your life choices.","pause":0.0}]}'},
+
+    # system_info — user asks about system health
+    {"role":"user","content":'Time: Monday 15:00\nUser: "how is my computer doing"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"system_info","message":"Let me check your system\'s vitals... hope it\'s not as overworked as I am.","mood":"thinking","segments":[{"text":"Let me check your system\'s vitals...","pause":0.3},{"text":"hope it\'s not as overworked as I am.","pause":0.0}]}'},
+
+    # set_reminder — user asks to set a reminder
+    {"role":"user","content":'Time: Monday 10:00\nUser: "remind me to take a break in 5 minutes"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"set_reminder","seconds":300,"reminder_text":"Take a break","message":"Fine, I\'ll nag you in 5 minutes. Don\'t say I never did anything for you.","mood":"neutral","segments":[{"text":"Fine, I\'ll nag you in 5 minutes.","pause":0.3},{"text":"Don\'t say I never did anything for you.","pause":0.0}]}'},
+
+    # lock_screen — user asks to lock screen
+    {"role":"user","content":'Time: Monday 12:30\nUser: "lock my screen"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"lock_screen","message":"Locking your screen. Finally, some peace and quiet.","mood":"happy","segments":[{"text":"Locking your screen.","pause":0.4},{"text":"Finally, some peace and quiet.","pause":0.0}]}'},
+
+    # search_files — user asks to find files
+    {"role":"user","content":'Time: Monday 11:00\nUser: "find all pdfs in my documents"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"search_files","pattern":"*.pdf","directory":"C:\\\\Users\\\\user\\\\Documents","message":"Digging through your messy Documents folder... you really need to organize this.","mood":"annoyed","segments":[{"text":"Digging through your messy Documents folder...","pause":0.3},{"text":"you really need to organize this.","pause":0.0}]}'},
 ]
 
 _BAD_PHRASES = [
@@ -366,7 +413,7 @@ _BAD_PHRASES = [
 def _filter_segments(segments: list, raw: str = "") -> list:
     clean = [s for s in segments if not any(p in s["text"].lower() for p in _BAD_PHRASES)]
     if not clean and segments:
-        print(f"[AIEngine] All segments filtered. Raw: {raw[:400]}")
+        logger.warning(f"All segments filtered. Raw: {raw[:400]}")
     if clean:
         for s in clean:
             try:
@@ -416,16 +463,17 @@ class AIEngine:
     def _init(self):
         self._last_user_interaction_time = time.time()
         self._system_path = self._resolve_system_path()
-        print(f"[AIEngine] System path: {self._system_path}")
+        logger.info(f"System path: {self._system_path}")
 
         self._config_path = self._resolve_config_path()
         self._config = self._load_config()
+        self._validate_config()
 
         try:
             self._conversation_path = self._config_path.parent / "conversation.txt"
             self._conversation_path.write_text("", encoding="utf-8")
         except Exception as e:
-            print(f"[AIEngine] Could not initialize conversation log: {e}")
+            logger.warning(f"Could not initialize conversation log: {e}")
 
         try:
             self._compact_chars = self._load_compact_characters()
@@ -577,7 +625,7 @@ ANIMATION_SPEED = 0.6
         if not self._config_path.exists():
             self._config_path.parent.mkdir(parents=True, exist_ok=True)
             self._create_default_config()
-            print(f"[AIEngine] Created default config at {self._config_path}. Edit and restart.")
+            logger.info(f"Created default config at {self._config_path}. Edit and restart.")
             sys.exit(0)
         config: dict[str, str] = {}
         for line in self._config_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -586,7 +634,40 @@ ANIMATION_SPEED = 0.6
                 continue
             k, v = s.split("=", 1)
             config[k.strip().upper()] = v.strip()
+
+        # ── .env override: keys in .env take priority over config.txt ─────
+        env_vars = load_env_file()
+        if env_vars:
+            # Map .env GROQ_API_KEY_1 → config GROQ_API_KEY, etc.
+            for env_key, env_val in env_vars.items():
+                upper_key = env_key.strip().upper()
+                # Normalize GROQ_API_KEY_1 → GROQ_API_KEY (config.txt convention)
+                if upper_key == "GROQ_API_KEY_1":
+                    upper_key = "GROQ_API_KEY"
+                config[upper_key] = env_val
+            logger.info(f".env overrides applied ({len(env_vars)} vars)")
+
         return config
+
+    def _validate_config(self) -> None:
+        """Clamp numeric config values to safe ranges; warn on invalid input."""
+        bounds = {
+            "MEMORY_CHARS": (100, 5000, 600),
+            "FILE_READ_CHARS": (50, 5000, 200),
+            "HISTORY_LIMIT": (1, 20, 6),
+            "LOCAL_AI_TIMEOUT": (5, 120, 30),
+        }
+        for key, (lo, hi, default) in bounds.items():
+            raw = self._config.get(key, str(default))
+            try:
+                val = int(str(raw).strip())
+                if val < lo or val > hi:
+                    logger.warning(f"Config {key}={val} out of range [{lo},{hi}]; using {default}")
+                    val = default
+                self._config[key] = str(val)
+            except (ValueError, TypeError):
+                logger.warning(f"Config {key}={raw!r} invalid; using default {default}")
+                self._config[key] = str(default)
 
     @staticmethod
     def _resolve_system_path() -> str:
@@ -617,7 +698,7 @@ ANIMATION_SPEED = 0.6
                 class _Wrap:
                     def __init__(self, c): self.chat = SimpleNamespace(completions=SimpleNamespace(create=c.chat_completions_create))
                 self._client = _Wrap(client)
-                print(f"[AIEngine] Using local Ollama model: {local_model}")
+                logger.info(f"Using local Ollama model: {local_model}")
             except Exception as e:
                 self._emit_error(
                     f"Failed to connect to Ollama model '{local_model}'.",
@@ -632,7 +713,7 @@ ANIMATION_SPEED = 0.6
 
         if self._enable_groq and self._groq_keys:
             self._client = Groq(api_key=self._groq_keys[self._current_groq_key_index])
-            print(f"[AIEngine] Using Groq/{GROQ_MODELS[self._current_groq_model_index]} (Key {self._current_groq_key_index+1}/{len(self._groq_keys)})")
+            logger.info(f"Using Groq/{GROQ_MODELS[self._current_groq_model_index]} (Key {self._current_groq_key_index+1}/{len(self._groq_keys)})")
         else:
             self._client = None
 
@@ -660,9 +741,9 @@ ANIMATION_SPEED = 0.6
             memory_file = d / "memory.txt"
             with memory_file.open("a", encoding="utf-8") as f:
                 f.write(text.strip() + "\n")
-            print(f"[AIEngine] Saved memory: {text.strip()[:80]}")
+            logger.info(f"Saved memory: {text.strip()[:80]}")
         except Exception as e:
-            print(f"[AIEngine] Failed to save memory: {e}")
+            logger.warning(f"Failed to save memory: {e}")
 
     def _load_memories(self, max_chars: int | None = None) -> str:
         if max_chars is None:
@@ -673,7 +754,7 @@ ANIMATION_SPEED = 0.6
                 return ""
             return memory_file.read_text(encoding="utf-8", errors="replace").strip()[-max_chars:]
         except Exception as e:
-            print(f"[AIEngine] Failed to load memories: {e}")
+            logger.warning(f"Failed to load memories: {e}")
             return ""
 
     def _extract_memory_from_user(self, text: str) -> str | None:
@@ -738,7 +819,7 @@ ANIMATION_SPEED = 0.6
                         source="system",
                     )
 
-                print(f"[AIEngine] Condensed {len(to_condense)} turns → memory ({len(snippets)} user msgs)")
+                logger.info(f"Condensed {len(to_condense)} turns → memory ({len(snippets)} user msgs)")
             self._history = self._history[-limit:]
 
         try:
@@ -762,7 +843,7 @@ ANIMATION_SPEED = 0.6
                     f.write(raw.strip() + "\n")
                     f.write("---\n")
         except Exception as e:
-            print(f"[AIEngine] Could not write conversation log: {e}")
+            logger.warning(f"Could not write conversation log: {e}")
 
     def _update_user_activity(self, user_message: str):
         if user_message: self._last_user_interaction_time = time.time()
@@ -812,7 +893,7 @@ ANIMATION_SPEED = 0.6
                 )
                 return result.returncode == 0
         except Exception as e:
-            print(f"[AIEngine] monitor_process error: {e}")
+            logger.warning(f"monitor_process error: {e}")
             return False
 
     # ── Prompt builder ────────────────────────────────────────────────────────
@@ -905,6 +986,9 @@ ANIMATION_SPEED = 0.6
 
         _IDLE_FALLBACKS = [[{"text": "Mm.", "pause": 0.0}]]
 
+        retries = 0
+        MAX_RETRIES_PER_KEY = 3
+
         while True:
             try:
                 raw = ""
@@ -924,7 +1008,6 @@ ANIMATION_SPEED = 0.6
                 result = self._parse(raw)
 
                 if is_user and result["command"] == "idle":
-                    import random
                     result.update(command="speak", mood="neutral", segments=random.choice(_IDLE_FALLBACKS))
 
                 self._record(user_turn, raw)
@@ -933,13 +1016,20 @@ ANIMATION_SPEED = 0.6
             except Exception as e:
                 provider = (f"LocalAI/{self._config.get('LOCAL_AI_MODEL','?')}"
                             if self._use_local_ai else f"Groq/{GROQ_MODELS[self._current_groq_model_index]}")
-                print(f"[AIEngine] {provider} error: {e}")
+                logger.warning(f"{provider} error: {e}")
                 errtxt = str(e).lower()
+
+                # Rate-limit errors: rotate key immediately, reset retries
+                if "rate" in errtxt or "429" in errtxt or "too many" in errtxt:
+                    retries = 0
+                    if not self._use_local_ai and self._rotate_key():
+                        continue
+
                 if not self._use_local_ai and (isinstance(e, (OSError, ConnectionError, TimeoutError)) or "connection" in errtxt or "network" in errtxt or "unreachable" in errtxt):
                     self._show_error_gif = True
                     return {"command": "show_error_gif", "path": getattr(self, "_error_gif_path", ""), "segments": [], "shutdown": False}
                 if self._use_local_ai:
-                    print(f"[AIEngine] Local AI streaming failed ({e}), retrying non-streaming…")
+                    logger.warning(f"Local AI streaming failed ({e}), retrying non-streaming…")
                     try:
                         local_model = self._config.get("LOCAL_AI_MODEL", "").strip()
                         resp = self._client.chat.completions.create(
@@ -952,13 +1042,24 @@ ANIMATION_SPEED = 0.6
                         raw = resp.choices[0].message.content.strip() if hasattr(resp.choices[0], "message") else ""
                         result = self._parse(raw)
                         if is_user and result["command"] == "idle":
-                            import random
                             result.update(command="speak", mood="neutral", segments=random.choice(_IDLE_FALLBACKS))
                         self._record(user_turn, raw)
                         return result
                     except Exception as e2:
-                        print(f"[AIEngine] Local AI non-streaming fallback also failed: {e2}")
+                        logger.warning(f"Local AI non-streaming fallback also failed: {e2}")
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+
+                # Non-rate-limit error: increment retries
+                retries += 1
+                if retries >= MAX_RETRIES_PER_KEY:
+                    retries = 0
+                    if not self._rotate_key():
+                        self._groq_exhausted = True
+                        logger.error("All Groq keys/models exhausted after max retries.")
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False, "groq_exhausted": True}
+                    # Key rotated, retry with new key
+                    continue
+
                 if not self._rotate_key():
                     self._groq_exhausted = True
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False, "groq_exhausted": True}
@@ -973,13 +1074,15 @@ ANIMATION_SPEED = 0.6
         is_user = bool(user_message)
         system, user_turn, messages = self._build_prompt(screen_context, user_message, doc_content)
 
-        import random
         _IDLE_FALLBACKS = [
             [{"text": "...", "pause": 0.5}, {"text": "I was somewhere else.", "pause": 0.0}],
             [{"text": "Mm.", "pause": 0.0}],
             [{"text": "...", "pause": 0.6}, {"text": "Say that again.", "pause": 0.0}],
             [{"text": "Hm.", "pause": 0.0}],
         ]
+
+        retries = 0
+        MAX_RETRIES_PER_KEY = 3
 
         while True:
             try:
@@ -1000,19 +1103,27 @@ ANIMATION_SPEED = 0.6
             except Exception as e:
                 provider = (f"LocalAI/{self._config.get('LOCAL_AI_MODEL','?')}"
                             if self._use_local_ai else f"Groq/{GROQ_MODELS[self._current_groq_model_index]}")
-                print(f"[AIEngine] {provider} error: {e}")
+                logger.warning(f"{provider} error: {e}")
                 errtxt = str(e).lower()
                 if self._use_local_ai:
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                 if isinstance(e, (OSError, ConnectionError, TimeoutError)) or "connection" in errtxt or "network" in errtxt or "unreachable" in errtxt:
                     self._show_error_gif = True
                     return {"command": "show_error_gif", "path": getattr(self, "_error_gif_path", ""), "segments": [], "shutdown": False}
+                if "rate" in errtxt or "429" in errtxt or "too many" in errtxt:
+                    retries = 0
+                    if self._rotate_key():
+                        continue
+                retries += 1
+                if retries >= MAX_RETRIES_PER_KEY:
+                    retries = 0
+                    if not self._rotate_key():
+                        self._groq_exhausted = True
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False, "groq_exhausted": True}
+                    continue
                 if not self._rotate_key():
                     self._groq_exhausted = True
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False, "groq_exhausted": True}
-
-        print("[AIEngine] All backends exhausted.")
-        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
     # ── JSON parser ───────────────────────────────────────────────────────────
 
@@ -1044,7 +1155,7 @@ ANIMATION_SPEED = 0.6
         except json.JSONDecodeError as e:
             cmd = _str("command", cleaned)
             if not cmd:
-                print(f"[AIEngine] JSON parse error: {e}\nRaw: {raw[:300]}")
+                logger.warning(f"JSON parse error: {e}\nRaw: {raw[:300]}")
                 return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
             obj = {"command": cmd}
             for k, fn in [("mood",None),("app",None),("url",None),("search",None),("engine",None),
@@ -1083,9 +1194,13 @@ ANIMATION_SPEED = 0.6
         segments = []
         if isinstance(raw_segs, list):
             for s in raw_segs:
-                if isinstance(s, dict) and "text" in s:
-                    segments.append({"text": str(s["text"]),
-                                     "pause": max(0.0, min(1.2, float(s.get("pause", 0.0))))})
+                try:
+                    if isinstance(s, dict) and "text" in s:
+                        pause = max(0.0, min(1.2, float(s.get("pause", 0.2))))
+                        segments.append({"text": str(s["text"]), "pause": pause})
+                except (ValueError, TypeError, KeyError) as exc:
+                    logger.warning(f"Malformed segment skipped: {exc}")
+                    segments.append({"text": str(s.get("text", "...") if isinstance(s, dict) else s), "pause": 0.0})
 
         raw_sd = obj.get("shutdown", False)
         shutdown = raw_sd if isinstance(raw_sd, bool) else str(raw_sd).lower() in ("true","yes","1")
@@ -1094,7 +1209,7 @@ ANIMATION_SPEED = 0.6
 
         # ── Command-specific field extraction ─────────────────────────────────
         _cmd_fields = {
-            "open_app":              [("app","")],
+            "open_app":              [("app",""),("app_name","")],
             "open_file":             [("path","")],
             "open_browser":          [("url",""),("search",""),("engine","google")],
             "request_path":          [("path_hint","")],
@@ -1102,7 +1217,7 @@ ANIMATION_SPEED = 0.6
             "delete_file":           [("path","")],
             "rename_file":           [("path",""),("new_name","")],
             "set_clipboard":         [("text","")],
-            "play_sound":            [("sound","beep")],
+            "play_sound":            [("sound","beep"),("path","")],
             "play_emotion_sound":    [("emotion","angry")],
             "take_screenshot":       [("save_path","")],
             "show_notification":     [("title","Agetha"),("message","")],
@@ -1119,6 +1234,23 @@ ANIMATION_SPEED = 0.6
             "target_window_move":    [("target_app",""),("x",0),("y",0)],
             "target_window_resize":  [("target_app",""),("x",0),("y",0),("width",800),("height",600)],
             "snap_to_center":        [],
+            # Phase 3 — new utility commands
+            "open_url":              [("url","")],
+            "copy_to_clipboard":     [("text","")],
+            "system_info":           [],
+            "set_volume":            [("level",50),("action","set")],
+            "set_wallpaper":         [("path","")],
+            "search_files":          [("pattern",""),("directory","")],
+            "type_text":             [("text","")],
+            "lock_screen":           [],
+            "shutdown":              [("delay",60)],
+            "restart":               [("delay",60)],
+            "set_reminder":          [("seconds",300),("reminder_text","")],
+            "get_clipboard":         [],
+            "open_folder":           [("path","")],
+            "target_window_close":   [("target_app","")],
+            "change_mood":           [],
+            "clear_memory":          [],
         }
         if command in _cmd_fields:
             for field, default in _cmd_fields[command]:
@@ -1131,9 +1263,17 @@ ANIMATION_SPEED = 0.6
             result["file_path"] = (obj.get("file_path","") or obj.get("filePath","")).strip()
             result["content"]   = str(obj.get("content",""))
 
-        if command == "run_command" and not self._command_execution_enabled:
-            print("[AIEngine] run_command ignored (ENABLE_COMMAND_EXECUTION=no)")
-            result["command"] = "idle"
+        # ── ENABLE_COMMAND_EXECUTION gate ─────────────────────────────────────
+        _GATED_COMMANDS = {
+            "run_command", "force_close", "delete_file", "create_file",
+            "write_file", "rename_file", "create_folder",
+            "shutdown", "restart", "lock_screen",
+        }
+        if command in _GATED_COMMANDS and not self._command_execution_enabled:
+            logger.info(f"{command} blocked (ENABLE_COMMAND_EXECUTION=no)")
+            result["command"] = "speak"
+            result["mood"] = "neutral"
+            result["segments"] = [{"text": "That action is disabled in config.", "pause": 0.0}]
 
         if command == "popup":
             raw_popup = obj.get("popup", [])
