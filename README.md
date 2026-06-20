@@ -68,7 +68,8 @@ Agetha_Mod/
 ├── config.txt           # User settings (no secrets — use .env)
 ├── .env.example         # API key template
 ├── requirements.txt     # Pinned Python dependencies
-├── Medic_Checker.bat    # Startup health check & launcher (v3.0)
+├── Medic_Checker.ps1    # Startup health check & launcher (v3.0)
+├── Medic_Checker.bat    # Thin launcher → runs Medic_Checker.ps1
 ├── assets/              # GIFs, fonts, icons
 └── memory/              # soul.md, episodic_memory.json
 ```
@@ -152,10 +153,10 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 
 ## Quick Start
 
-### Option A — Medic_Checker.bat (recommended)
+### Option A — Medic_Checker (recommended)
 
 1. Place all project files in one folder
-2. Double-click **`Medic_Checker.bat`**
+2. Double-click **`Medic_Checker.bat`** (or run **`Medic_Checker.ps1`** in PowerShell)
 3. The script runs 7 health checks, installs missing packages, compiles modules, then launches Agetha
 
 ### Option B — Manual
@@ -211,7 +212,7 @@ Run `ollama list` to see installed models.
 
 ---
 
-## Medic_Checker.bat v3.0
+## Medic_Checker v3.0 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
@@ -286,7 +287,7 @@ command_handlers.py → Execute action + update UI
 - **New commands:** `open_url`, `system_info`, `set_volume`, `set_wallpaper`, `search_files`, `type_text`, `lock_screen`, `shutdown`, `restart`, `set_reminder`, `get_clipboard`, `open_folder`, `target_window_close`, `change_mood`, `clear_memory`
 - **UX:** Escape to abort AI; input stays enabled during ambient polls; subtitle errors on failed file ops
 - **Reliability:** null guards, retry limits, config validation, OCR resolution cap
-- **Medic_Checker.bat v3.0** — 7-step pipeline, `.env` check, `py_compile` verification
+- **Medic_Checker.ps1 v3.0** — PowerShell health check; `.bat` is a thin launcher
 
 ### Phase 3 — Spatial OCR
 
@@ -327,4 +328,4 @@ By using this software you accept full responsibility for any outcome. The autho
 
 Feedback, bug reports, and pull requests welcome.
 
-Have fun — and try not to make Agetha too angry! :)
+Have fun — and try not to make Agetha too angry.
