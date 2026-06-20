@@ -9,6 +9,7 @@ Font: barrio.ttf must be in assets/ folder
 """
 
 import sys
+import re
 import tkinter as tk
 from tkinter import font as tkfont
 import threading
@@ -45,63 +46,21 @@ except ImportError:
 
 from ai_engine import AIEngine
 from screen_reader import ScreenReader
+from command_guard import CommandGuard
+from utils import (
+    native_error_popup, logger, BASE_DIR, WINDOW_W, WINDOW_H,
+    TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS,
+)
 
-import sys
-BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+BASE_DIR = BASE_DIR
 ASSETS      = BASE_DIR / "assets"
 FONT_PATH   = ASSETS / "barrio.ttf"
 
 
-def native_error_popup(title: str, message: str) -> None:
-    """Show a native OS error dialog — same style as the first-run config popup.
-    Uses Windows MessageBoxW (MB_ICONERROR | MB_TOPMOST) with a tkinter showerror fallback."""
-    print(f"[ERROR] {title}: {message}")
-    try:
-        import ctypes
-        # 0x10 = MB_ICONERROR, 0x1000 = MB_TOPMOST
-        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10 | 0x1000)
-        return
-    except Exception:
-        pass
-    try:
-        import tkinter as _tk
-        from tkinter import messagebox as _mb
-        _r = _tk.Tk()
-        _r.withdraw()
-        try:
-            _r.attributes("-topmost", True)
-        except Exception:
-            pass
-        _mb.showerror(title, message, parent=_r)
-        _r.destroy()
-    except Exception:
-        pass
-
-WINDOW_W = 340
-WINDOW_H = 560
 GIF_W    = 340
 GIF_H    = 300
 
-SCREEN_POLL_INTERVAL_MS = 2 * 60 * 1000
-
-BLEEP_TONES = {
-    "neutral":     440,
-    "happy":       523,
-    "excited":     659,
-    "sad":         294,
-    "surprised":   587,
-    "thinking":    370,
-    "whisper":     220,
-    "angry":       185,
-    # Phase 2 — deep emotional stratification
-    "manic":       750,   # base; loop randomizes 600–900 Hz at hyper-speed
-    "melancholic": 120,   # ultra-low drone, nearly subsonic
-    "paranoid":    330,   # tense mid-low; erratic burst/silence pattern
-    "vulnerable":  261,   # soft and slow; Middle C
-    "dominant":    110,   # deep, resonant; near bass fundamental
-}
-
-# ── Phase 2: Attention-snap system ────────────────────────────────────────────
+# Phase 2: Attention-snap system
 # Moods that qualify to trigger a center-snap during ambient polls
 _ATTENTION_MOODS = {"manic", "angry", "paranoid", "dominant", "surprised", "excited"}
 
@@ -423,6 +382,15 @@ class BleepPlayer:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.4)
 
+    def play_file(self, path: str) -> None:
+        if not self._mixer_ready or not PYGAME_OK:
+            return
+        try:
+            snd = pygame.mixer.Sound(path)
+            snd.play()
+        except Exception as exc:
+            logger.warning(f"BleepPlayer.play_file failed: {exc}")
+
 
 def _read_animation_speed() -> float:
     """Read ANIMATION_SPEED from config.txt once at startup. Returns 0.6 if missing/invalid."""
@@ -580,8 +548,8 @@ class GifPlayer:
 class SubtitleRenderer:
     """Typewriter-style subtitles on a Canvas using the Barrio font."""
 
-    # Slightly slower typing for a more natural pace
     CHAR_DELAY = 0.035
+    _font_cache: dict[int, tkfont.Font] = {}
 
     def __init__(self, canvas: tk.Canvas, font_size: int = 17, bleep_player=None):
         self._canvas     = canvas
@@ -594,20 +562,23 @@ class SubtitleRenderer:
         self._font = self._load_font(font_size)
 
     def _load_font(self, size: int) -> tkfont.Font:
+        if size in SubtitleRenderer._font_cache:
+            return SubtitleRenderer._font_cache[size]
         available = tkfont.families()
         for name in ("Barrio", "barrio"):
             if name in available:
-                print(f"[Font] Using '{name}' from Tk font families")
-                return tkfont.Font(family=name, size=size)
-        print("[Font] Barrio not found in Tk families, using Courier fallback")
-        return tkfont.Font(family="Courier", size=size, weight="bold")
+                font = tkfont.Font(family=name, size=size)
+                SubtitleRenderer._font_cache[size] = font
+                return font
+        font = tkfont.Font(family="Courier", size=size, weight="bold")
+        SubtitleRenderer._font_cache[size] = font
+        return font
 
     def clear(self):
         self._canvas.delete("all")
 
     def show_thinking(self, raw_text: str):
         """Show streaming tokens in grey while waiting for a response."""
-        import re
         texts = re.findall(r'"text"\s*:\s*"([^"]*)', raw_text)
         preview = " ".join(texts).strip() or "…"
         self._canvas.after(0, lambda p=preview: self._draw(p, color="#888899"))
@@ -676,8 +647,6 @@ class SubtitleRenderer:
         max_w = max(40, cw - 24)
         max_lines = 3
         min_font_size = 8
-
-        import re
 
         def estimate_lines(word_list, chars_per_line):
             line_chars = 0
@@ -863,6 +832,10 @@ class AgethaPopup:
 
 class CompanionApp:
 
+    WINDOW_W = WINDOW_W
+    WINDOW_H = WINDOW_H
+    _ATTENTION_MOODS = _ATTENTION_MOODS
+
     STATE_SLEEPING = "sleeping"
     STATE_THINKING = "thinking"
     STATE_IDLE     = "idle"
@@ -945,6 +918,10 @@ class CompanionApp:
         self._pending_shutdown = False
         self._last_touch_time: float = 0.0           # epoch time of last gif-click touch event
         self._last_direct_interaction_time: float = time.time()  # updated on keystroke OR gif-click
+        self._guard = CommandGuard(self.root)
+        self._cancel_event = threading.Event()
+        self._ai_busy = False
+        self._state_lock = threading.Lock()
 
         self._build_ui()
         self._bind_keystroke_tracking()   # Phase 2: track any key as direct interaction
@@ -1087,6 +1064,7 @@ class CompanionApp:
         )
         self._input_box.pack(side="left", fill="x", expand=True, ipady=6)
         self._input_box.bind("<Return>", self._on_user_input)
+        self.root.bind("<Escape>", self._on_cancel_ai)
 
         tk.Button(
             input_frame, text="OK",
@@ -1243,9 +1221,7 @@ class CompanionApp:
         self.root.after(0, _do_position)
 
     def _load_gifs_simple(self):
-        """Load all GIFs directly from disk on the main thread.
-        Simple, flat replacement for the old multi-phase preloader.
-        No progress bar — just loads each file one by one and starts Agetha."""
+        """Load all GIFs directly from disk on the main thread."""
         static_vals = list(self.EXTRA_STATIC_GIFS.values()) if getattr(self, "EXTRA_STATIC_GIFS", None) else []
         all_names = list(dict.fromkeys(
             self.IDLE_GIFS + self.TALKING_GIFS + list(self.EXTRA_GIFS.values()) + static_vals
@@ -1254,21 +1230,20 @@ class CompanionApp:
         for name in all_names:
             path = ASSETS / name
             if not path.exists():
-                print(f"[GIF] Missing: {path}")
+                logger.warning(f"Missing GIF: {path}")
                 missing.append(name)
                 continue
             try:
                 self._gif_cache[name] = GifPlayer(
                     self._gif_label, str(path), self.root.after
                 )
-                print(f"[GIF] Loaded: {name}")
-            except Exception as e:
-                print(f"[GIF] Failed to load {name}: {e}")
+                logger.info(f"Loaded GIF: {name}")
+            except Exception as exc:
+                logger.warning(f"Failed to load {name}: {exc}")
 
         if missing:
-            print(f"[GIF] {len(missing)} asset(s) not found: {missing}")
+            logger.warning(f"{len(missing)} asset(s) not found: {missing}")
 
-        # Remove loading label and boot the wake sequence
         try:
             if hasattr(self, "_loading_label") and self._loading_label:
                 self._loading_label.destroy()
@@ -1277,8 +1252,8 @@ class CompanionApp:
             pass
         try:
             self._start_wake_sequence()
-        except Exception as e:
-            print(f"[GIF] start_wake_sequence failed: {e}")
+        except Exception as exc:
+            logger.warning(f"start_wake_sequence failed: {exc}")
 
     def _init_background(self):
         """Run heavy initialization off the main thread."""
@@ -1355,7 +1330,7 @@ class CompanionApp:
             self._current_gif_player = player
             player.play()
         else:
-            print(f"[WARN] GIF not loaded: {name}")
+            logger.warning(f"GIF not loaded: {name}")
 
     def _play_gif_once_then(self, anim_name: str, static_name: str, guard=None):
         """Play anim_name once, then switch to static_name (if guard passes)."""
@@ -1410,6 +1385,10 @@ class CompanionApp:
             self._talking_rotate_job = None
 
     def _set_state(self, state: str, mood: str = "neutral"):
+        with self._state_lock:
+            self._apply_state(state, mood)
+
+    def _apply_state(self, state: str, mood: str = "neutral"):
         # Cancel any pending loaf timer when changing state
         try:
             if getattr(self, "_loaf_job", None):
@@ -1493,7 +1472,8 @@ class CompanionApp:
                     self._play_gif(mood_gif)
             else:
                 self._start_talking_rotation()
-            self._bleep.start_talking(tone=mood)
+            if self._bleep:
+                self._bleep.start_talking(tone=mood)
 
     def _enter_loaf(self):
         # Only enter loaf if still idle
@@ -1523,64 +1503,63 @@ class CompanionApp:
             self.root.after_cancel(self._poll_job)
         self._poll_job = self.root.after(SCREEN_POLL_INTERVAL_MS, self._schedule_screen_poll)
 
+    def _on_cancel_ai(self, event=None):
+        """Escape — cancel an in-flight AI request."""
+        self._cancel_event.set()
+        self._re_enable_input()
+        self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
+        self.root.after(0, lambda: self._subtitle.show_message("Cancelled.", "#888888"))
+
     def _ai_tick(self, user_message: str | None = None):
         is_user = user_message is not None
 
-        self.root.after(0, lambda: self._input_box.config(state="disabled"))
+        if not self._ai:
+            self._re_enable_input()
+            self._reschedule_screen_poll()
+            return
+
+        self._cancel_event.clear()
+        self._ai_busy = True
+
+        if is_user:
+            self.root.after(0, lambda: self._input_box.config(state="disabled"))
 
         screen_text = ""
-        if not is_user:
+        if not is_user and self._screen:
             screen_text = self._screen.capture_text()
             self._last_screen_text = screen_text
 
-            if self._screen:
-                # ── Phase 3: Rich context injection ───────────────────────────
+            _matches = getattr(self._screen, "last_pattern_matches", [])
+            if _matches:
+                tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
+                screen_text = tags + "\n" + screen_text
+            elif getattr(self._screen, "has_angry_trigger", False):
+                kws = ", ".join(self._screen.last_angry_keywords[:3])
+                screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
 
-                # 1. Regex pattern matches (IDE errors, terminal failures, crashes)
-                #    Each match carries a suggested mood the AI can act on.
-                _matches = getattr(self._screen, "last_pattern_matches", [])
-                if _matches:
-                    tags = "\n".join(
-                        f"[{m.label}: {m.snippet[:80]}]"
-                        for m in _matches[:4]
-                    )
-                    screen_text = tags + "\n" + screen_text
-                elif getattr(self._screen, "has_angry_trigger", False):
-                    # 2. Fallback: legacy flat keyword list
-                    kws = ", ".join(self._screen.last_angry_keywords[:3])
-                    screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
+            _title = getattr(self._screen, "last_active_window_title", "")
+            if _title:
+                screen_text = f"[Active: {_title}]\n" + screen_text
 
-                # 3. Active window title  →  "Active: Visual Studio Code"
-                _title = getattr(self._screen, "last_active_window_title", "")
-                if _title:
-                    screen_text = f"[Active: {_title}]\n" + screen_text
-
-                # 4. Spatial positions for key error words  →  Agetha can use
-                #    these coords in a move_window command to position herself
-                #    right next to the error on screen.
-                _KEY_WORDS = {
-                    "error", "warning", "failed", "exception", "traceback",
-                    "fatal", "crash", "denied", "undefined", "null",
-                    "undefined", "critical",
-                }
-                _positions = getattr(self._screen, "last_word_positions", [])
-                _important = [
-                    p for p in _positions
-                    if p.get("text", "").lower() in _KEY_WORDS
-                ][:5]
-                if _important:
-                    pos_str = " | ".join(
-                        f"{p['text']}@({p['screen_x']},{p['screen_y']})"
-                        for p in _important
-                    )
-                    screen_text = f"[Error positions: {pos_str}]\n" + screen_text
+            _KEY_WORDS = {
+                "error", "warning", "failed", "exception", "traceback",
+                "fatal", "crash", "denied", "undefined", "null", "critical",
+            }
+            _positions = getattr(self._screen, "last_word_positions", [])
+            _important = [p for p in _positions if p.get("text", "").lower() in _KEY_WORDS][:5]
+            if _important:
+                pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
+                screen_text = f"[Error positions: {pos_str}]\n" + screen_text
 
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
         def _on_token(raw_so_far: str):
-            self._subtitle.show_thinking(raw_so_far)
+            if not self._cancel_event.is_set():
+                self._subtitle.show_thinking(raw_so_far)
 
         try:
+            if self._cancel_event.is_set():
+                return
             response = self._ai.query_streaming(
                 screen_context=screen_text if not is_user else self._last_screen_text,
                 user_message=user_message or "",
@@ -1588,16 +1567,20 @@ class CompanionApp:
             )
         except Exception as exc:
             err_str = str(exc)
-            print(f"[AI_TICK] Unhandled exception: {err_str}")
-            # Only show for non-groq-limit errors
+            logger.error(f"AI tick failed: {err_str}")
             _groq_limit_keywords = ("rate_limit", "rate limit", "429", "quota", "groq_exhausted")
-            is_groq_limit = any(kw in err_str.lower() for kw in _groq_limit_keywords)
-            if not is_groq_limit:
+            if not any(kw in err_str.lower() for kw in _groq_limit_keywords):
                 _short = err_str[:200] if len(err_str) > 200 else err_str
                 native_error_popup("Agetha — Error", f"An error occurred:\n{_short}")
             self.root.after(0, self._re_enable_input)
             self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
+            self._ai_busy = False
             self._reschedule_screen_poll()
+            return
+
+        if self._cancel_event.is_set():
+            self._ai_busy = False
+            self.root.after(0, self._re_enable_input)
             return
 
         print("\n" + "-" * 52)
@@ -1607,6 +1590,7 @@ class CompanionApp:
         print("-" * 52)
 
         self.root.after(0, self._re_enable_input)
+        self._ai_busy = False
         self._dispatch_response(response, user_message)
 
     # ── Emotion Sound Player ──────────────────────────────────────────────────
@@ -1679,731 +1663,75 @@ class CompanionApp:
         else:
             print("[SOUND] Pygame not available; sound fallback skipped.")
 
+    def _speak_and_continue(self, segments, mood, shutdown_requested: bool = False):
+        if segments:
+            self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
+            self.root.after(0, lambda: self._subtitle.speak(
+                segments,
+                on_done=lambda: self._on_speech_done(shutdown_requested),
+            ))
+        else:
+            self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
+            self._reschedule_screen_poll()
+
+    def _show_op_error(self, message: str) -> None:
+        msg = str(message)[:140]
+        self.root.after(0, lambda: self._subtitle.show_message(msg, "#ff4444"))
+
+    def _ai_query(self, user_message: str, screen_context=None, doc_content: str = ""):
+        if self._cancel_event.is_set() or not self._ai:
+            return None
+        self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
+
+        def _on_token(raw):
+            if not self._cancel_event.is_set():
+                self._subtitle.show_thinking(raw)
+
+        try:
+            return self._ai.query_streaming(
+                screen_context=self._last_screen_text if screen_context is None else screen_context,
+                user_message=user_message,
+                doc_content=doc_content,
+                on_token=_on_token,
+            )
+        except Exception as exc:
+            logger.error(f"_ai_query failed: {exc}")
+            return None
+
+    def _try_short_mood_speak(self, command: str, ctx) -> bool:
+        try:
+            short_moods = {"happy", "excited", "surprised"}
+            segments = ctx.segments
+            mood = ctx.mood
+            is_short = (
+                command == "speak" and isinstance(segments, list) and len(segments) == 1
+                and isinstance(segments[0].get("text", ""), str)
+                and len(segments[0].get("text", "").split()) <= 6
+            )
+            if not (is_short and mood in short_moods):
+                return False
+            static_name = self.EXTRA_STATIC_GIFS.get(mood)
+            if not static_name and mood in ("excited", "surprised"):
+                static_name = self.EXTRA_STATIC_GIFS.get("happy")
+            if not static_name or static_name not in self._gif_cache:
+                return False
+            self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
+            self.root.after(12, lambda: self._play_gif(static_name))
+            self.root.after(0, lambda: self._subtitle.speak(
+                segments,
+                on_done=lambda: self._on_speech_done(ctx.shutdown_requested),
+            ))
+            return True
+        except Exception:
+            return False
+
     def _dispatch_response(self, response: dict, user_message: str | None = None):
-        # Clear any temporary loading subtitle when handling a response
         try:
             self.root.after(0, lambda: self._subtitle.clear())
         except Exception:
             pass
-        command  = response.get("command", "idle")
-        mood     = response.get("mood", "neutral")
-        segments = response.get("segments", [])
-        popup_msgs = response.get("popup", None)
-        shutdown_requested = bool(response.get("shutdown", False))
-
-        # Show Groq keys exhausted message in red subtitle area
-        if response.get("groq_exhausted"):
-            self.root.after(0, lambda: self._subtitle.show_message("You reached your limit with your Groq keys", "#ff4444"))
-            self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
-            self._reschedule_screen_poll()
-            return
-
-        # ── Phase 2: Attention-snap on ambient polls ───────────────────────────
-        # If this is an ambient poll (no direct user message) and Agetha returns
-        # an attention-seeking mood, run the inactivity gate. Threshold is shorter
-        # for severe moods (manic=2 min) and longer for passive ones (melancholic=15 min).
-        if not user_message and mood in _ATTENTION_MOODS:
-            self._maybe_snap_to_center(mood)
-
-        def _speak_and_continue(resp_segments, resp_mood, resp_shutdown):
-            if resp_segments:
-                self.root.after(0, lambda: self._set_state(self.STATE_TALKING, resp_mood))
-                self.root.after(0, lambda: self._subtitle.speak(
-                    resp_segments,
-                    on_done=lambda: self._on_speech_done(resp_shutdown)
-                ))
-            else:
-                self.root.after(0, lambda: self._set_state(self.STATE_IDLE, resp_mood))
-                self._reschedule_screen_poll()
-
-        # Short-response static gif handling: if AI speaks a very short excited/happy/surprised
-        # message (single short segment), show the static emotion gif during speech instead of
-        # playing the full animated version.
-        try:
-            short_moods = {"happy", "excited", "surprised"}
-            is_short = (
-                command == "speak" and isinstance(segments, list) and len(segments) == 1 and
-                isinstance(segments[0].get("text", ""), str) and len(segments[0].get("text", "").split()) <= 6
-            )
-            if is_short and mood in short_moods:
-                static_name = (self.EXTRA_STATIC_GIFS.get(mood) if getattr(self, 'EXTRA_STATIC_GIFS', None) else None)
-                if not static_name and mood in ("excited", "surprised"):
-                    # fallback to happy static if a mood-specific static gif isn't present
-                    static_name = (self.EXTRA_STATIC_GIFS.get("happy") if getattr(self, 'EXTRA_STATIC_GIFS', None) else None)
-                # If we have a static image, show it while speaking
-                if static_name and static_name in self._gif_cache:
-                    self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
-                    # small delay to let _set_state run, then force the static image
-                    self.root.after(12, lambda: self._play_gif(static_name))
-                    # speak as normal (subtitle will clear loading text earlier)
-                    self.root.after(0, lambda: self._subtitle.speak(
-                        segments,
-                        on_done=lambda: self._on_speech_done(shutdown_requested)
-                    ))
-                    return
-        except Exception:
-            pass
-
-        # --- New: show_error_gif handling (display gif indefinitely) ---
-        if command == "show_error_gif":
-            path = response.get("path", "") or str(ASSETS / "error.gif")
-            try:
-                # Try to load the provided gif directly; fall back to bundled asset
-                gif_path = Path(path)
-                if not gif_path.exists():
-                    gif_path = ASSETS / "error.gif"
-                name = str(gif_path)
-                # create a temporary GifPlayer for this path and play it
-                player = GifPlayer(self._gif_label, name, self.root.after)
-                self._current_gif_player and self._current_gif_player.stop()
-                self._current_gif_player = player
-                player.play()
-                # Keep window always-on-top and idle
-                self.root.after(0, lambda: self._set_state(self.STATE_IDLE, "neutral"))
-                # Do not reschedule normal polling while error gif is showing
-                return
-            except Exception as e:
-                print(f"[ERROR_GIF] Failed to show error gif: {e}")
-
-        # --- New: move_window handling ---
-        if command == "move_window":
-            # Accept explicit x,y or a direction string
-            try:
-                x = response.get("x", None)
-                y = response.get("y", None)
-                direction = response.get("direction", "").lower() if isinstance(response.get("direction", ""), str) else ""
-
-                sw = self.root.winfo_screenwidth()
-                sh = self.root.winfo_screenheight()
-                ww = self.root.winfo_width() or WINDOW_W
-                wh = self.root.winfo_height() or WINDOW_H
-
-                if x is not None and y is not None:
-                    nx = int(x); ny = int(y)
-                else:
-                    curx = self.root.winfo_x(); cury = self.root.winfo_y()
-                    if direction == "left":
-                        nx = 10; ny = cury
-                    elif direction == "right":
-                        nx = max(0, sw - ww - 10); ny = cury
-                    elif direction == "up":
-                        nx = curx; ny = 10
-                    elif direction == "down":
-                        nx = curx; ny = max(0, sh - wh - 50)
-                    elif direction == "center":
-                        nx = max(0, (sw - ww) // 2); ny = max(0, (sh - wh) // 2)
-                    else:
-                        # default: move left
-                        nx = 10; ny = cury
-
-                self.root.geometry(f"+{nx}+{ny}")
-                print(f"[UI] Moved window to: {nx},{ny}")
-            except Exception as e:
-                print(f"[UI] Failed to move window: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "request_path":
-            hint = response.get("path_hint", "").strip()
-            lines = [hint] if hint else (
-                [seg.get("text", "") for seg in segments if seg.get("text", "")] or
-                ["Path resolved automatically."]
-            )
-            self.root.after(0, lambda: AgethaPopup(self.root, lines[:4], mood))
-            self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
-            self._reschedule_screen_poll()
-            return
-
-        if command == "create_folder":
-            path = response.get("path", "").strip()
-            if path:
-                try:
-                    os.makedirs(path, exist_ok=True)
-                    print(f"[FS] Created folder: {path}")
-                except Exception as e:
-                    print(f"[FS] Failed to create folder {path}: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "create_file":
-            file_path = response.get("file_path", "").strip()
-            if not file_path:
-                path      = response.get("path",      "").strip()
-                file_name = response.get("file_name", "").strip()
-                if path and file_name:
-                    file_path = os.path.join(path, file_name)
-            content = response.get("content", "")
-            if file_path:
-                try:
-                    parent = os.path.dirname(file_path)
-                    if parent:
-                        os.makedirs(parent, exist_ok=True)
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    print(f"[FS] Created file: {file_path}")
-                except Exception as e:
-                    print(f"[FS] Failed to create file {file_path}: {e}")
-            else:
-                print("[FS] create_file: missing path/file_name")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "delete_file":
-            path = response.get("path", "").strip()
-            if path:
-                import shutil
-                try:
-                    p = Path(path)
-                    if p.is_dir():
-                        shutil.rmtree(p)
-                        print(f"[FS] Deleted folder: {path}")
-                    elif p.exists():
-                        p.unlink()
-                        print(f"[FS] Deleted file: {path}")
-                    else:
-                        print(f"[FS] delete_file: not found: {path}")
-                except Exception as e:
-                    print(f"[FS] Failed to delete {path}: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "rename_file":
-            path     = response.get("path",     "").strip()
-            new_name = response.get("new_name", "").strip()
-            if path and new_name:
-                try:
-                    p    = Path(path)
-                    dest = p.parent / new_name
-                    p.rename(dest)
-                    print(f"[FS] Renamed: {path} → {dest}")
-                except Exception as e:
-                    print(f"[FS] Failed to rename {path}: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command in ("list_dir", "list_directory"):
-            req_path = response.get("path", "").strip() or str(self._ai._system_path)
-            try:
-                p = Path(req_path)
-                if not p.exists():
-                    lines = [f"[not found: {req_path}]"]
-                elif not p.is_dir():
-                    lines = [f"[not a directory: {req_path}]"]
-                else:
-                    entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
-                    lines = [e.name + ("/" if e.is_dir() else "") for e in entries]
-                    if not lines:
-                        lines = ["[empty directory]"]
-            except Exception as e:
-                lines = [f"[error listing: {e}]"]
-
-            self.root.after(0, lambda: AgethaPopup(self.root, lines[:12], mood))
-            if not segments:
-                segments = [{"text": f"{len(lines)} items in {req_path}", "pause": 0.0}]
-            print(f"[FS] Listed {req_path}: {len(lines)} entries")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "set_clipboard":
-            text = response.get("text", "").strip()
-            if text:
-                try:
-                    self.root.clipboard_clear()
-                    self.root.clipboard_append(text)
-                    self.root.update()
-                    print(f"[CLIP] Set clipboard: {text[:60]}")
-                except Exception as e:
-                    print(f"[CLIP] Failed: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "play_sound":
-            sound_name = response.get("sound", "beep").strip().lower()
-            _sound_map = {
-                "beep":   440,
-                "chime":  880,
-                "error":  185,
-                "notify": 523,
-            }
-            freq = _sound_map.get(sound_name, 440)
-            try:
-                self._bleep.start_talking(tone={v: k for k, v in {
-                    "neutral": 440, "happy": 523, "excited": 659,
-                    "sad": 294, "surprised": 587, "thinking": 370,
-                    "whisper": 220, "angry": 185,
-                }.items()}.get(freq, "neutral"))
-                threading.Timer(0.8, self._bleep.stop).start()
-                print(f"[SOUND] Played: {sound_name}")
-            except Exception as e:
-                print(f"[SOUND] Failed: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "take_screenshot":
-            save_path = response.get("save_path", "").strip()
-            if not save_path:
-                import datetime as _dt
-                ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-                save_path = os.path.join(self._ai._system_path, f"screenshot_{ts}.png")
-            try:
-                img = self._screen.capture_image()
-                if img:
-                    img.save(save_path)
-                    print(f"[SCREEN] Screenshot saved: {save_path}")
-                else:
-                    print("[SCREEN] capture_image returned None")
-            except Exception as e:
-                print(f"[SCREEN] Failed to save screenshot: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "show_notification":
-            title   = response.get("title",   "Agetha").strip()
-            message = response.get("message", "").strip()
-            if message:
-                try:
-                    _sys = platform.system()
-                    import subprocess as _sp
-                    if _sys == "Darwin":
-                        script = f'display notification "{message}" with title "{title}"'
-                        _sp.Popen(["osascript", "-e", script])
-                    elif _sys == "Linux":
-                        _sp.Popen(["notify-send", title, message])
-                    elif _sys == "Windows":
-                        # ── Fixed approach: build XML on Python side with proper escaping,
-                        # write to a temp .ps1 file, use LoadXml instead of DOM methods.
-                        # The old GetElementsByTagName().AppendChild() path triggers a .NET
-                        # live-collection enumeration exception on most Windows 10/11 builds.
-                        import xml.sax.saxutils as _sax
-                        import tempfile as _tf
-                        import os as _os
-
-                        # 1. Safely escape the text for XML
-                        title_safe = _sax.escape(title, {"'": "&apos;", '"': "&quot;"})
-                        msg_safe = _sax.escape(message, {"'": "&apos;", '"': "&quot;"})
-                        
-                        # 2. Load WinRT assemblies and use Here-String for safe quotes
-                        ps_lines = f"""try {{
-    Add-Type -AssemblyName System.Runtime.WindowsRuntime
-    $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
-    $null = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
-    $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
-    $xmlString = @"
-<toast><visual><binding template="ToastGeneric"><text>{title_safe}</text><text>{msg_safe}</text></binding></visual></toast>
-"@
-    $xml.LoadXml($xmlString)
-    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\\WindowsPowerShell\\v1.0\\powershell.exe").Show($toast)
-}} catch {{
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show("{msg_safe}", "{title_safe}")
-}}"""
-
-
-                        # Write to a temp .ps1 — avoids ALL shell quoting/escaping issues
-                        with _tf.NamedTemporaryFile(
-                            mode="w", suffix=".ps1", delete=False, encoding="utf-8"
-                        ) as tf:
-                            tf.write(ps_lines)
-                            tmp_ps1 = tf.name
-
-                        _sp.Popen(
-                            ["powershell", "-WindowStyle", "Hidden",
-                             "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                             "-File", tmp_ps1],
-                            shell=False,
-                        )
-                        # Clean up temp file after toast has had time to display
-                        threading.Timer(
-                            8.0,
-                            lambda p=tmp_ps1: _os.unlink(p) if _os.path.exists(p) else None,
-                        ).start()
-
-                    print(f"[NOTIFY] {title}: {message}")
-                except Exception as e:
-                    print(f"[NOTIFY] Failed: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "run_command":
-            cmd_str = response.get("cmd", "").strip()
-            use_shell = bool(response.get("shell", True))
-            if cmd_str:
-                try:
-                    import subprocess as _sp
-                    result_proc = _sp.run(
-                        cmd_str, shell=use_shell, capture_output=True,
-                        text=True, timeout=15
-                    )
-                    out = (result_proc.stdout or "").strip()
-                    err = (result_proc.stderr or "").strip()
-                    print(f"[CMD] Ran: {cmd_str}")
-                    if out:
-                        print(f"[CMD] stdout: {out[:200]}")
-                    if err:
-                        print(f"[CMD] stderr: {err[:200]}")
-                except Exception as e:
-                    print(f"[CMD] Failed to run '{cmd_str}': {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "read_document":
-            doc_path = response.get("path", "").strip()
-            doc_content = self._ai.read_document(doc_path) if doc_path else "[no path provided]"
-            print(f"[DOC] Read '{doc_path}': {doc_content[:80]}")
-            def _requery_with_doc():
-                self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
-                def _on_token(raw_so_far: str):
-                    self._subtitle.show_thinking(raw_so_far)
-                follow = self._ai.query_streaming(
-                    screen_context=self._last_screen_text,
-                    user_message="",
-                    doc_content=doc_content,
-                    on_token=_on_token,
-                )
-                print(f"[AI]    {json.dumps(follow, ensure_ascii=False)}")
-                self._dispatch_response(follow, user_message)
-            threading.Thread(target=_requery_with_doc, daemon=True).start()
-            return
-
-        if command == "open_file":
-            # Open any file with the OS default program (PDF, images, docx, etc.)
-            file_path = response.get("path", "").strip()
-            if file_path:
-                try:
-                    _sys = platform.system()
-                    if _sys == "Windows":
-                        os.startfile(file_path)
-                    elif _sys == "Darwin":
-                        import subprocess as _sp
-                        _sp.Popen(["open", file_path])
-                    else:
-                        import subprocess as _sp
-                        _sp.Popen(["xdg-open", file_path])
-                    print(f"[FILE] Opened: {file_path}")
-                except Exception as e:
-                    print(f"[FILE] Failed to open {file_path}: {e}")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "write_file":
-            file_path = response.get("file_path", "").strip()
-            content   = response.get("content", "")
-            mode      = response.get("mode", "overwrite").strip()
-            if file_path:
-                try:
-                    result_msg = self._ai.write_file(file_path, content, mode)
-                    print(f"[FS] write_file → {result_msg}")
-                except Exception as e:
-                    print(f"[FS] write_file error: {e}")
-            else:
-                print("[FS] write_file: missing file_path")
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "monitor_process":
-            process_name = response.get("process_name", "").strip()
-            if process_name:
-                def _check_and_respond():
-                    is_running = self._ai.monitor_process(process_name)
-                    status = "running" if is_running else "not running"
-                    print(f"[PROC] {process_name} is {status}")
-                    # Feed the result back to the AI for a natural response
-                    self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
-                    def _on_token(raw_so_far: str):
-                        self._subtitle.show_thinking(raw_so_far)
-                    follow = self._ai.query_streaming(
-                        screen_context=self._last_screen_text,
-                        user_message=f"[SYSTEM] Process '{process_name}' is {status}.",
-                        on_token=_on_token,
-                    )
-                    print(f"[AI]    {json.dumps(follow, ensure_ascii=False)}")
-                    self._dispatch_response(follow, user_message)
-                threading.Thread(target=_check_and_respond, daemon=True).start()
-            else:
-                print("[PROC] monitor_process: no process_name provided")
-                _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "play_emotion_sound":
-            emotion = response.get("emotion", "angry").strip()
-            threading.Thread(target=self._play_emotion_sound, args=(emotion,), daemon=True).start()
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "show_dialog":
-            dlg_type = response.get("dialog_type", "info").strip().lower()
-            dlg_title = response.get("title", "Agetha").strip()
-            dlg_msg   = response.get("message", "").strip()
-            if dlg_msg:
-                def _show():
-                    try:
-                        import tkinter as _tk
-                        from tkinter import messagebox as _mb
-                        _r = _tk.Tk()
-                        _r.withdraw()
-                        try:
-                            _r.attributes("-topmost", True)
-                        except Exception:
-                            pass
-                        if dlg_type == "warning":
-                            _mb.showwarning(dlg_title, dlg_msg, parent=_r)
-                        elif dlg_type == "error":
-                            _mb.showerror(dlg_title, dlg_msg, parent=_r)
-                        elif dlg_type == "yesno":
-                            _mb.askyesno(dlg_title, dlg_msg, parent=_r)
-                        else:
-                            _mb.showinfo(dlg_title, dlg_msg, parent=_r)
-                        _r.destroy()
-                        print(f"[DIALOG] {dlg_type}: {dlg_title} — {dlg_msg}")
-                    except Exception as e:
-                        print(f"[DIALOG] Failed: {e}")
-                threading.Thread(target=_show, daemon=True).start()
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        # ── Phase 2: Explicit center-snap command ─────────────────────────────
-        if command == "snap_to_center":
-            # AI explicitly demands attention — snap unconditionally (no inactivity gate)
-            def _force_snap():
-                try:
-                    sw = self.root.winfo_screenwidth()
-                    sh = self.root.winfo_screenheight()
-                    nx = (sw - WINDOW_W) // 2
-                    ny = (sh - WINDOW_H) // 2
-                    self.root.geometry(f"+{nx}+{ny}")
-                    try:
-                        self.root.attributes("-topmost", True)
-                    except Exception:
-                        pass
-                    self.root.lift()
-                    print(f"[SNAP] AI-commanded snap_to_center (mood={mood})")
-                except Exception as e:
-                    print(f"[SNAP] snap_to_center error: {e}")
-            self.root.after(0, _force_snap)
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        # ── Phase 2: External window move (ctypes on Windows, xdotool/wmctrl on Linux) ──────────────
-        if command == "target_window_move":
-            target_app = response.get("target_app", "").strip()
-            try:
-                tx = int(response.get("x", 0) or 0)
-                ty = int(response.get("y", 0) or 0)
-            except (ValueError, TypeError):
-                tx, ty = 0, 0
-            if target_app:
-                if IS_WINDOWS:
-                    def _do_move_win(app=target_app, x=tx, y=ty):
-                        try:
-                            hwnd = _find_window_hwnd(app)
-                            if hwnd:
-                                SWP_NOSIZE   = 0x0001
-                                SWP_NOZORDER = 0x0004
-                                ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0,
-                                                                   SWP_NOSIZE | SWP_NOZORDER)
-                                print(f"[WIN32] Moved '{app}' → ({x}, {y})")
-                            else:
-                                print(f"[WIN32] target_window_move: window not found: '{app}'")
-                                fail = [{"text": f"It's not here.", "pause": 0.4},
-                                        {"text": "Where did it go.", "pause": 0.0}]
-                                self.root.after(0, lambda: self._subtitle.speak(fail))
-                        except Exception as e:
-                            print(f"[WIN32] target_window_move error: {e}")
-                    threading.Thread(target=_do_move_win, daemon=True).start()
-                elif IS_LINUX:
-                    def _do_move_linux(app=target_app, x=tx, y=ty):
-                        # Try xdotool
-                        try:
-                            res = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", app], capture_output=True, text=True, timeout=2)
-                            if res.returncode == 0 and res.stdout.strip():
-                                first_win = res.stdout.splitlines()[0].strip()
-                                subprocess.run(["xdotool", "windowmove", first_win, str(x), str(y)], timeout=2)
-                                print(f"[Linux] xdotool moved '{app}' to ({x}, {y})")
-                                return
-                        except Exception:
-                            pass
-                        # Try wmctrl fallback
-                        try:
-                            res = subprocess.run(["wmctrl", "-r", app, "-e", f"0,{x},{y},-1,-1"], timeout=2)
-                            if res.returncode == 0:
-                                print(f"[Linux] wmctrl moved '{app}' to ({x}, {y})")
-                                return
-                        except Exception:
-                            pass
-                        print(f"[Linux] target_window_move failed: window not found or xdotool/wmctrl missing for '{app}'")
-                        fail = [{"text": f"It's not here.", "pause": 0.4},
-                                {"text": "Where did it go.", "pause": 0.0}]
-                        self.root.after(0, lambda: self._subtitle.speak(fail))
-                    threading.Thread(target=_do_move_linux, daemon=True).start()
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        # ── Phase 2: External window resize (ctypes on Windows, xdotool/wmctrl on Linux) ───────────
-        if command == "target_window_resize":
-            target_app = response.get("target_app", "").strip()
-            try:
-                tx = int(response.get("x", 0) or 0)
-                ty = int(response.get("y", 0) or 0)
-                tw = int(response.get("width", 800) or 800)
-                th = int(response.get("height", 600) or 600)
-            except (ValueError, TypeError):
-                tx, ty, tw, th = 0, 0, 800, 600
-            if target_app:
-                if IS_WINDOWS:
-                    def _do_resize_win(app=target_app, x=tx, y=ty, w=tw, h=th):
-                        try:
-                            hwnd = _find_window_hwnd(app)
-                            if hwnd:
-                                # MoveWindow: sets position AND size atomically
-                                ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, True)
-                                print(f"[WIN32] Resized '{app}' → ({x},{y}) {w}×{h}")
-                            else:
-                                print(f"[WIN32] target_window_resize: window not found: '{app}'")
-                                fail = [{"text": f"I looked.", "pause": 0.4},
-                                        {"text": f"{app} isn't open.", "pause": 0.0}]
-                                self.root.after(0, lambda: self._subtitle.speak(fail))
-                        except Exception as e:
-                            print(f"[WIN32] target_window_resize error: {e}")
-                    threading.Thread(target=_do_resize_win, daemon=True).start()
-                elif IS_LINUX:
-                    def _do_resize_linux(app=target_app, x=tx, y=ty, w=tw, h=th):
-                        # Try xdotool
-                        try:
-                            res = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", app], capture_output=True, text=True, timeout=2)
-                            if res.returncode == 0 and res.stdout.strip():
-                                first_win = res.stdout.splitlines()[0].strip()
-                                subprocess.run(["xdotool", "windowsize", first_win, str(w), str(h)], timeout=2)
-                                subprocess.run(["xdotool", "windowmove", first_win, str(x), str(y)], timeout=2)
-                                print(f"[Linux] xdotool resized & moved '{app}' to ({x},{y}) {w}x{h}")
-                                return
-                        except Exception:
-                            pass
-                        # Try wmctrl fallback
-                        try:
-                            res = subprocess.run(["wmctrl", "-r", app, "-e", f"0,{x},{y},{w},{h}"], timeout=2)
-                            if res.returncode == 0:
-                                print(f"[Linux] wmctrl resized & moved '{app}' to ({x},{y}) {w}x{h}")
-                                return
-                        except Exception:
-                            pass
-                        print(f"[Linux] target_window_resize failed: window not found or xdotool/wmctrl missing for '{app}'")
-                        fail = [{"text": f"I looked.", "pause": 0.4},
-                                {"text": f"{app} isn't open.", "pause": 0.0}]
-                        self.root.after(0, lambda: self._subtitle.speak(fail))
-                    threading.Thread(target=_do_resize_linux, daemon=True).start()
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "open_app":
-            app_name = response.get("app", "").strip()
-            if app_name:
-                print(f"[APP] Opening {app_name}...")
-                try:
-                    import subprocess as _sp
-                    if platform.system() == "Windows":
-                        try:
-                            os.startfile(app_name)
-                        except OSError:
-                            _sp.Popen([app_name])
-                    elif platform.system() == "Darwin":
-                        _sp.Popen(["open", app_name])
-                    else:
-                        _sp.Popen([app_name])
-                except Exception as e:
-                    print(f"[APP] Failed to open {app_name}: {e}")
-            self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
-            self._reschedule_screen_poll()
-            return
-
-        if command == "force_close":
-            target = (response.get("app", "") or response.get("process", "") or response.get("name", "")).strip()
-            if target:
-                try:
-                    import subprocess as _sp
-                    if platform.system() == "Windows":
-                        proc_name = os.path.basename(target)
-                        _sp.run(["taskkill", "/IM", proc_name, "/F"], capture_output=True, check=False)
-                    else:
-                        _sp.run(["pkill", "-f", target], check=False)
-                    print(f"[APP] Force-closed: {target}")
-                except Exception as e:
-                    print(f"[APP] Failed to force-close {target}: {e}")
-            else:
-                print("[APP] force_close: no target provided")
-            if not segments:
-                segments = [{"text": "Talk to me.", "pause": 0.0}]
-            _speak_and_continue(segments, mood, shutdown_requested)
-            return
-
-        if command == "open_browser":
-            url    = response.get("url",    "").strip()
-            search = response.get("search", "").strip()
-            engine = response.get("engine", "google").strip()
-            if not url and search:
-                _engines = {
-                    "google":     "https://www.google.com/search?q=",
-                    "duckduckgo": "https://duckduckgo.com/?q=",
-                    "bing":       "https://www.bing.com/search?q=",
-                }
-                url = _engines.get(engine, _engines["google"]) + search.replace(" ", "+")
-                print(f"[BROWSER] Searching: {search} ({engine})")
-            if url:
-                try:
-                    webbrowser.open(url)
-                except Exception as e:
-                    print(f"[BROWSER] Failed: {e}")
-            self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
-            self._reschedule_screen_poll()
-            return
-
-        if command == "request_screen_read":
-            print("[SCREEN] AI requesting screen read...")
-            screen_text = self._screen.capture_text()
-            self._last_screen_text = screen_text
-            print(f"[SCREEN] Captured {len(screen_text)} chars")
-            def _requery_with_screen():
-                self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
-                def _on_token(raw_so_far: str):
-                    self._subtitle.show_thinking(raw_so_far)
-                follow = self._ai.query_streaming(
-                    screen_context=screen_text,
-                    user_message=user_message or "",
-                    on_token=_on_token,
-                )
-                print(f"[AI]    {json.dumps(follow, ensure_ascii=False)}")
-                self._dispatch_response(follow, user_message)
-            threading.Thread(target=_requery_with_screen, daemon=True).start()
-            return
-
-        if popup_msgs and isinstance(popup_msgs, list) and len(popup_msgs) > 0:
-            self.root.after(0, lambda: AgethaPopup(self.root, popup_msgs, mood))
-            self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
-            self._reschedule_screen_poll()
-            return
-
-        if command == "wake_user" and segments:
-            self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
-            self.root.after(0, lambda: self._subtitle.speak(
-                segments,
-                on_done=lambda: self._on_speech_done(shutdown_requested)
-            ))
-        elif command == "speak" and segments:
-            # Clear any loading subtitle immediately as we begin speaking
-            try:
-                self.root.after(0, lambda: self._subtitle.clear())
-            except Exception:
-                pass
-            self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
-            self.root.after(0, lambda: self._subtitle.speak(
-                segments,
-                on_done=lambda: self._on_speech_done(shutdown_requested)
-            ))
-        else:
-            # Explicit idle response — clear any sticky mood so we return to normal
-            self._persistent_mood = None
-            self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
-            self._reschedule_screen_poll()
+        from command_handlers import dispatch
+        dispatch(self, response, user_message)
 
     def _on_speech_done(self, shutdown: bool = False):
         # _persistent_mood already set — _set_state(STATE_IDLE) picks it up
@@ -2415,7 +1743,11 @@ class CompanionApp:
 
     def _shutdown(self):
         self._stop_talking_rotation()
-        self._bleep.stop()
+        if self._bleep:
+            try:
+                self._bleep.stop()
+            except Exception:
+                pass
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
             self._poll_job = None
@@ -2425,7 +1757,11 @@ class CompanionApp:
         try:
             self.root.mainloop()
         finally:
-            self._bleep.stop()
+            if self._bleep:
+                try:
+                    self._bleep.stop()
+                except Exception:
+                    pass
 
 
 def _early_config_check():
