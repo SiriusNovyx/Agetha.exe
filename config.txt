@@ -1,4 +1,4 @@
-# Agetha v4.2.0 (Mod) config — original author is @tomiszivacs github
+# Agetha v5.0.0 (Mod) config — original author is @tomiszivacs github
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── AI Backend ────────────────────────────────────────────────────────────────
@@ -13,16 +13,17 @@ ENABLE_GROQ = yes
 
 # ── Groq API Keys ─────────────────────────────────────────────────────────────
 # Add up to 10 keys (separate free-tier accounts) to rotate around rate limits.
+# You can also use a .env file for sensitive keys (see .env.example).
 GROQ_API_KEY = gsk_
-GROQ_API_KEY_2 = 
-GROQ_API_KEY_3 = 
-GROQ_API_KEY_4 = 
-GROQ_API_KEY_5 = 
-GROQ_API_KEY_6 = 
-GROQ_API_KEY_7 = 
-GROQ_API_KEY_8 = 
-GROQ_API_KEY_9 = 
-GROQ_API_KEY_10 = 
+GROQ_API_KEY_2 =
+GROQ_API_KEY_3 =
+GROQ_API_KEY_4 =
+GROQ_API_KEY_5 =
+GROQ_API_KEY_6 =
+GROQ_API_KEY_7 =
+GROQ_API_KEY_8 =
+GROQ_API_KEY_9 =
+GROQ_API_KEY_10 =
 
 # Groq model. Smaller/cheaper models have more forgiving rate limits.
 GROQ_MODEL = llama-3.3-70b-versatile
@@ -30,7 +31,7 @@ GROQ_MODEL = llama-3.3-70b-versatile
 # ── Local AI (Ollama) ─────────────────────────────────────────────────────────
 # Only used when USE_LOCAL_AI = yes.
 # If LOCAL_AI_MODEL is wrong or not installed, Agetha falls back to idle responses.
-LOCAL_AI_MODEL = 
+LOCAL_AI_MODEL =
 LOCAL_AI_TIMEOUT = 30
 
 # ── OS Permissions ────────────────────────────────────────────────────────────
