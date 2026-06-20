@@ -1,6 +1,6 @@
 # Agetha Mod — Overhaul Edition
 
-> A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
+> A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v5.0.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
 **Version:** Overhaul v3.0 · **Medic_Checker:** v3.0 · **Original author:** @tomiszivacs · **Modified:** @SiriusNovyx
 
