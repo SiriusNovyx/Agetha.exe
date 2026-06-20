@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
-title Agetha.exe  -  Health Check  ^|  Medic_Checker  v2.0
+title Agetha.exe  -  Health Check  ^|  Health_Check  v3.0
 chcp 65001 >nul 2>&1
 cls
 
 :: ════════════════════════════════════════════════════════════════════════
-::  AGETHA.EXE  |  STARTUP & HEALTH CHECK  |  ARM64-AWARE EDITION  v2.0
+::  AGETHA.EXE  |  STARTUP & HEALTH CHECK  |  OVERHAUL EDITION  v3.0
 ::
 ::  PURPOSE
 ::    Enforces the x64 (AMD64) Python variant on ARM64 Snapdragon platforms
@@ -19,7 +19,8 @@ cls
 ::    [B]  Python variant evaluation          (ARM64 hosts only)
 ::    [C]  Conditional intervention & repair offer
 ::    [D]  Automated download + silent install + PATH refresh pipeline
-::    [1-6] Standard health checks  (Python, venv, packages, Tesseract, assets, config)
+::    [1-7] Standard health checks  (Python, venv, packages, Tesseract,
+::           assets, config/modules, py_compile)
 ::    [*]  Launch
 :: ════════════════════════════════════════════════════════════════════════
 
@@ -63,23 +64,28 @@ set "RST=!ESC![0m"
 echo.
 echo !WHT!!BLD!  ╔════════════════════════════════════════════════════════════╗!RST!
 echo !WHT!!BLD!  ║     AGETHA.EXE  ^|  Startup ^& Health Check                 ║!RST!
-echo !WHT!!BLD!  ║     ARM64-Aware Edition  v2.0                              ║!RST!
+echo !WHT!!BLD!  ║     Overhaul Edition  v3.0                                  ║!RST!
 echo !WHT!!BLD!  ╚════════════════════════════════════════════════════════════╝!RST!
 echo.
 
 
 :: ════════════════════════════════════════════════════════════════════════
-::  PRE-FLIGHT: Verify the working directory contains main.py
-::  Everything downstream depends on this folder being correct.
+::  PRE-FLIGHT: Verify core project files exist
 :: ════════════════════════════════════════════════════════════════════════
-if not exist "main.py" (
-    echo !RED!  [FAIL]  main.py not found in this folder.!RST!
-    echo !DIM!  [    ]  Place this script in the same directory as main.py.!RST!
+set "CORE_FAIL=0"
+for %%F in (main.py ai_engine.py screen_reader.py memory_system.py utils.py command_guard.py command_handlers.py system_commands.py requirements.txt) do (
+    if not exist "%%F" (
+        echo !RED!  [FAIL]  Missing required file: %%F!RST!
+        set "CORE_FAIL=1"
+    )
+)
+if "!CORE_FAIL!"=="1" (
+    echo !DIM!  [    ]  Place this script in the Agetha project root folder.!RST!
     echo.
     pause
     exit /b 1
 )
-echo !GRN!  [ OK ]  Working directory confirmed  ^(main.py present^).!RST!
+echo !GRN!  [ OK ]  Core project files confirmed  ^(9 modules + requirements.txt^).!RST!
 echo.
 
 
@@ -382,7 +388,7 @@ exit /b 1
 ::    via PowerShell GetEnvironmentVariable and overwrite our in-session
 ::    PATH so subsequent commands immediately find the new python.exe.
 ::    Additionally, if a venv directory exists and was built with the wrong
-::    (ARM64) Python, it is removed so step [2/6] recreates it correctly.
+::    (ARM64) Python, it is removed so step [2/7] recreates it correctly.
 :: ════════════════════════════════════════════════════════════════════════
 :INSTALL_PYTHON
 echo !WHT!!BLD!  ┌──────────────────────────────────────────────────────────┐!RST!
@@ -521,14 +527,14 @@ echo.
 :: ── D4 BONUS: Stale venv detection ───────────────────────────────────
 :: If a venv\ directory already exists and was created with the old ARM64
 :: Python, the venv's internal python.exe is an ARM64 binary. It will fail
-:: to run x64-compiled packages. Detect and remove it now so step [2/6]
+:: to run x64-compiled packages. Detect and remove it now so step [2/7]
 :: rebuilds it correctly with the x64 Python we just installed.
 if exist "venv\Scripts\python.exe" (
     set "VENV_ARCH=UNKNOWN"
     for /f "usebackq delims=" %%A in (`venv\Scripts\python.exe -c "import platform; print(platform.machine())" 2^>nul`) do set "VENV_ARCH=%%A"
     if /I "!VENV_ARCH!" NEQ "AMD64" (
         echo !YLW!  [VENV]  Existing venv was built with !VENV_ARCH! Python  ^(incompatible^).!RST!
-        echo !CYN!  [    ]  Removing stale venv - it will be rebuilt in step [2/6]...!RST!
+        echo !CYN!  [    ]  Removing stale venv - it will be rebuilt in step [2/7]...!RST!
         rmdir /s /q venv
         echo !GRN!  [ OK ]  Stale venv removed.!RST!
     ) else (
@@ -543,7 +549,7 @@ echo.
 
 
 :: ════════════════════════════════════════════════════════════════════════
-::  STANDARD HEALTH CHECKS  [1/6 through 6/6]
+::  STANDARD HEALTH CHECKS  [1/7 through 7/7]
 ::
 ::  From this point, the script runs identically on all platforms. On ARM64
 ::  machines, control arrives here in one of three ways:
@@ -553,13 +559,13 @@ echo.
 :: ════════════════════════════════════════════════════════════════════════
 :STANDARD_CHECKS
 echo !WHT!!BLD!  ┌──────────────────────────────────────────────────────────┐!RST!
-echo !WHT!!BLD!  │  Standard System Health Checks  [1/6 – 6/6]              │!RST!
+echo !WHT!!BLD!  │  Standard System Health Checks  [1/7 – 7/7]              │!RST!
 echo !WHT!!BLD!  └──────────────────────────────────────────────────────────┘!RST!
 echo.
 
 
-:: ── [1/6]  Python ────────────────────────────────────────────────────
-echo !WHT!  [1 / 6]  Python!RST!
+:: ── [1/7]  Python ────────────────────────────────────────────────────
+echo !WHT!  [1 / 7]  Python!RST!
 python --version >nul 2>&1
 if !errorlevel! NEQ 0 (
     :: 'python' not on PATH - try the py.exe launcher (covers some install configs)
@@ -578,8 +584,8 @@ for /f "tokens=*" %%V in ('!PYTHON_CMD! --version 2^>^&1') do echo !GRN!  [ OK ]
 echo.
 
 
-:: ── [2/6]  Virtual environment ───────────────────────────────────────
-echo !WHT!  [2 / 6]  Virtual environment!RST!
+:: ── [2/7]  Virtual environment ───────────────────────────────────────
+echo !WHT!  [2 / 7]  Virtual environment!RST!
 if not exist "venv\Scripts\activate.bat" (
     echo !CYN!  [    ]  Not found - creating venv  ^(first run only^)...!RST!
     !PYTHON_CMD! -m venv venv
@@ -602,8 +608,8 @@ echo !GRN!  [ OK ]  venv active.!RST!
 echo.
 
 
-:: ── [3/6]  Python packages  (only installs what is missing) ──────────
-echo !WHT!  [3 / 6]  Python packages!RST!
+:: ── [3/7]  Python packages  (requirements.txt) ───────────────────────
+echo !WHT!  [3 / 7]  Python packages  ^(requirements.txt^)!RST!
 set "MISSING="
 pip show pillow       >nul 2>&1 || set "MISSING=!MISSING! pillow"
 pip show pyautogui    >nul 2>&1 || set "MISSING=!MISSING! pyautogui"
@@ -612,26 +618,32 @@ pip show numpy        >nul 2>&1 || set "MISSING=!MISSING! numpy"
 pip show pygame       >nul 2>&1 || set "MISSING=!MISSING! pygame"
 pip show requests     >nul 2>&1 || set "MISSING=!MISSING! requests"
 pip show groq         >nul 2>&1 || set "MISSING=!MISSING! groq"
-pip show tkextrafont  >nul 2>&1 || set "MISSING=!MISSING! tkextrafont"
 pip show mss          >nul 2>&1 || set "MISSING=!MISSING! mss"
+pip show psutil       >nul 2>&1 || set "MISSING=!MISSING! psutil"
 if "!MISSING!"=="" (
-    echo !GRN!  [ OK ]  All 9 packages installed.!RST!
+    echo !GRN!  [ OK ]  All required packages installed.!RST!
 ) else (
     echo !CYN!  [    ]  Missing:!MISSING!!RST!
-    echo !CYN!  [    ]  Installing - please wait...!RST!
-    pip install !MISSING! --quiet --disable-pip-version-check
+    echo !CYN!  [    ]  Installing from requirements.txt - please wait...!RST!
+    pip install -r requirements.txt --quiet --disable-pip-version-check
     if !errorlevel! NEQ 0 (
-        echo !RED!  [FAIL]  Package install failed.  Run:  pip install!MISSING!!RST!
+        echo !RED!  [FAIL]  Package install failed.  Run:  pip install -r requirements.txt!RST!
         pause
         exit /b 1
     )
     echo !GRN!  [ OK ]  Packages installed.!RST!
 )
+pip show tkextrafont >nul 2>&1
+if !errorlevel! NEQ 0 (
+    echo !DIM!  [    ]  tkextrafont optional - not installed ^(Barrio font fallback used^).!RST!
+) else (
+    echo !GRN!  [ OK ]  tkextrafont optional package present.!RST!
+)
 echo.
 
 
-:: ── [4/6]  Tesseract OCR  (optional - enables screen reading) ────────
-echo !WHT!  [4 / 6]  Tesseract OCR  ^(screen reader^)!RST!
+:: ── [4/7]  Tesseract OCR  (optional - enables screen reading) ────────
+echo !WHT!  [4 / 7]  Tesseract OCR  ^(screen reader^)!RST!
 set "TESS=0"
 where tesseract >nul 2>&1                                          && set "TESS=1"
 if exist "C:\Program Files\Tesseract-OCR\tesseract.exe"       set "TESS=1"
@@ -646,8 +658,8 @@ if "!TESS!"=="1" (
 echo.
 
 
-:: ── [5/6]  Required assets ───────────────────────────────────────────
-echo !WHT!  [5 / 6]  Assets  ^( assets\ ^)!RST!
+:: ── [5/7]  Required assets ───────────────────────────────────────────
+echo !WHT!  [5 / 7]  Assets  ^( assets\ ^)!RST!
 set "ASSET_FAIL=0"
 set "ASSET_LIST=angry-static.gif angry.gif error.gif happy-static.gif happy.gif icon.ico idle-1.gif idle-2.gif idle-3.gif loaf.gif sad-static.gif sad.gif sleeping.gif surprised.gif talking-1.gif talking-2.gif talking-3.gif thinking-static.gif thinking.gif barrio.ttf"
 for %%F in (!ASSET_LIST!) do (
@@ -665,39 +677,85 @@ if "!ASSET_FAIL!"=="0" (
 echo.
 
 
-:: ── [6/6]  Config & runtime files ────────────────────────────────────
-echo !WHT!  [6 / 6]  Config ^& runtime files!RST!
+:: ── [6/7]  Config, .env & memory ─────────────────────────────────────
+echo !WHT!  [6 / 7]  Config, .env ^& memory!RST!
 
-:: Ensure memory\ directory exists (stores long-term memories between sessions)
+:: Ensure memory\ directory exists (soul.md + episodic_memory.json)
 if not exist "memory\" (
     mkdir memory
     echo !GRN!  [ OK ]  Created memory\!RST!
 ) else (
     echo !GRN!  [ OK ]  memory\ exists.!RST!
 )
+if exist "memory\soul.md" (
+    echo !GRN!  [ OK ]  memory\soul.md present.!RST!
+) else (
+    echo !DIM!  [    ]  memory\soul.md will be auto-generated on first run.!RST!
+)
 
 :: conversation.txt is wiped on every Agetha launch - just ensure it can exist
 if not exist "conversation.txt" type NUL > conversation.txt
 
-:: Config file check - verify a Groq API key or Ollama model is configured
-if not exist "config.txt" (
-    echo !YLW!  [WARN]  config.txt not found.  Default generated on first run.!RST!
-    echo !DIM!  [    ]  Free Groq key: https://console.groq.com!RST!
+:: .env.example reminder
+if exist ".env.example" (
+    echo !GRN!  [ OK ]  .env.example present.!RST!
 ) else (
-    !PYTHON_CMD! -c "import re; txt=open('config.txt',encoding='utf-8',errors='replace').read(); lm=re.search(r'USE_LOCAL_AI\s*=\s*(\S+)',txt); mm=re.search(r'LOCAL_AI_MODEL\s*=\s*(\S+)',txt); km=re.search(r'GROQ_API_KEY\s*=\s*(.+)',txt); kv=km.group(1).strip() if km else ''; print('LOCAL' if lm and lm.group(1).lower()=='yes' and mm and mm.group(1).strip() else 'LOCAL_NO_MODEL' if lm and lm.group(1).lower()=='yes' else 'SET' if len(kv)>20 else 'EMPTY')" > agetha_cfgcheck.tmp 2>nul
-    for /f "usebackq tokens=*" %%R in ("agetha_cfgcheck.tmp") do set "CFG_STATUS=%%R"
-    del agetha_cfgcheck.tmp >nul 2>&1
-    if "!CFG_STATUS!"=="SET"             echo !GRN!  [ OK ]  config.txt - Groq API key configured.!RST!
-    if "!CFG_STATUS!"=="LOCAL"           echo !GRN!  [ OK ]  config.txt - Local AI ^(Ollama^) mode active.!RST!
-    if "!CFG_STATUS!"=="LOCAL_NO_MODEL" (
-        echo !YLW!  [WARN]  USE_LOCAL_AI=yes but LOCAL_AI_MODEL is blank.!RST!
-        echo !DIM!  [    ]  Run: ollama list    then set LOCAL_AI_MODEL in config.txt!RST!
-    )
-    if "!CFG_STATUS!"=="EMPTY" (
-        echo !YLW!  [WARN]  GROQ_API_KEY is empty - Agetha will not respond.!RST!
-        echo !DIM!  [    ]  Free key: https://console.groq.com!RST!
+    echo !YLW!  [WARN]  .env.example missing - copy template for API keys.!RST!
+)
+
+:: API key check: .env takes priority over config.txt
+set "CFG_STATUS=EMPTY"
+if exist ".env" (
+    !PYTHON_CMD! -c "import re; txt=open('.env',encoding='utf-8',errors='replace').read(); keys=[m.group(1).strip() for m in re.finditer(r'^GROQ_API_KEY(?:_\d+)?\s*=\s*(.+)$',txt,re.M) if m.group(1).strip() and m.group(1).strip() not in ('','YOUR_KEY_HERE')]; print('SET' if any(len(k)>20 for k in keys) else 'EMPTY')" > agetha_envcheck.tmp 2>nul
+    for /f "usebackq tokens=*" %%R in ("agetha_envcheck.tmp") do set "ENV_STATUS=%%R"
+    del agetha_envcheck.tmp >nul 2>&1
+    if "!ENV_STATUS!"=="SET" (
+        echo !GRN!  [ OK ]  .env - Groq API key configured.!RST!
+        set "CFG_STATUS=SET"
     )
 )
+
+if not "!CFG_STATUS!"=="SET" (
+    if not exist "config.txt" (
+        echo !YLW!  [WARN]  config.txt not found.  Default generated on first run.!RST!
+        echo !DIM!  [    ]  Free Groq key: https://console.groq.com!RST!
+        echo !DIM!  [    ]  Or copy .env.example to .env and add keys there.!RST!
+    ) else (
+        !PYTHON_CMD! -c "import re; txt=open('config.txt',encoding='utf-8',errors='replace').read(); lm=re.search(r'USE_LOCAL_AI\s*=\s*(\S+)',txt); mm=re.search(r'LOCAL_AI_MODEL\s*=\s*(\S+)',txt); km=re.search(r'GROQ_API_KEY\s*=\s*(.+)',txt); kv=km.group(1).strip() if km else ''; print('LOCAL' if lm and lm.group(1).lower()=='yes' and mm and mm.group(1).strip() else 'LOCAL_NO_MODEL' if lm and lm.group(1).lower()=='yes' else 'SET' if len(kv)>20 else 'EMPTY')" > agetha_cfgcheck.tmp 2>nul
+        for /f "usebackq tokens=*" %%R in ("agetha_cfgcheck.tmp") do set "CFG_STATUS=%%R"
+        del agetha_cfgcheck.tmp >nul 2>&1
+        if "!CFG_STATUS!"=="SET"             echo !GRN!  [ OK ]  config.txt - Groq API key configured.!RST!
+        if "!CFG_STATUS!"=="LOCAL"           echo !GRN!  [ OK ]  config.txt - Local AI ^(Ollama^) mode active.!RST!
+        if "!CFG_STATUS!"=="LOCAL_NO_MODEL" (
+            echo !YLW!  [WARN]  USE_LOCAL_AI=yes but LOCAL_AI_MODEL is blank.!RST!
+            echo !DIM!  [    ]  Run: ollama list    then set LOCAL_AI_MODEL in config.txt!RST!
+        )
+        if "!CFG_STATUS!"=="EMPTY" (
+            echo !YLW!  [WARN]  No API key in config.txt or .env - Agetha will not respond.!RST!
+            echo !DIM!  [    ]  Free key: https://console.groq.com!RST!
+            echo !DIM!  [    ]  Recommended: copy .env.example to .env and add GROQ_API_KEY_1=...!RST!
+        )
+    )
+)
+echo.
+
+
+:: ── [7/7]  Python syntax compile check ───────────────────────────────
+echo !WHT!  [7 / 7]  Python syntax  ^(py_compile^)!RST!
+set "COMPILE_FAIL=0"
+for %%F in (main.py ai_engine.py screen_reader.py memory_system.py utils.py command_guard.py command_handlers.py system_commands.py) do (
+    !PYTHON_CMD! -m py_compile "%%F" >nul 2>&1
+    if !errorlevel! NEQ 0 (
+        echo !RED!  [FAIL]  Syntax error in %%F!RST!
+        set "COMPILE_FAIL=1"
+    )
+)
+if "!COMPILE_FAIL!"=="1" (
+    echo !RED!  [FAIL]  Fix syntax errors above before launching.!RST!
+    pause
+    exit /b 1
+)
+echo !GRN!  [ OK ]  All 8 modules compile cleanly.!RST!
 echo.
 
 
