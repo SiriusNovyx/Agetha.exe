@@ -328,4 +328,4 @@ By using this software you accept full responsibility for any outcome. The autho
 
 Feedback, bug reports, and pull requests welcome.
 
-Have fun — and try not to make Agetha too angry.
+Have fun — and try not to make Agetha too angry! :)
