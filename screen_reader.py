@@ -49,7 +49,7 @@ def _setup_dpi_awareness() -> None:
 
 _setup_dpi_awareness()
 
-# Conditional Win32 imports for Linux safety
+from utils import logger
 ctypes = None
 if IS_WINDOWS:
     import ctypes
@@ -498,74 +498,76 @@ def _grab_pyautogui() -> "Image.Image | None":
 def _grab_scrot() -> "Image.Image | None":
     if not PIL_OK or not _cmd_exists("scrot"):
         return None
+    tmp = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp = f.name
         result = subprocess.run(["scrot", "--silent", tmp], capture_output=True, timeout=10)
         if result.returncode != 0:
             return None
-        img = Image.open(tmp).copy(); os.unlink(tmp); return img
+        return Image.open(tmp).copy()
     except Exception:
         return None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _grab_temp_png(grabber_fn) -> "Image.Image | None":
+    """Run a grabber that writes to a temp path; always clean up the file."""
+    if not PIL_OK:
+        return None
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            tmp = f.name
+        if not grabber_fn(tmp):
+            return None
+        return Image.open(tmp).copy()
+    except Exception:
+        return None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _grab_grim() -> "Image.Image | None":
     if not PIL_OK or not _cmd_exists("grim"):
         return None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            tmp = f.name
-        result = subprocess.run(["grim", tmp], capture_output=True, timeout=10)
-        if result.returncode != 0:
-            return None
-        img = Image.open(tmp).copy(); os.unlink(tmp); return img
-    except Exception:
-        return None
+    return _grab_temp_png(lambda p: subprocess.run(["grim", p], capture_output=True, timeout=10).returncode == 0)
 
 
 def _grab_spectacle() -> "Image.Image | None":
     if not PIL_OK or not _cmd_exists("spectacle"):
         return None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            tmp = f.name
-        result = subprocess.run(
-            ["spectacle", "--background", "--nonotify", "--fullscreen", "--output", tmp],
+    return _grab_temp_png(
+        lambda p: subprocess.run(
+            ["spectacle", "--background", "--nonotify", "--fullscreen", "--output", p],
             capture_output=True, timeout=15,
-        )
-        if result.returncode != 0 or not Path(tmp).stat().st_size:
-            return None
-        img = Image.open(tmp).copy(); os.unlink(tmp); return img
-    except Exception:
-        return None
+        ).returncode == 0 and Path(p).stat().st_size > 0
+    )
 
 
 def _grab_gnome_screenshot() -> "Image.Image | None":
     if not PIL_OK or not _cmd_exists("gnome-screenshot"):
         return None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            tmp = f.name
-        result = subprocess.run(["gnome-screenshot", "-f", tmp], capture_output=True, timeout=10)
-        if result.returncode != 0:
-            return None
-        img = Image.open(tmp).copy(); os.unlink(tmp); return img
-    except Exception:
-        return None
+    return _grab_temp_png(
+        lambda p: subprocess.run(["gnome-screenshot", "-f", p], capture_output=True, timeout=10).returncode == 0
+    )
 
 
 def _grab_screencapture() -> "Image.Image | None":
     if not PIL_OK:
         return None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            tmp = f.name
-        result = subprocess.run(["screencapture", "-x", tmp], capture_output=True, timeout=10)
-        if result.returncode != 0:
-            return None
-        img = Image.open(tmp).copy(); os.unlink(tmp); return img
-    except Exception:
-        return None
+    return _grab_temp_png(
+        lambda p: subprocess.run(["screencapture", "-x", p], capture_output=True, timeout=10).returncode == 0
+    )
 
 
 # ── ScreenReader ──────────────────────────────────────────────────────────────
@@ -607,16 +609,37 @@ class ScreenReader:
             else:
                 print("[ScreenReader] WARNING: Tesseract not found in standard paths.")
 
-        self._backend_name, self._backend_fn = self._choose_backend()
-        self._available = TESSERACT_OK and self._backend_fn is not None
+        self._backend_name = "lazy"
+        self._backend_fn = None
+        self._backend_candidates = self._ordered_backends()
+        self._available = TESSERACT_OK and _has_display()
 
         if not self._available:
             reasons = []
-            if not TESSERACT_OK:       reasons.append("pytesseract/tesseract missing")
-            if self._backend_fn is None: reasons.append("no screenshot backend")
-            print(f"[ScreenReader] Screen capture disabled: {', '.join(reasons)}")
+            if not TESSERACT_OK:
+                reasons.append("pytesseract/tesseract missing")
+            if not _has_display():
+                reasons.append("no display")
+            logger.warning(f"Screen capture disabled: {', '.join(reasons)}")
         else:
-            print(f"[ScreenReader] Phase 3 ready — backend: {self._backend_name}")
+            logger.info("[ScreenReader] Phase 3 ready — backend: lazy (first capture)")
+
+    def _ensure_backend(self) -> bool:
+        """Lazy-test screenshot backends on first capture call."""
+        if self._backend_fn is not None:
+            return True
+        for name, fn in self._backend_candidates:
+            try:
+                img = fn()
+                if img is not None:
+                    self._backend_name = name
+                    self._backend_fn = fn
+                    logger.info(f"[ScreenReader] Selected backend: {name}")
+                    return True
+            except Exception as exc:
+                logger.debug(f"Backend {name} failed: {exc}")
+        self._available = False
+        return False
 
     # ── Backend selection ─────────────────────────────────────────────────────
 
@@ -704,6 +727,8 @@ class ScreenReader:
 
         # Full-monitor fallback
         self.last_active_window_title = ""
+        if not self._ensure_backend():
+            return None
         return self._backend_fn() if self._backend_fn else None
 
     # ── 2 + 3. Main OCR entry point ───────────────────────────────────────────
@@ -724,6 +749,8 @@ class ScreenReader:
 
         if not self._available:
             return ""
+        if not self._ensure_backend():
+            return ""
         try:
             screenshot = self.capture_image(focused_only=focused_only)
             if screenshot is None:
@@ -732,6 +759,11 @@ class ScreenReader:
             # 2× upscale → greyscale  (same as Phase 1 — improves Tesseract accuracy)
             scale = 2
             w, h = screenshot.size
+            max_dim = 2560
+            if max(w, h) > max_dim:
+                ratio = max_dim / max(w, h)
+                screenshot = screenshot.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+                w, h = screenshot.size
             upscaled = screenshot.resize((w * scale, h * scale), Image.LANCZOS).convert("L")
 
             # ── 2. image_to_data: words + bounding boxes ───────────────────────
