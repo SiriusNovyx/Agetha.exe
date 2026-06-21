@@ -322,6 +322,22 @@ By using this software you accept full responsibility for any outcome. The autho
 
 **License:** GNU General Public License v3.0 (GPL-3.0) — see `LICENSE`
 
+This fork is released under the **GNU General Public License v3.0 (GPL-3.0)**.
+
+This means:
+
+* You are free to **use, study, share, and modify** this software.
+* Any modified version you distribute **must also be released under GPL-3.0**.
+* You **must include** the original copyright notice and licence text.
+* You **cannot** distribute this software under a more restrictive licence.
+* There is **no warranty** of any kind.
+
+The full licence text is in the `LICENSE` file in the repository root.
+
+> **Note on the original project:** This fork's licence applies only to the code changes introduced here (Phases 1–3, memory system, tooling). The original Agetha.exe codebase by tamsamas is subject to its own licence terms. The GIF and font assets remain the property of tamsamas and are **not** covered by this fork's GPL-3.0 licence.
+
+---
+
 **Credits:**
 - **Original Agetha.exe** — @tomiszivacs
 - **Fork / Overhaul** — SiriusNovyx
