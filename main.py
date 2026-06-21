@@ -84,29 +84,9 @@ _MOOD_SNAP_THRESHOLDS: dict[str, int] = {
 
 # ── Phase 2: ctypes external window helper ────────────────────────────────────
 def _find_window_hwnd(partial_name: str) -> int | None:
-    """Find the first visible window whose title contains partial_name (case-insensitive).
-    Windows-only; returns None silently on other platforms or on any exception."""
-    if not IS_WINDOWS:
-        return None
-    try:
-        found: list[int] = []
-        _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.c_long)
-
-        def _enum_cb(hwnd: int, _lparam: int) -> bool:
-            if ctypes.windll.user32.IsWindowVisible(hwnd):
-                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buf = ctypes.create_unicode_buffer(length + 1)
-                    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-                    if partial_name.lower() in buf.value.lower():
-                        found.append(hwnd)
-            return True  # keep enumerating
-
-        ctypes.windll.user32.EnumWindows(_WNDENUMPROC(_enum_cb), 0)
-        return found[0] if found else None
-    except Exception as e:
-        print(f"[HWND] EnumWindows error: {e}")
-        return None
+    """Find the first visible window whose title contains partial_name (case-insensitive)."""
+    from window_control import find_window_hwnd
+    return find_window_hwnd(partial_name)
 
 
 def _safe_win_font(size: int = 8, bold: bool = False) -> tuple:
@@ -454,6 +434,8 @@ class GifPlayer:
         self._idx     = 0
         self._job     = None
         self._running = False
+        self._paused  = False
+        self._was_running = False
         # once-play control
         self._once_counter: int | None = None
         self._on_once_done = None
@@ -474,6 +456,27 @@ class GifPlayer:
                 except Exception as e:
                     print(f"[GifPlayer] ImageTk conversion failed for {gif_path}: {e}")
 
+    def pause(self):
+        """Stop scheduling frames while hidden/minimized; resume() continues."""
+        if self._paused:
+            return
+        self._paused = True
+        self._was_running = self._running
+        if self._job:
+            try:
+                self._label.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
+
+    def resume(self):
+        if not self._paused:
+            return
+        self._paused = False
+        if self._was_running and self._frames:
+            self._running = True
+            self._tick()
+
     def play(self):
         if not self._frames:
             return
@@ -486,6 +489,8 @@ class GifPlayer:
 
     def stop(self):
         self._running = False
+        self._paused = False
+        self._was_running = False
         self._once_counter = None
         self._on_once_done = None
         if self._job:
@@ -496,7 +501,7 @@ class GifPlayer:
             self._job = None
 
     def _tick(self):
-        if not self._running or not self._frames:
+        if self._paused or not self._running or not self._frames:
             return
         self._label.config(image=self._frames[self._idx])
         delay = self._delays[self._idx]
@@ -558,8 +563,24 @@ class SubtitleRenderer:
         self._thread: threading.Thread | None = None
         self._bleep = bleep_player
 
+        self._canvas_w = WINDOW_W
+        self._canvas_h = 130
+        self._shadow_id: int | None = None
+        self._text_id: int | None = None
+        self._last_layout: dict | None = None
+        self._draw_pending = False
+        self._pending_text = ""
+        self._pending_color = "#ffffff"
+
         self._canvas.config(bg="#a0a0a0")
         self._font = self._load_font(font_size)
+        self._canvas.bind("<Configure>", self._on_configure, add=True)
+
+    def _on_configure(self, event):
+        if event.width > 1 and event.height > 1:
+            self._canvas_w = event.width
+            self._canvas_h = event.height
+            self._last_layout = None
 
     def _load_font(self, size: int) -> tkfont.Font:
         if size in SubtitleRenderer._font_cache:
@@ -574,22 +595,38 @@ class SubtitleRenderer:
         SubtitleRenderer._font_cache[size] = font
         return font
 
+    def _reset_items(self):
+        self._shadow_id = None
+        self._text_id = None
+        self._last_layout = None
+
     def clear(self):
         self._canvas.delete("all")
+        self._reset_items()
+
+    def _schedule_draw(self, text: str, color: str = "#ffffff"):
+        """Coalesce redraws onto the main thread (one flush per event-loop turn)."""
+        self._pending_text = text
+        self._pending_color = color
+        if self._draw_pending:
+            return
+        self._draw_pending = True
+        self._canvas.after(0, self._flush_draw)
+
+    def _flush_draw(self):
+        self._draw_pending = False
+        self._draw(self._pending_text, self._pending_color)
 
     def show_thinking(self, raw_text: str):
         """Show streaming tokens in grey while waiting for a response."""
         texts = re.findall(r'"text"\s*:\s*"([^"]*)', raw_text)
         preview = " ".join(texts).strip() or "…"
-        self._canvas.after(0, lambda p=preview: self._draw(p, color="#888899"))
+        self._schedule_draw(preview, color="#888899")
 
     def show_message(self, text: str, color: str = "#ffffff", duration: float = 6.0):
         """Immediately show a static subtitle message (optionally auto-clears)."""
-        # Interrupt any running typewriter speak
         self.stop()
-        # Draw immediately on the canvas
         self._canvas.after(0, lambda: self._draw(text, color))
-        # Schedule clear after duration seconds (if > 0)
         try:
             if duration and duration > 0:
                 self._canvas.after(int(duration * 1000), self.clear)
@@ -612,19 +649,21 @@ class SubtitleRenderer:
     def _run(self, segments: list, on_done):
         self._canvas.after(0, self.clear)
         full_text = ""
-        for i, seg in enumerate(segments):
+        for seg in segments:
             if self._stop_event.is_set():
                 break
             chunk = seg.get("text", "").strip()
             pause = seg.get("pause", 0.0)
             if full_text and not full_text.endswith(" "):
                 full_text += " "
-            for ch in chunk:
+            # Typewriter timing per character; redraw only at word boundaries
+            for i, ch in enumerate(chunk):
                 if self._stop_event.is_set():
                     break
                 full_text += ch
-                t = full_text
-                self._canvas.after(0, lambda txt=t: self._draw(txt))
+                at_word_end = ch.isspace() or i == len(chunk) - 1
+                if at_word_end:
+                    self._schedule_draw(full_text)
                 time.sleep(self.CHAR_DELAY)
             if pause > 0 and not self._stop_event.is_set():
                 if self._bleep:
@@ -632,7 +671,6 @@ class SubtitleRenderer:
                 time.sleep(pause)
                 if self._bleep:
                     self._bleep.resume()
-        # Speech finished — stop bleeps immediately so they don't trail into idle state
         try:
             if self._bleep:
                 self._bleep.stop()
@@ -641,9 +679,9 @@ class SubtitleRenderer:
         if on_done:
             self._canvas.after(0, on_done)
 
-    def _draw(self, text: str, color: str = "#ffffff"):
-        cw = self._canvas.winfo_width() or WINDOW_W
-        ch = self._canvas.winfo_height() or 130
+    def _compute_layout(self, text: str, color: str) -> dict | None:
+        cw = self._canvas_w
+        ch = self._canvas_h
         max_w = max(40, cw - 24)
         max_lines = 3
         min_font_size = 8
@@ -662,8 +700,7 @@ class SubtitleRenderer:
 
         words = text.split()
         if not words:
-            self._canvas.delete("all")
-            return
+            return None
 
         font_size = self._font_size
         font = self._font
@@ -680,7 +717,7 @@ class SubtitleRenderer:
                 if len(w) <= chars_per_line:
                     parts.append(w)
                 else:
-                    chunks = [w[i:i+chars_per_line] for i in range(0, len(w), chars_per_line)]
+                    chunks = [w[i:i + chars_per_line] for i in range(0, len(w), chars_per_line)]
                     parts.append(" ".join(chunks))
             candidate_words = "".join(parts).strip().split()
 
@@ -692,25 +729,20 @@ class SubtitleRenderer:
 
         candidate = " ".join(candidate_words)
         x = cw // 2
+        y = 6
 
         while font_size >= min_font_size:
-            self._canvas.delete("all")
             try:
-                shadow_id = self._canvas.create_text(
-                    x + 2, 6 + 2, text=candidate, fill="#000000",
-                    font=font, anchor="n", width=max_w, justify="center"
+                tid = self._canvas.create_text(
+                    -10000, -10000, text=candidate, fill=color,
+                    font=font, anchor="n", width=max_w, justify="center",
                 )
-                text_id = self._canvas.create_text(
-                    x, 6, text=candidate, fill=color,
-                    font=font, anchor="n", width=max_w, justify="center"
-                )
-                bbox = self._canvas.bbox(text_id)
+                bbox = self._canvas.bbox(tid)
+                self._canvas.delete(tid)
                 if bbox:
                     height = bbox[3] - bbox[1]
                     if height <= ch - 12:
                         y = max(6, (ch - height) // 2)
-                        self._canvas.coords(shadow_id, x + 2, y + 2)
-                        self._canvas.coords(text_id, x, y)
                         break
                     font_size -= 1
                     font = self._load_font(font_size)
@@ -718,6 +750,67 @@ class SubtitleRenderer:
                     break
             except Exception:
                 break
+
+        return {
+            "candidate": candidate,
+            "font": font,
+            "font_size": font_size,
+            "x": x,
+            "y": y,
+            "max_w": max_w,
+            "color": color,
+        }
+
+    def _draw(self, text: str, color: str = "#ffffff"):
+        layout = self._compute_layout(text, color)
+        if not layout:
+            self.clear()
+            return
+
+        reuse = (
+            self._text_id is not None
+            and self._last_layout is not None
+            and self._last_layout.get("font_size") == layout["font_size"]
+            and self._last_layout.get("max_w") == layout["max_w"]
+        )
+
+        if reuse:
+            try:
+                self._canvas.itemconfig(
+                    self._shadow_id,
+                    text=layout["candidate"],
+                    font=layout["font"],
+                )
+                self._canvas.itemconfig(
+                    self._text_id,
+                    text=layout["candidate"],
+                    fill=color,
+                    font=layout["font"],
+                )
+                self._canvas.coords(self._shadow_id, layout["x"] + 2, layout["y"] + 2)
+                self._canvas.coords(self._text_id, layout["x"], layout["y"])
+                self._last_layout = layout
+                return
+            except Exception:
+                self._reset_items()
+
+        self._canvas.delete("all")
+        try:
+            self._shadow_id = self._canvas.create_text(
+                layout["x"] + 2, layout["y"] + 2,
+                text=layout["candidate"], fill="#000000",
+                font=layout["font"], anchor="n",
+                width=layout["max_w"], justify="center",
+            )
+            self._text_id = self._canvas.create_text(
+                layout["x"], layout["y"],
+                text=layout["candidate"], fill=color,
+                font=layout["font"], anchor="n",
+                width=layout["max_w"], justify="center",
+            )
+            self._last_layout = layout
+        except Exception:
+            self._reset_items()
 
 
 class AgethaPopup:
@@ -952,6 +1045,7 @@ class CompanionApp:
         threading.Thread(target=self._init_background, daemon=True).start()
 
         self._drag_x = self._drag_y = 0
+        self._win_x, self._win_y = 80, 80
         self._is_minimized = False
 
     def _build_ui(self):
@@ -1077,16 +1171,29 @@ class CompanionApp:
 
     def _drag_start(self, e):
         self._drag_x, self._drag_y = e.x_root, e.y_root
+        self._win_x, self._win_y = self.root.winfo_x(), self.root.winfo_y()
 
     def _drag_motion(self, e):
         dx = e.x_root - self._drag_x
         dy = e.y_root - self._drag_y
-        self.root.geometry(f"+{self.root.winfo_x()+dx}+{self.root.winfo_y()+dy}")
+        self._win_x += dx
+        self._win_y += dy
+        self.root.geometry(f"+{self._win_x}+{self._win_y}")
         self._drag_x, self._drag_y = e.x_root, e.y_root
+
+    def _pause_gif_playback(self):
+        if self._current_gif_player:
+            self._current_gif_player.pause()
+
+    def _resume_gif_playback(self):
+        if self._current_gif_player:
+            self._current_gif_player.resume()
 
     def _minimize(self):
         """Minimize the overrideredirect window.
         Handles Windows and Linux (compositors/window managers) safely."""
+        self._is_minimized = True
+        self._pause_gif_playback()
         if IS_WINDOWS:
             try:
                 self.root.overrideredirect(False)
@@ -1103,6 +1210,8 @@ class CompanionApp:
                             except Exception:
                                 pass
                             self.root.lift()
+                            self._is_minimized = False
+                            self._resume_gif_playback()
                             self.root.unbind("<Map>")
                     except Exception:
                         pass
@@ -1120,6 +1229,8 @@ class CompanionApp:
                         if self.root.state() != "iconic":
                             self.root.overrideredirect(True)
                             self.root.lift()
+                            self._is_minimized = False
+                            self._resume_gif_playback()
                             self.root.unbind("<Map>")
                     except Exception:
                         pass
@@ -1221,21 +1332,37 @@ class CompanionApp:
         self.root.after(0, _do_position)
 
     def _load_gifs_simple(self):
-        """Load all GIFs directly from disk on the main thread."""
+        """Decode GIF frames off-thread; build ImageTk on main thread."""
         static_vals = list(self.EXTRA_STATIC_GIFS.values()) if getattr(self, "EXTRA_STATIC_GIFS", None) else []
         all_names = list(dict.fromkeys(
             self.IDLE_GIFS + self.TALKING_GIFS + list(self.EXTRA_GIFS.values()) + static_vals
         ))
-        missing = []
-        for name in all_names:
-            path = ASSETS / name
-            if not path.exists():
-                logger.warning(f"Missing GIF: {path}")
-                missing.append(name)
-                continue
+
+        def _worker():
+            preloaded: dict[str, tuple] = {}
+            missing: list[str] = []
+            for name in all_names:
+                path = ASSETS / name
+                if not path.exists():
+                    missing.append(name)
+                    continue
+                try:
+                    preloaded[name] = _load_gif_frames_offthread(str(path))
+                except Exception as exc:
+                    logger.warning(f"Failed to decode {name}: {exc}")
+            try:
+                self.root.after(0, lambda: self._apply_gif_load(preloaded, missing))
+            except Exception:
+                self._apply_gif_load(preloaded, missing)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_gif_load(self, preloaded: dict, missing: list):
+        for name, (pil_frames, delays) in preloaded.items():
             try:
                 self._gif_cache[name] = GifPlayer(
-                    self._gif_label, str(path), self.root.after
+                    self._gif_label, str(ASSETS / name), self.root.after,
+                    pil_frames=pil_frames, delays=delays,
                 )
                 logger.info(f"Loaded GIF: {name}")
             except Exception as exc:
