@@ -44,6 +44,19 @@ USE_LOCAL_AI = no
 # ENABLE_GROQ — yes = allow Groq API (ignored when USE_LOCAL_AI = yes).
 ENABLE_GROQ = yes
 
+# ENABLE_OPENROUTER — yes = use OpenRouter instead of Groq (experimental).
+# Ignored when USE_LOCAL_AI = yes. Get a key: https://openrouter.ai/keys
+ENABLE_OPENROUTER = no
+
+# OPENROUTER_API_KEY — single OpenRouter key (prefer .env: OPENROUTER_API_KEY=...)
+OPENROUTER_API_KEY =
+
+# OPENROUTER_MODEL — model slug from openrouter.ai/models
+OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+
+# FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
+FASTER_MODE = no
+
 
 # ── Groq API Keys ─────────────────────────────────────────────────────────────
 # Get free keys: https://console.groq.com
@@ -238,7 +251,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 3.0.1
+APP_VERSION = 3.5.0
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
@@ -262,6 +275,24 @@ WINDOW_PICKER_ON_AMBIGUOUS = yes
 DRY_RUN_MODE = no
 
 
+# ── Voice input (microphone) ──────────────────────────────────────────────────
+# Requires: SpeechRecognition, pyaudio (Medic_Checker installs when ENABLE_VOICE=yes).
+
+# ENABLE_VOICE — yes = show microphone button in UI.
+ENABLE_VOICE = no
+
+# USE_LOCAL_STT — yes = faster-whisper (offline); no = Google Speech Recognition (online).
+# Local STT needs: pip install faster-whisper numpy (~75 MB model on first run).
+USE_LOCAL_STT = no
+
+
+# ── File drag-and-drop ────────────────────────────────────────────────────────
+# Drop files onto Agetha's GIF. Requires tkinterdnd2 on Windows.
+
+# ENABLE_FILE_DRAG_DROP — yes = enable drag-and-drop onto the character.
+ENABLE_FILE_DRAG_DROP = yes
+
+
 # ── OCR extras ────────────────────────────────────────────────────────────────
 
 # OCR_CUSTOM_PATTERNS — extra screen text triggers for AI context.
@@ -274,7 +305,9 @@ OCR_PAUSE_WHILE_TYPING_SEC = 8
 """
 
 _BOOL_KEYS = frozenset({
-    "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_STREAMING", "ENABLE_AMBIENT_POLLS",
+    "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
+    "ENABLE_VOICE", "USE_LOCAL_STT", "ENABLE_FILE_DRAG_DROP",
+    "ENABLE_STREAMING", "ENABLE_AMBIENT_POLLS",
     "ENABLE_COMMAND_EXECUTION", "ENABLE_WINDOW_CONTROL", "ENABLE_COMMAND_CONFIRMATIONS",
     "FORCE_CLOSE_AUTO_ALLOW", "ENABLE_ATTENTION_SNAP", "ENABLE_SCREEN_READER",
     "OCR_FOCUSED_WINDOW_ONLY", "INCLUDE_WINDOW_TITLE_IN_CONTEXT", "WINDOW_TOPMOST",
@@ -542,6 +575,34 @@ class AppSettings:
         return self.bool("ENABLE_STREAMING", True)
 
     @property
+    def faster_mode(self) -> bool:
+        return self.bool("FASTER_MODE", False)
+
+    @property
+    def enable_openrouter(self) -> bool:
+        return self.bool("ENABLE_OPENROUTER", False)
+
+    @property
+    def openrouter_api_key(self) -> str:
+        return self.get("OPENROUTER_API_KEY", "").strip()
+
+    @property
+    def openrouter_model(self) -> str:
+        return self.get("OPENROUTER_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free").strip()
+
+    @property
+    def enable_voice(self) -> bool:
+        return self.bool("ENABLE_VOICE", False)
+
+    @property
+    def use_local_stt(self) -> bool:
+        return self.bool("USE_LOCAL_STT", False)
+
+    @property
+    def enable_file_drag_drop(self) -> bool:
+        return self.bool("ENABLE_FILE_DRAG_DROP", True)
+
+    @property
     def enable_ambient_polls(self) -> bool:
         return self.bool("ENABLE_AMBIENT_POLLS", True)
 
@@ -692,7 +753,7 @@ class AppSettings:
 
     @property
     def app_version(self) -> str:
-        return self.get("APP_VERSION", "3.0.1").strip() or "3.0.1"
+        return self.get("APP_VERSION", "3.5.0").strip() or "3.5.0"
 
     @property
     def github_releases_url(self) -> str:

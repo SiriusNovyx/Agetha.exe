@@ -22,3 +22,13 @@ psutil>=5.9.0,<8.0.0
 
 # UI Fonts (optional — graceful fallback if unavailable)
 # tkextrafont>=0.6.1,<1.0.0
+
+# Voice input (optional — ENABLE_VOICE=yes in config.txt)
+SpeechRecognition>=3.10.0,<4.0.0
+PyAudio>=0.2.14,<1.0.0
+
+# Local STT (optional — USE_LOCAL_STT=yes in config.txt)
+faster-whisper>=1.0.0,<2.0.0
+
+# File drag-and-drop (optional — ENABLE_FILE_DRAG_DROP=yes, Windows)
+tkinterdnd2>=0.3.0,<1.0.0

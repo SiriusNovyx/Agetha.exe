@@ -48,6 +48,10 @@ except ImportError:
 from ai_engine import AIEngine
 from screen_reader import ScreenReader
 from command_guard import CommandGuard
+from voice_input import (
+    VoiceInput, MicPickerDialog, list_microphones,
+    load_mic_settings, save_mic_settings,
+)
 from utils import (
     native_error_popup, logger, BASE_DIR, WINDOW_W, WINDOW_H,
     TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS,
@@ -960,7 +964,16 @@ class CompanionApp:
         # Register font before creating the Tk window so families() sees it
         _register_barrio_font()
 
-        self.root = tk.Tk()
+        self._dnd_ok = False
+        try:
+            from tkinterdnd2 import TkinterDnD
+            self.root = TkinterDnD.Tk()
+            self._dnd_ok = True
+            logger.info("[DnD] tkinterdnd2 loaded — file drag-and-drop available")
+        except Exception:
+            self.root = tk.Tk()
+            logger.info("[DnD] tkinterdnd2 not installed — drag-and-drop disabled")
+
         self.root.title(f"Agetha.exe v{_SETTINGS.app_version}")
         self.root.geometry(
             f"{WINDOW_W}x{WINDOW_H}+{_SETTINGS.window_start_x}+{_SETTINGS.window_start_y}"
@@ -995,6 +1008,10 @@ class CompanionApp:
         self._cancel_event = threading.Event()
         self._ai_busy = False
         self._state_lock = threading.Lock()
+        self._voice: VoiceInput | None = None
+        self._mic_active = False
+        self._dragging_file = False
+        self._last_dragged_file = ""
 
         self._build_ui()
         self._bind_keystroke_tracking()   # Phase 2: track any key as direct interaction
@@ -1051,6 +1068,12 @@ class CompanionApp:
             font=W95_FONT_BOLD, anchor="w", padx=4,
         )
         title_lbl.pack(side="left", fill="y")
+        if _SETTINGS.faster_mode:
+            tk.Label(
+                title_bar, text="FAST MODE",
+                bg=W95_TITLE_BG, fg="#1a3a6b",
+                font=("MS Sans Serif", 7, "bold"), anchor="w", padx=2,
+            ).pack(side="left", fill="y")
 
         # Close button
         close_btn = tk.Button(
@@ -1101,6 +1124,14 @@ class CompanionApp:
         self._gif_label.pack(fill="both", expand=True)
         # Clicking on Agetha sends a touch event to the AI (10 s cooldown)
         self._gif_label.bind("<Button-1>", self._on_gif_click)
+        if _SETTINGS.enable_file_drag_drop and self._dnd_ok:
+            try:
+                self._gif_label.drop_target_register("DND_Files")  # type: ignore[attr-defined]
+                self._gif_label.dnd_bind("<<DropEnter>>", self._on_file_drag_enter)  # type: ignore[attr-defined]
+                self._gif_label.dnd_bind("<<DropLeave>>", self._on_file_drag_leave)  # type: ignore[attr-defined]
+                self._gif_label.dnd_bind("<<Drop>>", self._on_file_drop)  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.warning(f"[DnD] Could not register drop target: {exc}")
 
         # ── Status bar ────────────────────────────────────────────────────────
         status_frame = tk.Frame(self._outer, bg=W95_BG, bd=1, relief="sunken")
@@ -1129,17 +1160,43 @@ class CompanionApp:
             input_font = tkfont.Font(family="MS Sans Serif", size=8)
 
         self._input_var = tk.StringVar()
+
+        entry_wrapper = tk.Frame(input_frame, bg=W95_INPUT_BG, relief="sunken", bd=2)
+        entry_wrapper.pack(side="left", fill="x", expand=True)
+
         self._input_box = tk.Entry(
-            input_frame,
+            entry_wrapper,
             textvariable=self._input_var,
             font=input_font,
             bg=W95_INPUT_BG, fg=W95_TEXT,
             insertbackground=W95_TEXT,
-            relief="sunken", bd=2,
+            relief="flat", bd=0,
         )
-        self._input_box.pack(side="left", fill="x", expand=True, ipady=6)
+        self._input_box.pack(fill="both", expand=True, ipady=6, padx=2)
+
+        placeholder_font = tkfont.Font(family="MS Sans Serif", size=7)
+        self._placeholder_lbl = tk.Label(
+            entry_wrapper, text="", font=placeholder_font,
+            bg=W95_INPUT_BG, fg="#888888", anchor="w", padx=4, pady=0,
+        )
+        self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._placeholder_lbl.bind("<Button-1>", lambda e: self._input_box.focus_set())
+        self._input_box.bind("<FocusIn>", lambda e: self._update_placeholder(focused=True))
+        self._input_box.bind("<FocusOut>", lambda e: self._update_placeholder(focused=False))
+        self._input_var.trace_add("write", lambda *_: self._update_placeholder())
         self._input_box.bind("<Return>", self._on_user_input)
         self.root.bind("<Escape>", self._on_cancel_ai)
+
+        if _SETTINGS.enable_voice:
+            self._mic_btn_var = tk.StringVar(value="🎤")
+            self._mic_btn = tk.Button(
+                input_frame, textvariable=self._mic_btn_var,
+                font=W95_FONT_BOLD, bg=W95_BTN_BG, fg=W95_TEXT,
+                activebackground=W95_BTN_ACT, activeforeground=W95_BTN_AFG,
+                relief="raised", bd=2, padx=6, pady=5,
+                command=self._toggle_mic,
+            )
+            self._mic_btn.pack(side="left", padx=(2, 0))
 
         tk.Button(
             input_frame, text="OK",
@@ -1149,6 +1206,151 @@ class CompanionApp:
             relief="raised", bd=2, padx=10, pady=5,
             command=self._on_user_input,
         ).pack(side="left", padx=(4, 0))
+
+    def _get_placeholder_text(self) -> str:
+        try:
+            if not self._ai:
+                return "type here..."
+            status = self._ai.get_token_status()
+            if not status.get("using_groq"):
+                if status.get("provider") == "openrouter":
+                    return "OpenRouter  •  type here..."
+                if status.get("provider") == "local":
+                    return "local AI  •  type here..."
+                return "type here..."
+            idx = status.get("key_index", 1)
+            total = status.get("key_count", 1)
+            pct = status.get("pct_left", 100)
+            return f"key {idx}/{total}  •  {pct}% tokens left"
+        except Exception:
+            return "type here..."
+
+    def _update_placeholder(self, focused=None) -> None:
+        if bool(self._input_var.get()):
+            self._placeholder_lbl.place_forget()
+        else:
+            self._placeholder_lbl.config(text=self._get_placeholder_text())
+            self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    def _start_placeholder_refresh(self) -> None:
+        def _tick():
+            try:
+                self._update_placeholder()
+            except Exception:
+                pass
+            self.root.after(10000, _tick)
+        self.root.after(10000, _tick)
+
+    def _toggle_mic(self) -> None:
+        if self._voice is None:
+            settings = load_mic_settings()
+            device_index = settings.get("mic_device_index")
+            if device_index is None:
+                mics = list_microphones()
+                if not mics:
+                    native_error_popup(
+                        "Agetha — Microphone",
+                        "No microphone devices found.\n"
+                        "Connect a mic and ensure pyaudio is installed.\n"
+                        "Run Medic_Checker with ENABLE_VOICE=yes.",
+                    )
+                    return
+                picker = MicPickerDialog(self.root, mics)
+                chosen = picker.wait()
+                if chosen is None:
+                    return
+                device_index = chosen
+                mic_name = next((n for i, n in mics if i == chosen), str(chosen))
+                settings["mic_device_index"] = device_index
+                settings["mic_device_name"] = mic_name
+                save_mic_settings(settings)
+                logger.info(f"[Voice] Microphone saved: [{device_index}] {mic_name}")
+
+            self._voice = VoiceInput(
+                on_text_callback=self._on_voice_text,
+                device_index=device_index,
+                use_local_stt=_SETTINGS.use_local_stt,
+            )
+            if not self._voice.available:
+                native_error_popup(
+                    "Agetha — Microphone",
+                    self._voice.error or "SpeechRecognition unavailable.",
+                )
+                self._voice = None
+                return
+
+        if self._mic_active:
+            self._mic_active = False
+            if self._voice:
+                self._voice.stop()
+            self._mic_btn_var.set("🎤")
+            self._mic_btn.config(bg=W95_BTN_BG, fg=W95_TEXT, activebackground=W95_BTN_BG)
+            logger.info("[Voice] Microphone off")
+        else:
+            self._mic_active = True
+            if self._voice:
+                self._voice.start()
+            self._mic_btn_var.set("🔴")
+            self._mic_btn.config(bg="#cc0000", fg="#ffffff", activebackground="#990000")
+            logger.info("[Voice] Microphone on — listening…")
+
+    def _on_voice_text(self, text: str) -> None:
+        def _send():
+            self._input_var.set(text)
+            self.root.update_idletasks()
+            self._on_user_input()
+        self.root.after(0, _send)
+
+    def _on_file_drag_enter(self, event=None) -> None:
+        if self._dragging_file:
+            return
+        self._dragging_file = True
+        want_player = self._gif_cache.get("surprised.gif")
+        if want_player:
+            if self._current_gif_player:
+                self._current_gif_player.stop()
+            self._current_gif_player = want_player
+            want_player.play()
+
+    def _on_file_drag_leave(self, event=None) -> None:
+        if not self._dragging_file:
+            return
+        self._dragging_file = False
+        self._set_state(self.STATE_IDLE)
+
+    def _on_file_drop(self, event=None) -> None:
+        self._dragging_file = False
+        try:
+            file_path = getattr(event, "data", "") or ""
+            file_path = file_path.strip().strip("{}")
+            filename = Path(file_path).name if file_path else "unknown file"
+        except Exception:
+            filename = "a file"
+            file_path = ""
+        logger.info(f"[DnD] File dropped: {filename} at {file_path}")
+        self._last_dragged_file = file_path if file_path else filename
+        self._set_state(self.STATE_IDLE)
+        if self._input_box["state"] == "disabled":
+            return
+        msg = (
+            f'[system] file_dragged: "{filename}" (path: {file_path})'
+            if file_path
+            else f'[system] file_dragged: "{filename}"'
+        )
+        threading.Thread(target=self._ai_tick, kwargs={"user_message": msg}, daemon=True).start()
+
+    def _update_token_status(self) -> None:
+        try:
+            if not self._ai:
+                return
+            status = self._ai.get_token_status()
+            if status.get("using_groq"):
+                key_info = f"Key {status['key_index']}/{status['key_count']}"
+                pct = status.get("pct_left", 0)
+                self._status_var.set(f"{key_info} | {pct}% left")
+            self._update_placeholder()
+        except Exception as exc:
+            logger.debug(f"Token status update failed: {exc}")
 
     def _drag_start(self, e):
         if self._geom_anim_job is not None:
@@ -1317,6 +1519,9 @@ class CompanionApp:
             return
         self._input_var.set("")
         self._input_box.config(state="disabled")
+        if hasattr(self, "_placeholder_lbl"):
+            self._placeholder_lbl.config(text="Processing...")
+            self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
         # Clear any sticky mood — new interaction resets expression
         self._persistent_mood = None
         threading.Thread(target=self._ai_tick, kwargs={"user_message": text}, daemon=True).start()
@@ -1324,6 +1529,10 @@ class CompanionApp:
     def _re_enable_input(self):
         self._input_box.config(state="normal")
         self._input_box.focus_set()
+        try:
+            self._update_placeholder()
+        except Exception:
+            pass
 
     # ── Phase 2: Attention-snap system ────────────────────────────────────────
 
@@ -1492,6 +1701,10 @@ class CompanionApp:
                         self.root.after(0, self._load_gifs_simple)
                     except Exception as e:
                         print(f"[BackgroundInit] load_gifs_simple failed: {e}")
+                    try:
+                        self.root.after(0, self._start_placeholder_refresh)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -1803,6 +2016,7 @@ class CompanionApp:
         print("-" * 52)
 
         self.root.after(0, self._re_enable_input)
+        self.root.after(0, self._update_token_status)
         self._ai_busy = False
         self._dispatch_response(response, user_message)
 
@@ -2035,6 +2249,8 @@ class CompanionApp:
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
             self._poll_job = None
+        if self._voice:
+            self._voice.stop()
         self.root.quit()
 
     def run(self):
@@ -2046,6 +2262,8 @@ class CompanionApp:
                     self._bleep.stop()
                 except Exception:
                     pass
+            if self._voice:
+                self._voice.stop()
 
 
 def _warn_if_no_api_key():
@@ -2054,6 +2272,9 @@ def _warn_if_no_api_key():
     s = get_settings()
     if s.bool("USE_LOCAL_AI"):
         if s.get("LOCAL_AI_MODEL", "").strip():
+            return
+    elif s.enable_openrouter:
+        if s.openrouter_api_key:
             return
     else:
         has_key = bool(s.get("GROQ_API_KEY", "").strip())

@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v3.0.1)
+  Agetha startup health check and launcher (Overhaul Edition v3.5.0)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
@@ -32,9 +32,9 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.0.1'
+    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.5.0'
     if ($v) { return $v }
-    return '3.0.1'
+    return '3.5.0'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -52,7 +52,7 @@ try {
     $script:AppVersion = Get-AppVersion
     $Host.UI.RawUI.WindowTitle = "Agetha.exe  -  Health Check  |  v$script:AppVersion"
 } catch {
-    $script:AppVersion = '3.0.1'
+    $script:AppVersion = '3.5.0'
 }
 
 function Test-GitHubUpdate {
@@ -432,6 +432,69 @@ function Invoke-StandardChecks {
     } else {
         Write-Ok 'tkextrafont optional package present.'
     }
+
+    # Optional: voice, local STT, drag-and-drop (driven by config.txt)
+    Write-Step 'Optional features (voice / drag-and-drop)...'
+    $enableVoice = (Get-ConfigValue -Key 'ENABLE_VOICE' -Default 'no') -match '^(?i)yes$'
+    $useLocalStt = (Get-ConfigValue -Key 'USE_LOCAL_STT' -Default 'no') -match '^(?i)yes$'
+    $enableDnd = (Get-ConfigValue -Key 'ENABLE_FILE_DRAG_DROP' -Default 'yes') -match '^(?i)yes$'
+    $optionalPkgs = @()
+    if ($enableVoice) {
+        $optionalPkgs += 'SpeechRecognition', 'PyAudio'
+        if ($useLocalStt) { $optionalPkgs += 'faster-whisper' }
+    }
+    if ($enableDnd) { $optionalPkgs += 'tkinterdnd2' }
+    $optionalPkgs = $optionalPkgs | Select-Object -Unique
+    if ($optionalPkgs.Count -eq 0) {
+        Write-Info 'ENABLE_VOICE=no and/or ENABLE_FILE_DRAG_DROP=no - optional packages skipped.'
+    } else {
+        $optMissing = @()
+        foreach ($pkg in $optionalPkgs) {
+            $null = & $script:VenvPython -m pip show $pkg 2>&1
+            if ($LASTEXITCODE -ne 0) { $optMissing += $pkg }
+        }
+        if ($optMissing.Count -eq 0) {
+            Write-Ok "Optional packages ready: $($optionalPkgs -join ', ')"
+        } elseif ($script:AutoPipInstall) {
+            Write-Step "Installing optional: $($optMissing -join ', ')"
+            & $script:VenvPython -m pip install @optMissing --quiet --disable-pip-version-check
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok 'Optional packages installed.'
+            } else {
+                Write-Warn "Optional install failed for: $($optMissing -join ', ')"
+                Write-Info 'Voice: ENABLE_VOICE=yes needs SpeechRecognition + PyAudio'
+                Write-Info 'Local STT: USE_LOCAL_STT=yes needs faster-whisper (~75 MB model on first run)'
+                Write-Info 'Drag-drop: ENABLE_FILE_DRAG_DROP=yes needs tkinterdnd2 (Windows)'
+            }
+        } else {
+            Write-Warn "Optional missing: $($optMissing -join ', ')"
+            Write-Info 'Set AUTO_PIP_INSTALL=yes or: pip install -r requirements.txt'
+        }
+    }
+    if ($enableVoice) {
+        $voiceLines = & $script:VenvPython medic_helper.py voice 2>&1
+        $voiceText = ($voiceLines | Out-String).Trim()
+        if ($voiceText -match '^VOICE_OK') {
+            Write-Ok 'Voice input dependencies OK.'
+            if ($voiceText -match 'STT_OK') {
+                Write-Ok 'Local STT (faster-whisper) ready.'
+            } elseif ($useLocalStt -and $voiceText -match 'STT_MISSING') {
+                Write-Warn 'USE_LOCAL_STT=yes but faster-whisper not installed.'
+            } elseif (-not $useLocalStt) {
+                Write-Ok 'STT mode: Google Speech Recognition (online).'
+            }
+        } else {
+            Write-Warn "Voice not ready: $voiceText"
+        }
+    }
+    if ($enableDnd) {
+        $dndStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'dnd'
+        if ($dndStatus -eq 'DND_OK') {
+            Write-Ok 'File drag-and-drop (tkinterdnd2) ready.'
+        } else {
+            Write-Warn 'tkinterdnd2 not installed — drag-and-drop disabled.'
+        }
+    }
     Write-Host ''
 
     # [4/7] Tesseract
@@ -525,6 +588,7 @@ function Invoke-StandardChecks {
             }
         }
         'LOCAL'       { Write-Ok 'config.txt - Local AI (Ollama) mode active.' }
+        'OPENROUTER'  { Write-Ok 'config.txt - OpenRouter mode active.' }
         'LOCAL_NO_MODEL' {
             Write-Warn 'USE_LOCAL_AI=yes but LOCAL_AI_MODEL is blank.'
             Write-Info 'Run: ollama list  then set LOCAL_AI_MODEL in config.txt'
@@ -547,7 +611,7 @@ function Invoke-StandardChecks {
     $modules = @(
         'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'utils.py',
         'command_guard.py', 'command_handlers.py', 'system_commands.py', 'medic_helper.py',
-        'window_control.py', 'app_config.py'
+        'window_control.py', 'app_config.py', 'voice_input.py'
     )
     $compileFail = $false
     foreach ($mod in $modules) {
@@ -562,7 +626,7 @@ function Invoke-StandardChecks {
         Wait-Key
         exit 1
     }
-    Write-Ok 'All 11 modules compile cleanly.'
+    Write-Ok 'All 12 modules compile cleanly.'
     Write-Host ''
 }
 
@@ -578,7 +642,7 @@ Write-Host ''
 $coreFiles = @(
     'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'utils.py',
     'command_guard.py', 'command_handlers.py', 'system_commands.py',
-    'medic_helper.py', 'window_control.py', 'app_config.py', 'requirements.txt'
+    'medic_helper.py', 'window_control.py', 'app_config.py', 'voice_input.py', 'requirements.txt'
 )
 $missingCore = $coreFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Script:Root $_)) }
 if ($missingCore) {
@@ -587,7 +651,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (11 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (12 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut
