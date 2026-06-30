@@ -492,7 +492,7 @@ function Invoke-StandardChecks {
         if ($dndStatus -eq 'DND_OK') {
             Write-Ok 'File drag-and-drop (tkinterdnd2) ready.'
         } else {
-            Write-Warn 'tkinterdnd2 not installed — drag-and-drop disabled.'
+            Write-Warn 'tkinterdnd2 not installed - drag-and-drop disabled.'
         }
     }
     Write-Host ''
