@@ -444,7 +444,8 @@ function Invoke-StandardChecks {
         if ($useLocalStt) { $optionalPkgs += 'faster-whisper' }
     }
     if ($enableDnd) { $optionalPkgs += 'tkinterdnd2' }
-    $optionalPkgs = $optionalPkgs | Select-Object -Unique
+    # @() keeps a single package as a 1-element array (pipeline unwraps scalars; breaks .Count in StrictMode)
+    $optionalPkgs = @($optionalPkgs | Select-Object -Unique)
     if ($optionalPkgs.Count -eq 0) {
         Write-Info 'ENABLE_VOICE=no and/or ENABLE_FILE_DRAG_DROP=no - optional packages skipped.'
     } else {
