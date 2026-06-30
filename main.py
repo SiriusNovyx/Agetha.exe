@@ -1180,7 +1180,7 @@ class CompanionApp:
             bg=W95_INPUT_BG, fg="#888888", anchor="w", padx=4, pady=0,
         )
         self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
-        self._placeholder_lbl.bind("<Button-1>", lambda e: self._input_box.focus_set())
+        self._placeholder_lbl.bind("<Button-1>", self._on_placeholder_click)
         self._input_box.bind("<FocusIn>", lambda e: self._update_placeholder(focused=True))
         self._input_box.bind("<FocusOut>", lambda e: self._update_placeholder(focused=False))
         self._input_var.trace_add("write", lambda *_: self._update_placeholder())
@@ -1221,12 +1221,24 @@ class CompanionApp:
             idx = status.get("key_index", 1)
             total = status.get("key_count", 1)
             pct = status.get("pct_left", 100)
-            return f"key {idx}/{total}  •  {pct}% tokens left"
+            return f"type here...  •  key {idx}/{total}  •  {pct}% tokens left"
         except Exception:
             return "type here..."
 
+    def _on_placeholder_click(self, event=None) -> None:
+        self._input_box.focus_set()
+        self._update_placeholder(focused=True)
+
+    def _input_has_focus(self) -> bool:
+        try:
+            return self._input_box.focus_get() == self._input_box
+        except Exception:
+            return False
+
     def _update_placeholder(self, focused=None) -> None:
-        if bool(self._input_var.get()):
+        if focused is None:
+            focused = self._input_has_focus()
+        if bool(self._input_var.get()) or focused:
             self._placeholder_lbl.place_forget()
         else:
             self._placeholder_lbl.config(text=self._get_placeholder_text())
@@ -1235,7 +1247,7 @@ class CompanionApp:
     def _start_placeholder_refresh(self) -> None:
         def _tick():
             try:
-                self._update_placeholder()
+                self._update_placeholder(focused=self._input_has_focus())
             except Exception:
                 pass
             self.root.after(10000, _tick)
