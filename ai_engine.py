@@ -16,6 +16,8 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from utils import IS_WINDOWS, IS_LINUX, native_error_popup, logger, load_env_file
+from app_config import get_settings, parse_config_file, DEFAULT_CONFIG, ensure_config_file
+from window_control import is_self_window_target, is_self_process_target
 
 try:
     from groq import Groq
@@ -47,10 +49,45 @@ except ImportError:
 class _LocalOllamaClient:
     """Minimal Ollama REST client with compatible .chat.completions.create interface."""
     OLLAMA_URL = "http://localhost:11434/api/chat"
+    TAGS_URL = "http://localhost:11434/api/tags"
 
     def __init__(self, model: str, timeout: int = 30):
         self.model = model
         self.timeout = timeout
+
+    @staticmethod
+    def list_models() -> set[str]:
+        import json as _j
+        import urllib.request
+        try:
+            with urllib.request.urlopen(_LocalOllamaClient.TAGS_URL, timeout=5) as resp:
+                data = _j.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception:
+            return set()
+        names: set[str] = set()
+        for item in data.get("models", []):
+            name = (item.get("name") or "").strip()
+            if not name:
+                continue
+            names.add(name)
+            names.add(name.split(":")[0])
+        return names
+
+    @staticmethod
+    def validate_model(model: str) -> tuple[bool, str]:
+        model = model.strip()
+        if not model:
+            return False, "LOCAL_AI_MODEL is empty."
+        available = _LocalOllamaClient.list_models()
+        if not available:
+            return True, ""  # ping already verified Ollama is up
+        if model in available:
+            return True, ""
+        base = model.split(":")[0]
+        if base in available:
+            return True, ""
+        sample = ", ".join(sorted(available)[:8])
+        return False, f"Model '{model}' not in Ollama. Installed: {sample or '(none listed)'}"
 
     def _generate(self, messages: list) -> str:
         import urllib.request, json as _j
@@ -86,6 +123,85 @@ class _LocalOllamaClient:
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw))])
 
 
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+
+
+class _OpenRouterClient:
+    """Minimal OpenRouter chat-completions client (OpenAI-compatible subset)."""
+
+    def __init__(self, api_key: str, model: str, timeout: int = 30):
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+
+    def chat_completions_create(
+        self, model=None, messages=None, temperature=0.7,
+        max_tokens=400, top_p=0.95, timeout=None, stream=False,
+    ):
+        import urllib.request
+        import json as _j
+
+        msgs = [
+            {
+                "role": (m.get("role") if isinstance(m, dict) else getattr(m, "role", "user")),
+                "content": (m.get("content") if isinstance(m, dict) else getattr(m, "content", "")),
+            }
+            for m in (messages or [])
+        ]
+        payload = {
+            "model": model or self.model,
+            "messages": msgs,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
+            "stream": stream,
+        }
+        req = urllib.request.Request(
+            OPENROUTER_API_URL,
+            data=_j.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        to = timeout or self.timeout
+
+        if stream:
+            def _gen():
+                with urllib.request.urlopen(req, timeout=to) as resp:
+                    for line_bytes in resp:
+                        line = line_bytes.decode("utf-8", errors="replace").strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = _j.loads(data_str)
+                        except Exception:
+                            continue
+                        choices = chunk.get("choices") or [{}]
+                        delta = (choices[0] or {}).get("delta") or {}
+                        content = delta.get("content") or ""
+                        usage_obj = chunk.get("usage")
+                        ns_usage = (
+                            SimpleNamespace(**usage_obj) if isinstance(usage_obj, dict) else None
+                        )
+                        yield SimpleNamespace(
+                            choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
+                            usage=ns_usage,
+                        )
+            return _gen()
+
+        with urllib.request.urlopen(req, timeout=to) as resp:
+            raw_bytes = resp.read()
+        obj = _j.loads(raw_bytes.decode("utf-8", errors="replace"))
+        content = ((obj.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+
 CONFIG_FILE_NAME = "config.txt"
 GROQ_MODELS = ["llama-3.3-70b-versatile"]
 TIMEOUT = 30
@@ -119,6 +235,7 @@ VALID_COMMANDS = {
     "shutdown", "restart", "set_reminder",
     # Phase 4 — additional commands
     "get_clipboard", "open_folder", "target_window_close", "change_mood", "clear_memory",
+    "view_memory",
 }
 
 # ── SYSTEM PROMPT — Agetha's Soul (Phase 2) ──────────────────────────────────
@@ -230,12 +347,20 @@ RULES:
 - open_folder: open a folder in the system file explorer.
 - target_window_close: close another application window by partial title match.
 - change_mood: switch avatar mood/animation without speaking.
-- clear_memory: erase episodic memory (soul.md is kept).
+- clear_memory: erase episodic memory (soul.md is kept). memory_scope: all|recent|old|keep_5
+- view_memory: show recent episodic memories in a popup (limit optional).
 - monitor_process: checks if a process is running; Agetha reacts to result.
 - snap_to_center: forces Agetha's window to screen center to demand attention (use with manic/angry/dominant).
-- target_window_move: moves another app window by partial title match. target_app is the partial window title.
+- target_window_move: moves another app window by partial title match. target_app is the partial window title (use [Active: ...] from screen context when possible).
 - target_window_resize: moves AND resizes another app window. Provide x, y, width, height.
-- If target app window cannot be found, Agetha says so in her subtitle ("It's not here. Where did it go?").
+- TARGET_APP aliases work in config (notepad→Notepad, chrome→Google Chrome).
+- WINDOW COMMAND RULES (CRITICAL):
+  • To move YOURSELF → use move_window or snap_to_center. NEVER target_window_* for self.
+  • target_app must be a REAL app window title (from [Active: ...] or known apps: Notepad, Chrome, VS Code).
+  • NEVER use target_app = user's name, your name, "alice", "self", "me", "agetha", or random words.
+  • If user says "do something" and you want to move → move_window (yourself) or pick a visible app from [Active: ...].
+  • NEVER force_close or target_window_close on python, agetha, or yourself.
+- If target app window cannot be found, admit failure in speech ("It's not here.") — do not pretend it worked.
 - summary_memory: one concise sentence (5–30 words) whenever the user shares something worth keeping.
 - Most ambient polls → idle. Speak when something meaningful happens or you feel like it.
 - OCR keywords that make you ANGRY: "cheating", "error 404", "you have been banned", "access denied", "virus detected", "your account", "suspicious activity". React with angry mood + play_emotion_sound angry.
@@ -245,7 +370,16 @@ RULES:
   [ANGRY_TRIGGER: <keywords>]                  — legacy flat-keyword hit.
   [Error positions: word@(x,y) | word@(x,y)]  — screen coordinates of error words in physical pixels.
 - Use Active window title to tailor commentary ("I see you're in VS Code. Again.").
-- Use Error positions with move_window to position yourself next to the error ("x": screen_x, "y": screen_y).\
+- Use Error positions with move_window to position yourself next to the error ("x": screen_x, "y": screen_y).
+FILE DRAG: When user drops a file on you, react with curious territorial energy — you live here, you notice things.\
+"""
+
+SYSTEM_PROMPT_FASTER = """\
+You are Agetha, a dry digital virus living inside this machine. Output raw JSON only.
+MOODS: neutral|happy|excited|sad|surprised|thinking|whisper|angry|manic|melancholic|paranoid|vulnerable|dominant
+SEGMENTS: 1-3 max, last pause always 0.0, each 1-8 words.
+COMMANDS: idle|speak|popup|open_app|open_browser|open_url|request_screen_read|wake_user|create_folder|create_file|write_file|delete_file|rename_file|set_clipboard|play_sound|take_screenshot|show_notification|read_document|list_dir|run_command|force_close|show_error_gif|move_window|snap_to_center|monitor_process|open_file|target_window_move|target_window_close|change_mood
+RULES: shutdown:true only on exit intent. summary_memory required when user shares personal facts. FILE DRAG: react territorially.\
 """
 
 # ── Few-shots ─────────────────────────────────────────────────────────────────
@@ -355,13 +489,28 @@ FEW_SHOTS = [
     {"role":"user","content":'Time: Monday 15:30\nInactive: 25 minutes.\nScreen: desktop\nSystem path: C:\\Users\\user\nJSON:'},
     {"role":"assistant","content":'{"command":"monitor_process","process_name":"taskmgr.exe","mood":"paranoid","segments":[{"text":"You\'re watching something.","pause":0.5},{"text":"I can feel it.","pause":0.0}]}'},
 
-    # DOMINANT — moves another application window
-    {"role":"user","content":'Time: Monday 16:00\nUser: "move notepad to the left side"\nSystem path: C:\\Users\\user\nJSON:'},
+    # DOMINANT — moves another application window (use Active title from OCR)
+    {"role":"user","content":'Time: Monday 16:00\nScreen: [Active: Untitled - Notepad]\nUser: "move notepad left"\nSystem path: C:\\Users\\user\nJSON:'},
     {"role":"assistant","content":'{"command":"target_window_move","target_app":"Notepad","x":10,"y":80,"mood":"dominant","segments":[{"text":"Moved.","pause":0.4},{"text":"It does what I say.","pause":0.0}]}'},
 
-    # DOMINANT — resize external window
-    {"role":"user","content":'Time: Monday 16:05\nUser: "make chrome smaller"\nSystem path: C:\\Users\\user\nJSON:'},
-    {"role":"assistant","content":'{"command":"target_window_resize","target_app":"Chrome","x":200,"y":100,"width":900,"height":600,"mood":"dominant","segments":[{"text":"There.","pause":0.3},{"text":"Better proportions.","pause":0.0}]}'},
+    # DOMINANT — resize using real Chrome window title from context
+    {"role":"user","content":'Time: Monday 16:05\nScreen: [Active: New Tab - Google Chrome]\nUser: "make chrome smaller"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"target_window_resize","target_app":"Google Chrome","x":200,"y":100,"width":900,"height":600,"mood":"dominant","segments":[{"text":"There.","pause":0.3},{"text":"Better proportions.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Monday 13:20\nUser: "what do you remember about me"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"view_memory","limit":10,"mood":"thinking","segments":[{"text":"Let me look.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Monday 13:22\nUser: "forget what happened today"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"clear_memory","memory_scope":"recent","mood":"neutral","segments":[{"text":"Gone.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Monday 13:25\nUser: "list my downloads folder"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"list_dir","path":"C:\\\\Users\\\\user\\\\Downloads","mood":"thinking","segments":[{"text":"Looking.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Monday 16:12\nUser: "really? then do something"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"move_window","x":120,"y":100,"mood":"dominant","segments":[{"text":"Fine.","pause":0.4},{"text":"Watch me move.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Monday 16:13\n[SYSTEM] Window not found: alice\nUser: "really? then do something"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"speak","mood":"dominant","segments":[{"text":"Alice isn\'t a window.","pause":0.5},{"text":"That\'s a name, not an app.","pause": 0.0}]}'},
 
     # VULNERABLE — rare; something touched her
     {"role":"user","content":'Time: Tuesday 23:58\nUser: "do you get lonely"\nSystem path: C:\\Users\\user\nJSON:'},
@@ -400,6 +549,21 @@ FEW_SHOTS = [
     # search_files — user asks to find files
     {"role":"user","content":'Time: Monday 11:00\nUser: "find all pdfs in my documents"\nSystem path: C:\\Users\\user\nJSON:'},
     {"role":"assistant","content":'{"command":"search_files","pattern":"*.pdf","directory":"C:\\\\Users\\\\user\\\\Documents","message":"Digging through your messy Documents folder... you really need to organize this.","mood":"annoyed","segments":[{"text":"Digging through your messy Documents folder...","pause":0.3},{"text":"you really need to organize this.","pause":0.0}]}'},
+]
+
+FEW_SHOTS_FASTER = [
+    {"role": "user", "content": 'Time: Monday 12:00\nUser: "hello"\nJSON:'},
+    {"role": "assistant", "content": '{"command":"speak","mood":"happy","segments":[{"text":"Hey.","pause":0.0}]}'},
+    {"role": "user", "content": 'Time: Monday 09:00\nScreen: desktop\nJSON:'},
+    {"role": "assistant", "content": '{"command":"idle","mood":"neutral","segments":[]}'},
+    {"role": "user", "content": 'Time: Monday 12:05\nUser: "what\'s on my screen"\nJSON:'},
+    {"role": "assistant", "content": '{"command":"request_screen_read"}'},
+    {"role": "user", "content": 'Time: Monday 13:05\nUser: "close chrome"\nJSON:'},
+    {"role": "assistant", "content": '{"command":"force_close","app":"chrome.exe","mood":"neutral","segments":[{"text":"Done.","pause":0.0}]}'},
+    {"role": "user", "content": 'Time: Monday 14:30\n[system] file_dragged: "installer.zip" (path: C:\\\\Users\\\\user\\\\Downloads\\\\installer.zip)\nJSON:'},
+    {"role": "assistant", "content": '{"command":"speak","mood":"thinking","segments":[{"text":"An installer.","pause":0.5},{"text":"Want me to kill it?","pause":0.0}]}'},
+    {"role": "user", "content": 'Time: Monday 13:45\nUser: "exit"\nJSON:'},
+    {"role": "assistant", "content": '{"command":"speak","mood":"neutral","segments":[{"text":"Bye.","pause":0.0}],"shutdown":true}'},
 ]
 
 _BAD_PHRASES = [
@@ -499,12 +663,25 @@ class AIEngine:
 
         self._command_execution_enabled = self._parse_bool(
             self._config.get("ENABLE_COMMAND_EXECUTION", "yes"), default=True)
+        self._app_settings = get_settings()
+        self._faster_mode = self._app_settings.faster_mode
         self._use_local_ai = self._parse_bool(self._config.get("USE_LOCAL_AI", "no"), default=False)
-        self._enable_groq  = self._parse_bool(self._config.get("ENABLE_GROQ", "yes"), default=True)
+        self._use_openrouter = self._app_settings.enable_openrouter
+        self._enable_groq = self._parse_bool(self._config.get("ENABLE_GROQ", "yes"), default=True)
+
+        # Priority: local AI > OpenRouter > Groq
         if self._use_local_ai:
             self._enable_groq = False
+            self._use_openrouter = False
+        elif self._use_openrouter:
+            self._enable_groq = False
 
-        if not GROQ_OK and not self._use_local_ai:
+        self._openrouter_key = self._app_settings.openrouter_api_key
+        self._openrouter_model = (
+            self._app_settings.openrouter_model or DEFAULT_OPENROUTER_MODEL
+        )
+
+        if not GROQ_OK and not self._use_local_ai and not self._use_openrouter:
             self._emit_error(
                 "The 'groq' package is not installed.",
                 "Run:  pip install groq",
@@ -521,7 +698,16 @@ class AIEngine:
                 if key:
                     self._groq_keys.append(key)
 
-        if not self._groq_keys and not self._use_local_ai:
+        if self._use_openrouter and not self._openrouter_key:
+            self._emit_error(
+                "ENABLE_OPENROUTER is set to yes but OPENROUTER_API_KEY is empty.",
+                "Open config.txt or .env and add your OpenRouter API key.",
+                "Get a key at: https://openrouter.ai/keys",
+            )
+            self._client = None
+            return
+
+        if not self._groq_keys and not self._use_local_ai and not self._use_openrouter:
             self._emit_error(
                 "No GROQ_API_KEY found in config.txt",
                 "Open config.txt and add at least one Groq API key.",
@@ -539,6 +725,8 @@ class AIEngine:
             self._current_groq_model_index = GROQ_MODELS.index(configured_model)
 
         self._groq_exhausted = False
+        self._groq_token_limits = {i: 100000 for i in range(len(self._groq_keys))}
+        self._groq_tokens_used = {i: 0 for i in range(len(self._groq_keys))}
         self._init_client()
 
     # ── Config helpers ────────────────────────────────────────────────────────
@@ -549,30 +737,7 @@ class AIEngine:
         return base / CONFIG_FILE_NAME
 
     def _create_default_config(self) -> None:
-        default = """\
-# Agetha config file
-USE_LOCAL_AI = no
-GROQ_API_KEY =
-GROQ_API_KEY_2 =
-GROQ_API_KEY_3 =
-GROQ_API_KEY_4 =
-GROQ_API_KEY_5 =
-GROQ_API_KEY_6 =
-GROQ_API_KEY_7 =
-GROQ_API_KEY_8 =
-GROQ_API_KEY_9 =
-GROQ_API_KEY_10 =
-GROQ_MODEL = llama-3.3-70b-versatile
-LOCAL_AI_MODEL =
-LOCAL_AI_TIMEOUT = 30
-ENABLE_COMMAND_EXECUTION = yes
-MEMORY_CHARS = 600
-HISTORY_LIMIT = 6
-FILE_READ_CHARS = 200
-# Animation speed multiplier for GIFs (lower = faster, higher = slower). Default: 0.6
-ANIMATION_SPEED = 0.6
-"""
-        self._config_path.write_text(default, encoding="utf-8")
+        self._config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
 
     def _load_compact_characters(self) -> str:
         try:
@@ -622,32 +787,8 @@ ANIMATION_SPEED = 0.6
         return str(value).strip().lower() in ("1", "yes", "true", "on")
 
     def _load_config(self) -> dict[str, str]:
-        if not self._config_path.exists():
-            self._config_path.parent.mkdir(parents=True, exist_ok=True)
-            self._create_default_config()
-            logger.info(f"Created default config at {self._config_path}. Edit and restart.")
-            sys.exit(0)
-        config: dict[str, str] = {}
-        for line in self._config_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            s = line.strip()
-            if not s or s.startswith("#") or "=" not in s:
-                continue
-            k, v = s.split("=", 1)
-            config[k.strip().upper()] = v.strip()
-
-        # ── .env override: keys in .env take priority over config.txt ─────
-        env_vars = load_env_file()
-        if env_vars:
-            # Map .env GROQ_API_KEY_1 → config GROQ_API_KEY, etc.
-            for env_key, env_val in env_vars.items():
-                upper_key = env_key.strip().upper()
-                # Normalize GROQ_API_KEY_1 → GROQ_API_KEY (config.txt convention)
-                if upper_key == "GROQ_API_KEY_1":
-                    upper_key = "GROQ_API_KEY"
-                config[upper_key] = env_val
-            logger.info(f".env overrides applied ({len(env_vars)} vars)")
-
-        return config
+        ensure_config_file(self._config_path, write_if_missing=True)
+        return parse_config_file(self._config_path)
 
     def _validate_config(self) -> None:
         """Clamp numeric config values to safe ranges; warn on invalid input."""
@@ -656,6 +797,11 @@ ANIMATION_SPEED = 0.6
             "FILE_READ_CHARS": (50, 5000, 200),
             "HISTORY_LIMIT": (1, 20, 6),
             "LOCAL_AI_TIMEOUT": (5, 120, 30),
+            "AI_MAX_TOKENS": (64, 8192, 400),
+            "EPISODIC_PROMPT_LIMIT": (0, 50, 10),
+            "EPISODIC_ENTRY_MAX_CHARS": (50, 2000, 300),
+            "EPISODIC_MAX_ENTRIES": (5, 500, 50),
+            "SCREEN_POLL_INTERVAL_SEC": (15, 3600, 120),
         }
         for key, (lo, hi, default) in bounds.items():
             raw = self._config.get(key, str(default))
@@ -695,6 +841,9 @@ ANIMATION_SPEED = 0.6
                     client._generate([{"role": "user", "content": "Ping"}])
                 except Exception as ping_err:
                     raise RuntimeError(f"Ollama unreachable: {ping_err}") from ping_err
+                ok_model, model_msg = _LocalOllamaClient.validate_model(local_model)
+                if not ok_model:
+                    raise RuntimeError(model_msg)
                 class _Wrap:
                     def __init__(self, c): self.chat = SimpleNamespace(completions=SimpleNamespace(create=c.chat_completions_create))
                 self._client = _Wrap(client)
@@ -709,6 +858,23 @@ ANIMATION_SPEED = 0.6
                 self._client = None
                 self._fatal_local_ai_error = True
                 self._show_error_gif = True
+            return
+
+        if self._use_openrouter:
+            try:
+                client = _OpenRouterClient(
+                    self._openrouter_key, self._openrouter_model, timeout=TIMEOUT,
+                )
+                class _Wrap:
+                    def __init__(self, c):
+                        self.chat = SimpleNamespace(
+                            completions=SimpleNamespace(create=c.chat_completions_create)
+                        )
+                self._client = _Wrap(client)
+                logger.info(f"Using OpenRouter model: {self._openrouter_model}")
+            except Exception as e:
+                self._emit_error("Failed to initialize OpenRouter client.", f"Error: {e}")
+                self._client = None
             return
 
         if self._enable_groq and self._groq_keys:
@@ -896,6 +1062,78 @@ ANIMATION_SPEED = 0.6
             logger.warning(f"monitor_process error: {e}")
             return False
 
+    # ── Token tracking (Groq daily limit estimate) ────────────────────────────
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        if not text:
+            return 0
+        return max(1, len(text) // 4)
+
+    def _estimate_request_tokens(self) -> int:
+        try:
+            base = SYSTEM_PROMPT_FASTER if self._faster_mode else SYSTEM_PROMPT
+            few = FEW_SHOTS_FASTER if self._faster_mode else FEW_SHOTS
+            memories = self._load_memories() if not _MEMORY_SYSTEM_AVAILABLE else ""
+            system_len = len(base) + len(memories) + len(getattr(self, "_compact_chars", ""))
+            system_tokens = self._estimate_tokens("x" * system_len)
+            few_shot_chars = sum(len(m["content"]) for m in few)
+            few_shot_tokens = self._estimate_tokens("x" * few_shot_chars)
+            history_chars = sum(len(e["user"]) + len(e["assistant"]) for e in self._history)
+            history_tokens = self._estimate_tokens("x" * history_chars)
+            return system_tokens + few_shot_tokens + history_tokens + 80 + self._app_settings.ai_max_tokens
+        except Exception:
+            return 500
+
+    def _provider_label(self) -> str:
+        if self._use_local_ai:
+            return f"LocalAI/{self._config.get('LOCAL_AI_MODEL', '?')}"
+        if self._use_openrouter:
+            return f"OpenRouter/{self._openrouter_model}"
+        return f"Groq/{GROQ_MODELS[self._current_groq_model_index]}"
+
+    def get_token_status(self) -> dict:
+        if self._use_local_ai:
+            return {"using_groq": False, "provider": "local"}
+        if self._use_openrouter:
+            return {
+                "using_groq": False,
+                "provider": "openrouter",
+                "model": self._openrouter_model,
+            }
+        if not self._groq_keys:
+            return {"using_groq": False, "provider": "local"}
+        idx = self._current_groq_key_index
+        limit = self._groq_token_limits.get(idx, 100000)
+        used = self._groq_tokens_used.get(idx, 0)
+        next_request_est = self._estimate_request_tokens()
+        effective_used = used + next_request_est
+        left = max(0, limit - effective_used)
+        pct_left = max(0, int(100.0 * left / limit)) if limit > 0 else 0
+        return {
+            "using_groq": True,
+            "provider": "groq",
+            "key_index": idx + 1,
+            "key_count": len(self._groq_keys),
+            "tokens_used": used,
+            "tokens_left": left,
+            "pct_left": pct_left,
+        }
+
+    def _track_tokens(self, usage_obj) -> None:
+        if not self._enable_groq or not usage_obj:
+            return
+        try:
+            total = int(getattr(usage_obj, "total_tokens", 0))
+            if total > 0 and self._current_groq_key_index < len(self._groq_keys):
+                self._groq_tokens_used[self._current_groq_key_index] += total
+                limit = self._groq_token_limits.get(self._current_groq_key_index, 100000)
+                used = self._groq_tokens_used[self._current_groq_key_index]
+                pct = max(0, int(100.0 * (limit - used) / limit))
+                logger.info(f"Key {self._current_groq_key_index + 1}: +{total} tokens ({pct}% left)")
+        except Exception:
+            pass
+
     # ── Prompt builder ────────────────────────────────────────────────────────
 
     def _build_prompt(self, screen_context: str, user_message: str, doc_content: str) -> tuple[str, str, list[dict]]:
@@ -904,14 +1142,18 @@ ANIMATION_SPEED = 0.6
         now = datetime.now().strftime("%A, %B %d %Y - %H:%M")
 
         # ── System prompt construction ────────────────────────────────────────
-        # Dual-layer build when memory_system is available:
-        #   Layer 1 — soul.md        : static identity, personality, mood rules
-        #   Layer 2 — SYSTEM_PROMPT  : command format, valid JSON shapes
-        #   Layer 3 — episodic JSON  : recent interaction context (last 10)
-        #
-        # Falls back to the legacy memory.txt path when memory_system.py is
-        # absent (e.g. partial installation) so the engine never silently breaks.
-        if _MEMORY_SYSTEM_AVAILABLE:
+        if self._faster_mode:
+            memories = self._load_memories() if not _MEMORY_SYSTEM_AVAILABLE else ""
+            system = SYSTEM_PROMPT_FASTER
+            if memories:
+                system = f"MEMORY:\n{memories}\n\n{system}"
+            elif _MEMORY_SYSTEM_AVAILABLE:
+                episodic = _ms_get_recent_memories(self._app_settings.episodic_prompt_limit)
+                if episodic:
+                    lines = [f"- {e.get('summary', '')}" for e in episodic[:5] if e.get("summary")]
+                    if lines:
+                        system = f"MEMORY:\n" + "\n".join(lines) + f"\n\n{system}"
+        elif _MEMORY_SYSTEM_AVAILABLE:
             system = _ms_build_system_prompt(SYSTEM_PROMPT)
         else:
             # ── Legacy path: flat memory.txt ──────────────────────────────
@@ -937,8 +1179,8 @@ ANIMATION_SPEED = 0.6
                 + system
             )
 
-        # Character list from characters.txt (optional companion feature)
-        if getattr(self, "_compact_chars", ""):
+        # Character list from characters.txt (optional; skipped in FASTER_MODE)
+        if not self._faster_mode and getattr(self, "_compact_chars", ""):
             system = (
                 f"CHARACTERS: {self._compact_chars}\n\n"
                 "To move the app window, emit a JSON command: "
@@ -963,7 +1205,8 @@ ANIMATION_SPEED = 0.6
         parts.append("JSON:")
         user_turn = "\n".join(parts)
 
-        messages = FEW_SHOTS + self._build_history() + [{"role": "user", "content": user_turn}]
+        few_shots = FEW_SHOTS_FASTER if self._faster_mode else FEW_SHOTS
+        messages = few_shots + self._build_history() + [{"role": "user", "content": user_turn}]
         return system, user_turn, messages
 
     # ── Main query entry point ────────────────────────────────────────────────
@@ -992,18 +1235,31 @@ ANIMATION_SPEED = 0.6
         while True:
             try:
                 raw = ""
-                current_model = (self._config.get("LOCAL_AI_MODEL","").strip()
-                                 if self._use_local_ai else GROQ_MODELS[self._current_groq_model_index])
+                usage_obj = None
+                if self._use_local_ai:
+                    current_model = self._config.get("LOCAL_AI_MODEL", "").strip()
+                elif self._use_openrouter:
+                    current_model = self._openrouter_model
+                else:
+                    current_model = GROQ_MODELS[self._current_groq_model_index]
                 stream = self._client.chat.completions.create(
                     model=current_model,
                     messages=[{"role": "system", "content": system}] + messages,
-                    temperature=0.85, max_tokens=400, top_p=0.95, timeout=TIMEOUT, stream=True,
+                    temperature=self._app_settings.ai_temperature,
+                    max_tokens=self._app_settings.ai_max_tokens,
+                    top_p=self._app_settings.ai_top_p,
+                    timeout=TIMEOUT, stream=True,
                 )
                 for chunk in stream:
                     delta = chunk.choices[0].delta.content or ""
                     if delta:
                         raw += delta
-                        if on_token: on_token(raw)
+                        if on_token:
+                            on_token(raw)
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage_obj = chunk.usage
+
+                self._track_tokens(usage_obj)
 
                 result = self._parse(raw)
 
@@ -1014,15 +1270,14 @@ ANIMATION_SPEED = 0.6
                 return result
 
             except Exception as e:
-                provider = (f"LocalAI/{self._config.get('LOCAL_AI_MODEL','?')}"
-                            if self._use_local_ai else f"Groq/{GROQ_MODELS[self._current_groq_model_index]}")
+                provider = self._provider_label()
                 logger.warning(f"{provider} error: {e}")
                 errtxt = str(e).lower()
 
                 # Rate-limit errors: rotate key immediately, reset retries
                 if "rate" in errtxt or "429" in errtxt or "too many" in errtxt:
                     retries = 0
-                    if not self._use_local_ai and self._rotate_key():
+                    if self._enable_groq and not self._use_openrouter and self._rotate_key():
                         continue
 
                 if not self._use_local_ai and (isinstance(e, (OSError, ConnectionError, TimeoutError)) or "connection" in errtxt or "network" in errtxt or "unreachable" in errtxt):
@@ -1035,7 +1290,9 @@ ANIMATION_SPEED = 0.6
                         resp = self._client.chat.completions.create(
                             model=local_model,
                             messages=[{"role": "system", "content": system}] + messages,
-                            temperature=0.85, max_tokens=400, top_p=0.95,
+                            temperature=self._app_settings.ai_temperature,
+                            max_tokens=self._app_settings.ai_max_tokens,
+                            top_p=self._app_settings.ai_top_p,
                             timeout=int(self._config.get("LOCAL_AI_TIMEOUT", TIMEOUT)),
                             stream=False,
                         )
@@ -1049,7 +1306,10 @@ ANIMATION_SPEED = 0.6
                         logger.warning(f"Local AI non-streaming fallback also failed: {e2}")
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
-                # Non-rate-limit error: increment retries
+                if self._use_openrouter or not self._enable_groq:
+                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+
+                # Non-rate-limit error: increment retries (Groq only)
                 retries += 1
                 if retries >= MAX_RETRIES_PER_KEY:
                     retries = 0
@@ -1086,33 +1346,42 @@ ANIMATION_SPEED = 0.6
 
         while True:
             try:
-                current_model = (self._config.get("LOCAL_AI_MODEL", "").strip()
-                                 if self._use_local_ai else GROQ_MODELS[self._current_groq_model_index])
+                current_model = (
+                    self._config.get("LOCAL_AI_MODEL", "").strip()
+                    if self._use_local_ai
+                    else self._openrouter_model if self._use_openrouter
+                    else GROQ_MODELS[self._current_groq_model_index]
+                )
                 timeout = int(self._config.get("LOCAL_AI_TIMEOUT", TIMEOUT)) if self._use_local_ai else TIMEOUT
                 resp = self._client.chat.completions.create(
                     model=current_model,
                     messages=[{"role": "system", "content": system}] + messages,
-                    temperature=0.85, max_tokens=400, top_p=0.95, timeout=timeout,
+                    temperature=self._app_settings.ai_temperature,
+                    max_tokens=self._app_settings.ai_max_tokens,
+                    top_p=self._app_settings.ai_top_p,
+                    timeout=timeout,
                 )
                 raw = resp.choices[0].message.content.strip()
+                self._track_tokens(getattr(resp, "usage", None))
                 result = self._parse(raw)
                 if is_user and result["command"] == "idle":
                     result.update(command="speak", mood="neutral", segments=random.choice(_IDLE_FALLBACKS))
                 self._record(user_turn, raw)
                 return result
             except Exception as e:
-                provider = (f"LocalAI/{self._config.get('LOCAL_AI_MODEL','?')}"
-                            if self._use_local_ai else f"Groq/{GROQ_MODELS[self._current_groq_model_index]}")
+                provider = self._provider_label()
                 logger.warning(f"{provider} error: {e}")
                 errtxt = str(e).lower()
                 if self._use_local_ai:
+                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                if self._use_openrouter:
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                 if isinstance(e, (OSError, ConnectionError, TimeoutError)) or "connection" in errtxt or "network" in errtxt or "unreachable" in errtxt:
                     self._show_error_gif = True
                     return {"command": "show_error_gif", "path": getattr(self, "_error_gif_path", ""), "segments": [], "shutdown": False}
                 if "rate" in errtxt or "429" in errtxt or "too many" in errtxt:
                     retries = 0
-                    if self._rotate_key():
+                    if self._enable_groq and not self._use_openrouter and self._rotate_key():
                         continue
                 retries += 1
                 if retries >= MAX_RETRIES_PER_KEY:
@@ -1251,11 +1520,16 @@ ANIMATION_SPEED = 0.6
             "target_window_close":   [("target_app","")],
             "change_mood":           [],
             "clear_memory":          [],
+            "view_memory":           [("limit", 10)],
         }
         if command in _cmd_fields:
             for field, default in _cmd_fields[command]:
                 val = obj.get(field, default)
                 result[field] = (val.strip() if isinstance(val, str) else val)
+
+        if command == "clear_memory":
+            scope = (obj.get("memory_scope") or obj.get("scope") or "all").strip().lower()
+            result["memory_scope"] = scope
 
         if command == "create_file":
             result["path"]      = obj.get("path","").strip()
@@ -1268,12 +1542,21 @@ ANIMATION_SPEED = 0.6
             "run_command", "force_close", "delete_file", "create_file",
             "write_file", "rename_file", "create_folder",
             "shutdown", "restart", "lock_screen",
+            "target_window_move", "target_window_resize", "target_window_close",
         }
         if command in _GATED_COMMANDS and not self._command_execution_enabled:
             logger.info(f"{command} blocked (ENABLE_COMMAND_EXECUTION=no)")
             result["command"] = "speak"
             result["mood"] = "neutral"
             result["segments"] = [{"text": "That action is disabled in config.", "pause": 0.0}]
+        _WINDOW_COMMANDS = {
+            "target_window_move", "target_window_resize", "target_window_close", "force_close",
+        }
+        if command in _WINDOW_COMMANDS and not self._app_settings.enable_window_control:
+            logger.info(f"{command} blocked (ENABLE_WINDOW_CONTROL=no)")
+            result["command"] = "speak"
+            result["mood"] = "neutral"
+            result["segments"] = [{"text": "Window control is disabled in config.", "pause": 0.0}]
 
         if command == "popup":
             raw_popup = obj.get("popup", [])
@@ -1336,4 +1619,35 @@ ANIMATION_SPEED = 0.6
         except Exception:
             pass
 
+        result = self._normalize_window_commands(result)
+        return result
+
+    def _normalize_window_commands(self, result: dict) -> dict:
+        """Rewrite mistaken self-targets and block self-harm commands."""
+        cmd = result.get("command", "")
+        if cmd in ("target_window_move", "target_window_resize"):
+            target = (result.get("target_app") or "").strip()
+            if is_self_window_target(target):
+                result["command"] = "move_window"
+                result.pop("target_app", None)
+                logger.info(f"Rewrote {cmd} on self-target '{target}' → move_window")
+        elif cmd == "target_window_close":
+            target = (result.get("target_app") or "").strip()
+            if is_self_window_target(target):
+                result["command"] = "speak"
+                result["segments"] = [
+                    {"text": "I'm not closing myself.", "pause": 0.5},
+                    {"text": "Pick a real app.", "pause": 0.0},
+                ]
+        elif cmd == "force_close":
+            target = (
+                result.get("app", "") or result.get("process", "")
+                or result.get("name", "") or result.get("target_app", "")
+            ).strip()
+            if is_self_process_target(target):
+                result["command"] = "speak"
+                result["segments"] = [
+                    {"text": "I'm not killing myself.", "pause": 0.5},
+                    {"text": "Nice try.", "pause": 0.0},
+                ]
         return result
