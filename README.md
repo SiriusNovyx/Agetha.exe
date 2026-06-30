@@ -2,15 +2,15 @@
 
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
-**Version:** Overhaul v3.0 · **Medic_Checker:** v3.0 · **Original author:** @tamsamas · **Modified:** @SiriusNovyx
+**Version:** Overhaul v3.5.0 · **Medic_Checker:** v3.5 · **Original author:** @tomiszivacs
 
 ---
 
 ## About
 
-Agetha is a **desktop AI companion** — a small always-on-top Windows 95–style window with an animated character who lives on your machine. She chats with you, watches your screen via OCR, remembers context across sessions, and can execute real OS actions through a JSON command system powered by **Groq** (default) or **Ollama** (local).
+Agetha is a **desktop AI companion** — a small always-on-top Windows 95–style window with an animated character who lives on your machine. She chats with you, watches your screen via OCR, remembers context across sessions, and can execute real OS actions through a JSON command system powered by **Groq** (default), **OpenRouter** (optional), or **Ollama** (local).
 
-This fork makes Agetha feel sharper, more autonomous, and more integrated with your desktop: spatial error detection, mood-driven window snapping, process monitoring, and a full command library with **native confirmation dialogs** before dangerous actions.
+This fork makes Agetha feel sharper, more autonomous, and more integrated with your desktop: spatial error detection, mood-driven window snapping, process monitoring, voice input, file drag-and-drop, Groq token usage in the UI, and a full command library with **native confirmation dialogs** before dangerous actions.
 
 ---
 
@@ -51,6 +51,31 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
 - **Denied actions:** Agetha responds *"Fine. I won't."*
 - Toggle all OS execution via `ENABLE_COMMAND_EXECUTION` in `config.txt`
 
+### Voice Input (optional)
+
+- **Microphone button** (🎤) in the chat row when `ENABLE_VOICE = yes`
+- **Google STT** (online) — default when `USE_LOCAL_STT = no`
+- **faster-whisper** (offline) — when `USE_LOCAL_STT = yes` (~75 MB `tiny.en` model on first run)
+- Mic choice saved in `memory/settings.json` (Win95-style picker on first use)
+- Medic_Checker installs `SpeechRecognition` + `PyAudio` (and `faster-whisper` if needed)
+
+### File Drag-and-Drop
+
+- Drop files onto Agetha's GIF when `ENABLE_FILE_DRAG_DROP = yes`
+- Requires `tkinterdnd2` on Windows (Medic_Checker installs it when enabled)
+- Agetha receives a `[system] file_dragged: "name" (path: …)` message and can react
+
+### AI Backend Options & Token UI
+
+| Backend | Config | Keys in `.env` |
+|---------|--------|----------------|
+| **Groq** (default) | `ENABLE_GROQ = yes` | `GROQ_API_KEY_1` … `_10` |
+| **OpenRouter** | `ENABLE_OPENROUTER = yes` | `OPENROUTER_API_KEY` |
+| **Ollama** | `USE_LOCAL_AI = yes` | *(none — local)* |
+
+- **Token %** — when using Groq, the input placeholder shows `key 1/3 • 87% tokens left` (estimated daily budget per key); status bar shows the same after each reply
+- **FASTER_MODE** — `FASTER_MODE = yes` uses shorter prompts (less personality, fewer tokens, cheaper). Title bar shows `FAST MODE`
+
 ---
 
 ## Project Structure
@@ -61,15 +86,19 @@ Agetha_Mod/
 ├── ai_engine.py         # Groq/Ollama brain, JSON command parsing
 ├── screen_reader.py     # OCR, pattern matching, window capture
 ├── memory_system.py     # soul.md + episodic memory
-├── command_handlers.py  # Command pattern dispatch (43 handlers)
 ├── command_guard.py     # 3-tier native confirmation dialogs
+├── command_handlers.py  # Command pattern dispatch (43 handlers)
 ├── system_commands.py   # OS utilities (volume, wallpaper, shutdown…)
+├── window_control.py    # Win32 window find/move/resize/close
+├── app_config.py        # Central config.txt loader & typed settings
+├── voice_input.py       # Microphone STT (Google / faster-whisper)
 ├── utils.py             # Shared helpers, logging, .env loader
-├── config.txt           # User settings (no secrets — use .env)
+├── config.txt           # User settings only — no API keys
 ├── .env.example         # API key template
 ├── requirements.txt     # Pinned Python dependencies
-├── Medic_Checker.ps1    # Startup health check & launcher (v3.0)
+├── Medic_Checker.ps1    # Startup health check & launcher (v3.5)
 ├── Medic_Checker.bat    # Thin launcher → runs Medic_Checker.ps1
+├── Run_Agetha_Admin.ps1 # Optional elevated launch for protected windows
 ├── assets/              # GIFs, fonts, icons
 └── memory/              # soul.md, episodic_memory.json
 ```
@@ -145,7 +174,8 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 | `play_sound` / `play_emotion_sound` | Play sound or OS emotion sound |
 | `show_error_gif` | Show error animation |
 | `request_screen_read` | Force immediate OCR capture |
-| `clear_memory` | Erase episodic memory (soul.md kept) |
+| `clear_memory` | Erase episodic memory (soul.md kept); `memory_scope`: all/recent/old/keep_5 |
+| `view_memory` | Show recent episodic entries in popup |
 
 ⚠ = requires user confirmation (Danger or Caution tier)
 
@@ -174,32 +204,139 @@ python main.py
 
 ## Configuration
 
-### API Keys (`.env` — recommended)
+### API Keys (`.env` only)
+
+**Do not put API keys in `config.txt`.** All secrets belong in `.env`:
 
 ```bash
 copy .env.example .env
 ```
 
-Edit `.env` and add up to 10 Groq keys (rotates on rate limits):
+Edit `.env`:
 
 ```
 GROQ_API_KEY_1=gsk_your_key_here
+GROQ_API_KEY_2=
+# … up to GROQ_API_KEY_10 for rate-limit rotation
+
+# Optional — only if ENABLE_OPENROUTER = yes in config.txt
+OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Get free keys at [console.groq.com](https://console.groq.com).
+- Groq keys: [console.groq.com](https://console.groq.com)
+- OpenRouter keys: [openrouter.ai/keys](https://openrouter.ai/keys)
 
-`.env` takes priority over `config.txt`. Never commit `.env` to git (already in `.gitignore`).
+`.env` overrides any matching key in `config.txt`. Never commit `.env` to git (already in `.gitignore`).
 
 ### config.txt
 
-| Setting | Description |
-|---------|-------------|
-| `USE_LOCAL_AI` | `yes` to use Ollama instead of Groq |
-| `GROQ_MODEL` | Default: `llama-3.3-70b-versatile` |
-| `ENABLE_COMMAND_EXECUTION` | `yes`/`no` — master switch for OS commands |
-| `MEMORY_CHARS` | Long-term memory chars injected per prompt |
-| `HISTORY_LIMIT` | Recent conversation turns kept |
-| `ANIMATION_SPEED` | GIF speed multiplier (default `0.6`) |
+All **non-secret** settings live in `config.txt` and are loaded by `app_config.py`. Boolean values accept `yes`/`no`, `true`/`false`, `1`/`0`, or `on`/`off`.
+
+#### AI backend
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `USE_LOCAL_AI` | `no` | Use Ollama instead of cloud APIs |
+| `ENABLE_GROQ` | `yes` | Enable Groq (default cloud backend) |
+| `ENABLE_OPENROUTER` | `no` | Use OpenRouter instead of Groq |
+| `OPENROUTER_MODEL` | see `config.txt` | OpenRouter model slug |
+| `FASTER_MODE` | `no` | Shorter prompts, less personality, cheaper |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model name |
+| `LOCAL_AI_MODEL` | *(empty)* | Ollama model (`ollama list`) |
+| `LOCAL_AI_TIMEOUT` | `30` | Ollama request timeout (seconds) |
+
+API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `config.txt`.
+
+#### AI tuning
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `AI_TEMPERATURE` | `0.85` | Response randomness (0–2) |
+| `AI_MAX_TOKENS` | `400` | Max tokens per reply |
+| `AI_TOP_P` | `0.95` | Nucleus sampling (0–1) |
+| `ENABLE_STREAMING` | `yes` | Stream Groq responses to UI |
+| `ENABLE_AMBIENT_POLLS` | `yes` | Periodic screen-context AI polls |
+
+#### OS permissions
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_COMMAND_EXECUTION` | `yes` | Master switch for all OS commands |
+| `ENABLE_WINDOW_CONTROL` | `yes` | `target_window_*` move/resize/close |
+| `ENABLE_COMMAND_CONFIRMATIONS` | `yes` | Native confirm dialogs for risky cmds |
+| `FORCE_CLOSE_AUTO_ALLOW` | `yes` | Auto-allow `force_close` on user apps |
+| `PROTECTED_PROCESSES` | *(empty)* | Extra comma-separated processes to protect |
+
+#### Context & memory
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `MEMORY_CHARS` | `600` | Long-term memory chars per prompt |
+| `HISTORY_LIMIT` | `6` | Recent conversation turns kept |
+| `FILE_READ_CHARS` | `200` | Max chars when reading files into context |
+| `EPISODIC_PROMPT_LIMIT` | `10` | Episodic memories injected per prompt |
+| `EPISODIC_ENTRY_MAX_CHARS` | `300` | Max chars per episodic entry |
+| `EPISODIC_MAX_ENTRIES` | `50` | Max episodic entries stored |
+
+#### Behavior & timing
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `SCREEN_POLL_INTERVAL_SEC` | `120` | Ambient screen poll interval |
+| `TOUCH_COOLDOWN_SEC` | `10` | Click-GIF touch cooldown |
+| `WAKE_DELAY_SEC` | `8` | Delay before wake-from-sleep |
+| `LOAF_TIMER_MIN` | `15` | Minutes idle before loaf animation |
+
+#### Mood & attention snap
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_ATTENTION_SNAP` | `yes` | Auto-return to idle after mood timeout |
+| `MOOD_SNAP_*_SEC` | varies | Per-mood snap threshold (see `config.txt`) |
+
+#### Screen reader / OCR
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_SCREEN_READER` | `yes` | Enable OCR screen context |
+| `OCR_MAX_DIMENSION` | `2560` | Max capture dimension (px) |
+| `OCR_FOCUSED_WINDOW_ONLY` | `yes` | OCR focused window only |
+| `INCLUDE_WINDOW_TITLE_IN_CONTEXT` | `yes` | Add window title to AI context |
+| `TESSERACT_PATH` | *(empty)* | Custom path to `tesseract.exe` |
+
+#### UI
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `WINDOW_TOPMOST` | `yes` | Keep Agetha above other windows |
+| `WINDOW_START_X` / `Y` | `80` | Initial window position |
+| `SUBTITLE_CHAR_DELAY` | `0.035` | Typewriter subtitle speed (seconds) |
+| `ANIMATION_SPEED` | `0.6` | GIF speed multiplier |
+
+#### Medic_Checker (launcher)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `SKIP_TESSERACT_CHECK` | `no` | Skip Tesseract step in health check |
+| `SKIP_ASSET_CHECK` | `no` | Skip asset file verification |
+| `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
+| `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
+| `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
+| `APP_VERSION` | `3.5.0` | Shown in window title |
+| `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
+| `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
+| `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |
+| `DRY_RUN_MODE` | `no` | Confirm each command before executing |
+| `OCR_CUSTOM_PATTERNS` | *(empty)* | `label:mood:regex` patterns (semicolon-separated) |
+| `OCR_PAUSE_WHILE_TYPING_SEC` | `8` | Skip OCR for N seconds after keyboard/touch |
+
+#### Voice & drag-and-drop
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_VOICE` | `no` | Show 🎤 microphone button |
+| `USE_LOCAL_STT` | `no` | `yes` = faster-whisper offline; `no` = Google STT online |
+| `ENABLE_FILE_DRAG_DROP` | `yes` | Drop files onto Agetha's GIF |
 
 ### Local AI (Ollama)
 
@@ -210,23 +347,42 @@ LOCAL_AI_MODEL = llama3
 
 Run `ollama list` to see installed models.
 
+### OpenRouter (optional)
+
+```ini
+ENABLE_OPENROUTER = yes
+OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+```
+
+Add `OPENROUTER_API_KEY=…` to `.env`. Ignored when `USE_LOCAL_AI = yes`.
+
+### Voice + drag-and-drop (optional)
+
+```ini
+ENABLE_VOICE = yes
+USE_LOCAL_STT = no          # no = Google STT; yes = faster-whisper
+ENABLE_FILE_DRAG_DROP = yes
+```
+
+Run **Medic_Checker** after enabling — it installs optional packages when `AUTO_PIP_INSTALL = yes`.
+
 ---
 
-## Medic_Checker v3.0 (PowerShell)
+## Medic_Checker v3.5 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
 | Step | Check |
 |------|-------|
-| Pre-flight | All 9 core modules + `requirements.txt` present |
+| Pre-flight | All 12 core modules + `requirements.txt` present |
 | [A–D] | ARM64/Snapdragon x64 Python detection & auto-install |
 | [1/7] | Python installed |
 | [2/7] | Virtual environment create/activate |
-| [3/7] | Packages from `requirements.txt` (+ optional tkextrafont) |
+| [3/7] | Packages from `requirements.txt`; optional voice/STT/DnD when enabled in `config.txt` |
 | [4/7] | Tesseract OCR (optional — enables screen reading) |
 | [5/7] | All 20 assets in `assets\` |
 | [6/7] | Config, `.env`, `memory\`, `soul.md` |
-| [7/7] | `py_compile` all 8 Python modules |
+| [7/7] | `py_compile` all 12 Python modules |
 
 **Color codes:** `[ OK ]` green · `[WARN]` yellow · `[FAIL]` red
 
@@ -239,12 +395,22 @@ On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used 
 - **Python 3.13.x** recommended (3.14 may have compatibility issues)
 - **Tesseract OCR** — [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) (optional, enables screen reading)
 - **Assets** — download from [chocolatebread.ddns.net/agetha.html](https://chocolatebread.ddns.net/agetha.html)
-- **Groq API key** or **Ollama** for AI responses
+- **Groq API key** (in `.env`), **OpenRouter** (optional), or **Ollama** for AI responses
+- **Microphone** — optional, for voice input (`ENABLE_VOICE = yes`)
+- **PyAudio** — optional, required for microphone (installed by Medic_Checker)
 
 ### Python packages (`requirements.txt`)
 
+**Core:**
 ```
 pillow, numpy, requests, groq, pyautogui, pytesseract, mss, pygame, psutil
+```
+
+**Optional** (installed by Medic_Checker when enabled in `config.txt`):
+```
+SpeechRecognition, PyAudio          # ENABLE_VOICE = yes
+faster-whisper                    # USE_LOCAL_STT = yes
+tkinterdnd2                       # ENABLE_FILE_DRAG_DROP = yes (Windows)
 ```
 
 ---
@@ -254,6 +420,9 @@ pillow, numpy, requests, groq, pyautogui, pytesseract, mss, pygame, psutil
 | Input | Action |
 |-------|--------|
 | Text box + Enter | Send message to Agetha |
+| Placeholder hint | Groq: `key N/M • X% tokens left`; OpenRouter/local shown when not on Groq |
+| 🎤 button | Toggle microphone (`ENABLE_VOICE = yes`) — speak, pause ~1.2 s, text is sent |
+| Drop file on GIF | File drag event (`ENABLE_FILE_DRAG_DROP = yes`) |
 | Click GIF | Touch event (`__touch__`) — 10 s cooldown |
 | **Escape** | Cancel in-flight AI request |
 | Title bar | Drag window |
@@ -267,7 +436,7 @@ User input / ambient poll (every ~2 min)
         ↓
 screen_reader.py  →  OCR + pattern tags + window title
         ↓
-ai_engine.py      →  Groq/Ollama → JSON command
+ai_engine.py      →  Groq / OpenRouter / Ollama → JSON command
         ↓
 command_guard.py  →  Native confirmation (if needed)
         ↓
@@ -278,6 +447,16 @@ command_handlers.py → Execute action + update UI
 
 ## Changelog (Overhaul)
 
+### v3.5.0 — Voice, OpenRouter & UX (tamsamas upstream patterns)
+
+- **`voice_input.py`** — microphone input with Google STT or local faster-whisper
+- **File drag-and-drop** — drop files onto the GIF (`tkinterdnd2`)
+- **OpenRouter** — optional cloud backend (`ENABLE_OPENROUTER`, key in `.env`)
+- **Token % UI** — Groq daily budget estimate in input placeholder + status bar
+- **`FASTER_MODE`** — shorter prompts for lower token cost
+- **Secrets** — API keys documented as `.env` only; `config.txt` has no key lines
+- **Medic_Checker** — optional package install for voice/STT/DnD; 12-module compile check
+
 ### v3.0 — Quality & Safety Overhaul
 
 - **`command_guard.py`** — 3-tier native confirmation dialogs with Windows warning icons
@@ -287,7 +466,7 @@ command_handlers.py → Execute action + update UI
 - **New commands:** `open_url`, `system_info`, `set_volume`, `set_wallpaper`, `search_files`, `type_text`, `lock_screen`, `shutdown`, `restart`, `set_reminder`, `get_clipboard`, `open_folder`, `target_window_close`, `change_mood`, `clear_memory`
 - **UX:** Escape to abort AI; input stays enabled during ambient polls; subtitle errors on failed file ops
 - **Reliability:** null guards, retry limits, config validation, OCR resolution cap
-- **Medic_Checker.ps1 v3.0** — PowerShell health check; `.bat` is a thin launcher
+- **Medic_Checker.ps1 v3.5** — PowerShell health check; `.bat` is a thin launcher
 
 ### Phase 3 — Spatial OCR
 
@@ -322,26 +501,10 @@ By using this software you accept full responsibility for any outcome. The autho
 
 **License:** GNU General Public License v3.0 (GPL-3.0) — see `LICENSE`
 
-This fork is released under the **GNU General Public License v3.0 (GPL-3.0)**.
-
-This means:
-
-* You are free to **use, study, share, and modify** this software.
-* Any modified version you distribute **must also be released under GPL-3.0**.
-* You **must include** the original copyright notice and licence text.
-* You **cannot** distribute this software under a more restrictive licence.
-* There is **no warranty** of any kind.
-
-The full licence text is in the `LICENSE` file in the repository root.
-
-> **Note on the original project:** This fork's licence applies only to the code changes introduced here (Phases 1–3, memory system, tooling). The original Agetha.exe codebase by tamsamas is subject to its own licence terms. The GIF and font assets remain the property of tamsamas and are **not** covered by this fork's GPL-3.0 licence.
-
----
-
 **Credits:**
 - **Original Agetha.exe** — @tomiszivacs
 - **Fork / Overhaul** — SiriusNovyx
 
 Feedback, bug reports, and pull requests welcome.
 
-Have fun — and try not to make Agetha too angry! :)
+Have fun — and try not to make Agetha too angry.
