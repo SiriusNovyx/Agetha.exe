@@ -32,9 +32,9 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.5.0'
+    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.5.1'
     if ($v) { return $v }
-    return '3.5.0'
+    return '3.5.1'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
