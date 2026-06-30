@@ -32,9 +32,9 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.5.0'
+    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.5.1'
     if ($v) { return $v }
-    return '3.5.0'
+    return '3.5.1'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -444,7 +444,8 @@ function Invoke-StandardChecks {
         if ($useLocalStt) { $optionalPkgs += 'faster-whisper' }
     }
     if ($enableDnd) { $optionalPkgs += 'tkinterdnd2' }
-    $optionalPkgs = $optionalPkgs | Select-Object -Unique
+    # @() keeps a single package as a 1-element array (pipeline unwraps scalars; breaks .Count in StrictMode)
+    $optionalPkgs = @($optionalPkgs | Select-Object -Unique)
     if ($optionalPkgs.Count -eq 0) {
         Write-Info 'ENABLE_VOICE=no and/or ENABLE_FILE_DRAG_DROP=no - optional packages skipped.'
     } else {
@@ -492,7 +493,7 @@ function Invoke-StandardChecks {
         if ($dndStatus -eq 'DND_OK') {
             Write-Ok 'File drag-and-drop (tkinterdnd2) ready.'
         } else {
-            Write-Warn 'tkinterdnd2 not installed — drag-and-drop disabled.'
+            Write-Warn 'tkinterdnd2 not installed - drag-and-drop disabled.'
         }
     }
     Write-Host ''
