@@ -22,6 +22,7 @@ import platform
 import subprocess
 import webbrowser
 from pathlib import Path
+from typing import Callable
 from PIL import Image, ImageTk, ImageSequence
 
 # Platform Detection Setup
@@ -47,10 +48,18 @@ except ImportError:
 from ai_engine import AIEngine
 from screen_reader import ScreenReader
 from command_guard import CommandGuard
+from voice_input import (
+    VoiceInput, MicPickerDialog, list_microphones,
+    load_mic_settings, save_mic_settings,
+)
 from utils import (
     native_error_popup, logger, BASE_DIR, WINDOW_W, WINDOW_H,
     TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS,
 )
+from app_config import get_settings
+from window_control import ease_out_cubic
+
+_SETTINGS = get_settings()
 
 BASE_DIR = BASE_DIR
 ASSETS      = BASE_DIR / "assets"
@@ -65,22 +74,7 @@ GIF_H    = 300
 _ATTENTION_MOODS = {"manic", "angry", "paranoid", "dominant", "surprised", "excited"}
 
 # Per-mood inactivity threshold (seconds) before Agetha snaps to center.
-# Lower = she snaps faster (more aggressive / severe mood).
-_MOOD_SNAP_THRESHOLDS: dict[str, int] = {
-    "manic":       120,    # 2 min — she cannot wait
-    "angry":       180,    # 3 min
-    "paranoid":    240,    # 4 min
-    "dominant":    300,    # 5 min
-    "surprised":   360,    # 6 min
-    "excited":     420,    # 7 min
-    "happy":       600,    # 10 min — cheerful, patient
-    "neutral":     600,    # 10 min (default)
-    "thinking":    600,    # 10 min
-    "vulnerable":  720,    # 12 min — shy, won't force
-    "melancholic": 900,    # 15 min — passive-aggressive; waits indefinitely
-    "sad":         900,    # 15 min
-    "whisper":     900,    # 15 min
-}
+_MOOD_SNAP_THRESHOLDS: dict[str, int] = _SETTINGS.mood_snap_thresholds()
 
 # ── Phase 2: ctypes external window helper ────────────────────────────────────
 def _find_window_hwnd(partial_name: str) -> int | None:
@@ -373,21 +367,8 @@ class BleepPlayer:
 
 
 def _read_animation_speed() -> float:
-    """Read ANIMATION_SPEED from config.txt once at startup. Returns 0.6 if missing/invalid."""
-    try:
-        _base = Path(sys.argv[0]).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).parent
-        _cfg = _base / "config.txt"
-        if _cfg.exists():
-            for ln in _cfg.read_text(encoding="utf-8", errors="replace").splitlines():
-                s = ln.strip()
-                if s.startswith("#") or "=" not in s:
-                    continue
-                k, v = s.split("=", 1)
-                if k.strip().upper() == "ANIMATION_SPEED":
-                    return float(v.strip())
-    except Exception:
-        pass
-    return 0.6
+    return get_settings().animation_speed
+
 
 # Read once at import time so GifPlayer doesn't re-read config per frame
 _ANIMATION_SPEED = _read_animation_speed()
@@ -553,7 +534,7 @@ class GifPlayer:
 class SubtitleRenderer:
     """Typewriter-style subtitles on a Canvas using the Barrio font."""
 
-    CHAR_DELAY = 0.035
+    CHAR_DELAY = get_settings().subtitle_char_delay
     _font_cache: dict[int, tkfont.Font] = {}
 
     def __init__(self, canvas: tk.Canvas, font_size: int = 17, bleep_player=None):
@@ -983,14 +964,26 @@ class CompanionApp:
         # Register font before creating the Tk window so families() sees it
         _register_barrio_font()
 
-        self.root = tk.Tk()
-        self.root.title("Agetha.exe")
-        self.root.geometry(f"{WINDOW_W}x{WINDOW_H}+80+80")
+        self._dnd_ok = False
+        try:
+            from tkinterdnd2 import TkinterDnD
+            self.root = TkinterDnD.Tk()
+            self._dnd_ok = True
+            logger.info("[DnD] tkinterdnd2 loaded — file drag-and-drop available")
+        except Exception:
+            self.root = tk.Tk()
+            logger.info("[DnD] tkinterdnd2 not installed — drag-and-drop disabled")
+
+        self.root.title(f"Agetha.exe v{_SETTINGS.app_version}")
+        self.root.geometry(
+            f"{WINDOW_W}x{WINDOW_H}+{_SETTINGS.window_start_x}+{_SETTINGS.window_start_y}"
+        )
         self.root.configure(bg=W95_BG)
         self.root.overrideredirect(True)
         self.root.resizable(False, False)
         try:
-            self.root.attributes("-topmost", True)
+            if _SETTINGS.window_topmost:
+                self.root.attributes("-topmost", True)
         except Exception:
             pass
 
@@ -1015,6 +1008,10 @@ class CompanionApp:
         self._cancel_event = threading.Event()
         self._ai_busy = False
         self._state_lock = threading.Lock()
+        self._voice: VoiceInput | None = None
+        self._mic_active = False
+        self._dragging_file = False
+        self._last_dragged_file = ""
 
         self._build_ui()
         self._bind_keystroke_tracking()   # Phase 2: track any key as direct interaction
@@ -1045,7 +1042,8 @@ class CompanionApp:
         threading.Thread(target=self._init_background, daemon=True).start()
 
         self._drag_x = self._drag_y = 0
-        self._win_x, self._win_y = 80, 80
+        self._win_x, self._win_y = _SETTINGS.window_start_x, _SETTINGS.window_start_y
+        self._geom_anim_job = None
         self._is_minimized = False
 
     def _build_ui(self):
@@ -1070,6 +1068,12 @@ class CompanionApp:
             font=W95_FONT_BOLD, anchor="w", padx=4,
         )
         title_lbl.pack(side="left", fill="y")
+        if _SETTINGS.faster_mode:
+            tk.Label(
+                title_bar, text="FAST MODE",
+                bg=W95_TITLE_BG, fg="#1a3a6b",
+                font=("MS Sans Serif", 7, "bold"), anchor="w", padx=2,
+            ).pack(side="left", fill="y")
 
         # Close button
         close_btn = tk.Button(
@@ -1120,6 +1124,14 @@ class CompanionApp:
         self._gif_label.pack(fill="both", expand=True)
         # Clicking on Agetha sends a touch event to the AI (10 s cooldown)
         self._gif_label.bind("<Button-1>", self._on_gif_click)
+        if _SETTINGS.enable_file_drag_drop and self._dnd_ok:
+            try:
+                self._gif_label.drop_target_register("DND_Files")  # type: ignore[attr-defined]
+                self._gif_label.dnd_bind("<<DropEnter>>", self._on_file_drag_enter)  # type: ignore[attr-defined]
+                self._gif_label.dnd_bind("<<DropLeave>>", self._on_file_drag_leave)  # type: ignore[attr-defined]
+                self._gif_label.dnd_bind("<<Drop>>", self._on_file_drop)  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.warning(f"[DnD] Could not register drop target: {exc}")
 
         # ── Status bar ────────────────────────────────────────────────────────
         status_frame = tk.Frame(self._outer, bg=W95_BG, bd=1, relief="sunken")
@@ -1148,17 +1160,43 @@ class CompanionApp:
             input_font = tkfont.Font(family="MS Sans Serif", size=8)
 
         self._input_var = tk.StringVar()
+
+        entry_wrapper = tk.Frame(input_frame, bg=W95_INPUT_BG, relief="sunken", bd=2)
+        entry_wrapper.pack(side="left", fill="x", expand=True)
+
         self._input_box = tk.Entry(
-            input_frame,
+            entry_wrapper,
             textvariable=self._input_var,
             font=input_font,
             bg=W95_INPUT_BG, fg=W95_TEXT,
             insertbackground=W95_TEXT,
-            relief="sunken", bd=2,
+            relief="flat", bd=0,
         )
-        self._input_box.pack(side="left", fill="x", expand=True, ipady=6)
+        self._input_box.pack(fill="both", expand=True, ipady=6, padx=2)
+
+        placeholder_font = tkfont.Font(family="MS Sans Serif", size=7)
+        self._placeholder_lbl = tk.Label(
+            entry_wrapper, text="", font=placeholder_font,
+            bg=W95_INPUT_BG, fg="#888888", anchor="w", padx=4, pady=0,
+        )
+        self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._placeholder_lbl.bind("<Button-1>", lambda e: self._input_box.focus_set())
+        self._input_box.bind("<FocusIn>", lambda e: self._update_placeholder(focused=True))
+        self._input_box.bind("<FocusOut>", lambda e: self._update_placeholder(focused=False))
+        self._input_var.trace_add("write", lambda *_: self._update_placeholder())
         self._input_box.bind("<Return>", self._on_user_input)
         self.root.bind("<Escape>", self._on_cancel_ai)
+
+        if _SETTINGS.enable_voice:
+            self._mic_btn_var = tk.StringVar(value="🎤")
+            self._mic_btn = tk.Button(
+                input_frame, textvariable=self._mic_btn_var,
+                font=W95_FONT_BOLD, bg=W95_BTN_BG, fg=W95_TEXT,
+                activebackground=W95_BTN_ACT, activeforeground=W95_BTN_AFG,
+                relief="raised", bd=2, padx=6, pady=5,
+                command=self._toggle_mic,
+            )
+            self._mic_btn.pack(side="left", padx=(2, 0))
 
         tk.Button(
             input_frame, text="OK",
@@ -1169,9 +1207,226 @@ class CompanionApp:
             command=self._on_user_input,
         ).pack(side="left", padx=(4, 0))
 
+    def _get_placeholder_text(self) -> str:
+        try:
+            if not self._ai:
+                return "type here..."
+            status = self._ai.get_token_status()
+            if not status.get("using_groq"):
+                if status.get("provider") == "openrouter":
+                    return "OpenRouter  •  type here..."
+                if status.get("provider") == "local":
+                    return "local AI  •  type here..."
+                return "type here..."
+            idx = status.get("key_index", 1)
+            total = status.get("key_count", 1)
+            pct = status.get("pct_left", 100)
+            return f"key {idx}/{total}  •  {pct}% tokens left"
+        except Exception:
+            return "type here..."
+
+    def _update_placeholder(self, focused=None) -> None:
+        if bool(self._input_var.get()):
+            self._placeholder_lbl.place_forget()
+        else:
+            self._placeholder_lbl.config(text=self._get_placeholder_text())
+            self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    def _start_placeholder_refresh(self) -> None:
+        def _tick():
+            try:
+                self._update_placeholder()
+            except Exception:
+                pass
+            self.root.after(10000, _tick)
+        self.root.after(10000, _tick)
+
+    def _toggle_mic(self) -> None:
+        if self._voice is None:
+            settings = load_mic_settings()
+            device_index = settings.get("mic_device_index")
+            if device_index is None:
+                mics = list_microphones()
+                if not mics:
+                    native_error_popup(
+                        "Agetha — Microphone",
+                        "No microphone devices found.\n"
+                        "Connect a mic and ensure pyaudio is installed.\n"
+                        "Run Medic_Checker with ENABLE_VOICE=yes.",
+                    )
+                    return
+                picker = MicPickerDialog(self.root, mics)
+                chosen = picker.wait()
+                if chosen is None:
+                    return
+                device_index = chosen
+                mic_name = next((n for i, n in mics if i == chosen), str(chosen))
+                settings["mic_device_index"] = device_index
+                settings["mic_device_name"] = mic_name
+                save_mic_settings(settings)
+                logger.info(f"[Voice] Microphone saved: [{device_index}] {mic_name}")
+
+            self._voice = VoiceInput(
+                on_text_callback=self._on_voice_text,
+                device_index=device_index,
+                use_local_stt=_SETTINGS.use_local_stt,
+            )
+            if not self._voice.available:
+                native_error_popup(
+                    "Agetha — Microphone",
+                    self._voice.error or "SpeechRecognition unavailable.",
+                )
+                self._voice = None
+                return
+
+        if self._mic_active:
+            self._mic_active = False
+            if self._voice:
+                self._voice.stop()
+            self._mic_btn_var.set("🎤")
+            self._mic_btn.config(bg=W95_BTN_BG, fg=W95_TEXT, activebackground=W95_BTN_BG)
+            logger.info("[Voice] Microphone off")
+        else:
+            self._mic_active = True
+            if self._voice:
+                self._voice.start()
+            self._mic_btn_var.set("🔴")
+            self._mic_btn.config(bg="#cc0000", fg="#ffffff", activebackground="#990000")
+            logger.info("[Voice] Microphone on — listening…")
+
+    def _on_voice_text(self, text: str) -> None:
+        def _send():
+            self._input_var.set(text)
+            self.root.update_idletasks()
+            self._on_user_input()
+        self.root.after(0, _send)
+
+    def _on_file_drag_enter(self, event=None) -> None:
+        if self._dragging_file:
+            return
+        self._dragging_file = True
+        want_player = self._gif_cache.get("surprised.gif")
+        if want_player:
+            if self._current_gif_player:
+                self._current_gif_player.stop()
+            self._current_gif_player = want_player
+            want_player.play()
+
+    def _on_file_drag_leave(self, event=None) -> None:
+        if not self._dragging_file:
+            return
+        self._dragging_file = False
+        self._set_state(self.STATE_IDLE)
+
+    def _on_file_drop(self, event=None) -> None:
+        self._dragging_file = False
+        try:
+            file_path = getattr(event, "data", "") or ""
+            file_path = file_path.strip().strip("{}")
+            filename = Path(file_path).name if file_path else "unknown file"
+        except Exception:
+            filename = "a file"
+            file_path = ""
+        logger.info(f"[DnD] File dropped: {filename} at {file_path}")
+        self._last_dragged_file = file_path if file_path else filename
+        self._set_state(self.STATE_IDLE)
+        if self._input_box["state"] == "disabled":
+            return
+        msg = (
+            f'[system] file_dragged: "{filename}" (path: {file_path})'
+            if file_path
+            else f'[system] file_dragged: "{filename}"'
+        )
+        threading.Thread(target=self._ai_tick, kwargs={"user_message": msg}, daemon=True).start()
+
+    def _update_token_status(self) -> None:
+        try:
+            if not self._ai:
+                return
+            status = self._ai.get_token_status()
+            if status.get("using_groq"):
+                key_info = f"Key {status['key_index']}/{status['key_count']}"
+                pct = status.get("pct_left", 0)
+                self._status_var.set(f"{key_info} | {pct}% left")
+            self._update_placeholder()
+        except Exception as exc:
+            logger.debug(f"Token status update failed: {exc}")
+
     def _drag_start(self, e):
+        if self._geom_anim_job is not None:
+            try:
+                self.root.after_cancel(self._geom_anim_job)
+            except Exception:
+                pass
+            self._geom_anim_job = None
         self._drag_x, self._drag_y = e.x_root, e.y_root
         self._win_x, self._win_y = self.root.winfo_x(), self.root.winfo_y()
+
+    def animate_geometry(
+        self,
+        target_x: int,
+        target_y: int,
+        *,
+        duration_ms: int | None = None,
+        on_done: Callable[[], None] | None = None,
+    ) -> None:
+        """Smooth move for Agetha's window — measure once, then only geometry writes."""
+        smooth = _SETTINGS.window_move_smooth
+        if duration_ms is None:
+            duration_ms = _SETTINGS.window_move_duration_ms
+
+        target_x, target_y = int(target_x), int(target_y)
+
+        if self._geom_anim_job is not None:
+            try:
+                self.root.after_cancel(self._geom_anim_job)
+            except Exception:
+                pass
+            self._geom_anim_job = None
+
+        if not smooth or duration_ms <= 0:
+            self._win_x, self._win_y = target_x, target_y
+            self.root.geometry(f"+{target_x}+{target_y}")
+            if on_done:
+                on_done()
+            return
+
+        try:
+            start_x = self.root.winfo_x()
+            start_y = self.root.winfo_y()
+        except Exception:
+            start_x, start_y = self._win_x, self._win_y
+        self._win_x, self._win_y = start_x, start_y
+
+        dx, dy = target_x - start_x, target_y - start_y
+        if abs(dx) + abs(dy) < 4:
+            self._win_x, self._win_y = target_x, target_y
+            self.root.geometry(f"+{target_x}+{target_y}")
+            if on_done:
+                on_done()
+            return
+
+        duration_s = duration_ms / 1000.0
+        start_time = time.perf_counter()
+
+        def _tick():
+            elapsed = time.perf_counter() - start_time
+            t = min(1.0, elapsed / duration_s)
+            e = ease_out_cubic(t)
+            nx = int(start_x + dx * e)
+            ny = int(start_y + dy * e)
+            self._win_x, self._win_y = nx, ny
+            self.root.geometry(f"+{nx}+{ny}")
+            if t < 1.0:
+                self._geom_anim_job = self.root.after(16, _tick)
+            else:
+                self._geom_anim_job = None
+                self._win_x, self._win_y = target_x, target_y
+                self.root.geometry(f"+{target_x}+{target_y}")
+                if on_done:
+                    on_done()
+
+        _tick()
 
     def _drag_motion(self, e):
         dx = e.x_root - self._drag_x
@@ -1264,6 +1519,9 @@ class CompanionApp:
             return
         self._input_var.set("")
         self._input_box.config(state="disabled")
+        if hasattr(self, "_placeholder_lbl"):
+            self._placeholder_lbl.config(text="Processing...")
+            self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
         # Clear any sticky mood — new interaction resets expression
         self._persistent_mood = None
         threading.Thread(target=self._ai_tick, kwargs={"user_message": text}, daemon=True).start()
@@ -1271,6 +1529,10 @@ class CompanionApp:
     def _re_enable_input(self):
         self._input_box.config(state="normal")
         self._input_box.focus_set()
+        try:
+            self._update_placeholder()
+        except Exception:
+            pass
 
     # ── Phase 2: Attention-snap system ────────────────────────────────────────
 
@@ -1294,7 +1556,7 @@ class CompanionApp:
         The snap threshold is mood-severity-dependent: manic snaps after 2 min,
         melancholic waits 15 min. This makes her disruption feel proportional.
         """
-        if mood not in _ATTENTION_MOODS:
+        if mood not in _ATTENTION_MOODS or not _SETTINGS.enable_attention_snap:
             return
         threshold  = _MOOD_SNAP_THRESHOLDS.get(mood, 600)
         inactivity = time.time() - self._last_direct_interaction_time
@@ -1304,24 +1566,25 @@ class CompanionApp:
                 sw = self.root.winfo_screenwidth()
                 sh = self.root.winfo_screenheight()
                 if inactivity >= threshold:
-                    # ── Center-snap: force Agetha into the user's view ──────
                     nx = (sw - WINDOW_W) // 2
                     ny = (sh - WINDOW_H) // 2
-                    self.root.geometry(f"+{nx}+{ny}")
-                    try:
-                        self.root.attributes("-topmost", True)
-                    except Exception:
-                        pass
-                    self.root.lift()
+
+                    def _after_snap():
+                        try:
+                            self.root.attributes("-topmost", True)
+                        except Exception:
+                            pass
+                        self.root.lift()
+
+                    self.animate_geometry(nx, ny, on_done=_after_snap)
                     print(
                         f"[SNAP] Center-snapped — mood={mood}, "
                         f"inactivity={inactivity:.0f}s, threshold={threshold}s"
                     )
                 else:
-                    # ── Drift: move to default right-side position without forcing ─
                     nx = sw - WINDOW_W - 20
                     ny = 80
-                    self.root.geometry(f"+{nx}+{ny}")
+                    self.animate_geometry(nx, ny)
                     print(
                         f"[SNAP] Side-drift — mood={mood}, "
                         f"inactivity={inactivity:.0f}s < threshold={threshold}s"
@@ -1438,6 +1701,10 @@ class CompanionApp:
                         self.root.after(0, self._load_gifs_simple)
                     except Exception as e:
                         print(f"[BackgroundInit] load_gifs_simple failed: {e}")
+                    try:
+                        self.root.after(0, self._start_placeholder_refresh)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -1613,19 +1880,26 @@ class CompanionApp:
 
     def _start_wake_sequence(self):
         self._set_state(self.STATE_SLEEPING)
-        self.root.after(8000, self._finish_wake)
+        self.root.after(WAKE_DELAY_MS, self._finish_wake)
 
     def _finish_wake(self):
         self._set_state(self.STATE_IDLE, "neutral")
         self.root.after(1000, self._schedule_screen_poll)
 
     def _schedule_screen_poll(self):
+        if not _SETTINGS.enable_ambient_polls:
+            return
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
             self._poll_job = None
         threading.Thread(target=self._ai_tick, daemon=True).start()
 
     def _reschedule_screen_poll(self):
+        if not _SETTINGS.enable_ambient_polls:
+            if self._poll_job:
+                self.root.after_cancel(self._poll_job)
+                self._poll_job = None
+            return
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
         self._poll_job = self.root.after(SCREEN_POLL_INTERVAL_MS, self._schedule_screen_poll)
@@ -1653,30 +1927,51 @@ class CompanionApp:
 
         screen_text = ""
         if not is_user and self._screen:
-            screen_text = self._screen.capture_text()
-            self._last_screen_text = screen_text
+            own_hwnd = None
+            try:
+                own_hwnd = self._screen._get_own_hwnd()
+            except Exception:
+                pass
 
-            _matches = getattr(self._screen, "last_pattern_matches", [])
-            if _matches:
-                tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
-                screen_text = tags + "\n" + screen_text
-            elif getattr(self._screen, "has_angry_trigger", False):
-                kws = ", ".join(self._screen.last_angry_keywords[:3])
-                screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
+            active_title = ""
+            if _SETTINGS.include_window_title_in_context:
+                active_title = self._screen.get_active_window_title(skip_hwnd=own_hwnd)
 
-            _title = getattr(self._screen, "last_active_window_title", "")
-            if _title:
-                screen_text = f"[Active: {_title}]\n" + screen_text
+            typing_pause = _SETTINGS.ocr_pause_while_typing_sec
+            recently_active = (
+                typing_pause > 0
+                and (time.time() - self._last_direct_interaction_time) < typing_pause
+            )
 
-            _KEY_WORDS = {
-                "error", "warning", "failed", "exception", "traceback",
-                "fatal", "crash", "denied", "undefined", "null", "critical",
-            }
-            _positions = getattr(self._screen, "last_word_positions", [])
-            _important = [p for p in _positions if p.get("text", "").lower() in _KEY_WORDS][:5]
-            if _important:
-                pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
-                screen_text = f"[Error positions: {pos_str}]\n" + screen_text
+            if _SETTINGS.enable_screen_reader and not recently_active:
+                screen_text = self._screen.capture_text(
+                    focused_only=_SETTINGS.ocr_focused_window_only,
+                )
+                self._last_screen_text = screen_text
+
+                _matches = getattr(self._screen, "last_pattern_matches", [])
+                if _matches:
+                    tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
+                    screen_text = tags + "\n" + screen_text
+                elif getattr(self._screen, "has_angry_trigger", False):
+                    kws = ", ".join(self._screen.last_angry_keywords[:3])
+                    screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
+
+                if active_title:
+                    screen_text = f"[Active: {active_title}]\n" + screen_text
+
+                _KEY_WORDS = {
+                    "error", "warning", "failed", "exception", "traceback",
+                    "fatal", "crash", "denied", "undefined", "null", "critical",
+                }
+                _positions = getattr(self._screen, "last_word_positions", [])
+                _important = [p for p in _positions if p.get("text", "").lower() in _KEY_WORDS][:5]
+                if _important:
+                    pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
+                    screen_text = f"[Error positions: {pos_str}]\n" + screen_text
+            elif active_title:
+                screen_text = f"[Active: {active_title}]"
+                self._last_screen_text = screen_text
 
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
@@ -1685,13 +1980,17 @@ class CompanionApp:
                 self._subtitle.show_thinking(raw_so_far)
 
         try:
-            if self._cancel_event.is_set():
-                return
-            response = self._ai.query_streaming(
-                screen_context=screen_text if not is_user else self._last_screen_text,
-                user_message=user_message or "",
-                on_token=_on_token,
-            )
+            if _SETTINGS.enable_streaming:
+                response = self._ai.query_streaming(
+                    screen_context=screen_text if not is_user else self._last_screen_text,
+                    user_message=user_message or "",
+                    on_token=_on_token,
+                )
+            else:
+                response = self._ai.query(
+                    screen_context=screen_text if not is_user else self._last_screen_text,
+                    user_message=user_message or "",
+                )
         except Exception as exc:
             err_str = str(exc)
             logger.error(f"AI tick failed: {err_str}")
@@ -1717,6 +2016,7 @@ class CompanionApp:
         print("-" * 52)
 
         self.root.after(0, self._re_enable_input)
+        self.root.after(0, self._update_token_status)
         self._ai_busy = False
         self._dispatch_response(response, user_message)
 
@@ -1805,6 +2105,71 @@ class CompanionApp:
         msg = str(message)[:140]
         self.root.after(0, lambda: self._subtitle.show_message(msg, "#ff4444"))
 
+    def _show_op_success(self, message: str) -> None:
+        msg = str(message)[:140]
+        self.root.after(0, lambda: self._subtitle.show_message(msg, "#44cc66"))
+
+    def pick_window_sync(self, matches: list[tuple[int, str]]) -> int | None:
+        """Block until user picks a window (main-thread dialog)."""
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0][0]
+        result: list[int | None] = [None]
+        done = threading.Event()
+
+        def _ui():
+            try:
+                result[0] = self._show_window_picker_dialog(matches)
+            finally:
+                done.set()
+
+        self.root.after(0, _ui)
+        done.wait(timeout=60)
+        return result[0]
+
+    def _show_window_picker_dialog(self, matches: list[tuple[int, str]]) -> int | None:
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Agetha — Pick window")
+        dlg.configure(bg=W95_BG)
+        dlg.attributes("-topmost", True)
+        dlg.resizable(False, False)
+        tk.Label(
+            dlg, text="Multiple windows match. Which one?",
+            bg=W95_BG, fg="#000000", font=("Tahoma", 9),
+        ).pack(padx=10, pady=(10, 4))
+        frame = tk.Frame(dlg, bg=W95_BG)
+        frame.pack(padx=10, pady=4, fill="both", expand=True)
+        listbox = tk.Listbox(frame, width=58, height=min(8, len(matches)), font=("Tahoma", 9))
+        scroll = tk.Scrollbar(frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scroll.set)
+        listbox.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        for _hwnd, title in matches:
+            listbox.insert("end", title[:72])
+        listbox.selection_set(0)
+        chosen: list[int | None] = [None]
+
+        def _ok(_event=None):
+            sel = listbox.curselection()
+            idx = sel[0] if sel else 0
+            chosen[0] = matches[idx][0]
+            dlg.destroy()
+
+        def _cancel():
+            chosen[0] = None
+            dlg.destroy()
+
+        btn_row = tk.Frame(dlg, bg=W95_BG)
+        btn_row.pack(pady=(4, 10))
+        tk.Button(btn_row, text="OK", width=8, command=_ok).pack(side="left", padx=4)
+        tk.Button(btn_row, text="Cancel", width=8, command=_cancel).pack(side="left", padx=4)
+        listbox.bind("<Double-Button-1>", _ok)
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        dlg.grab_set()
+        dlg.wait_window()
+        return chosen[0]
+
     def _ai_query(self, user_message: str, screen_context=None, doc_content: str = ""):
         if self._cancel_event.is_set() or not self._ai:
             return None
@@ -1815,11 +2180,17 @@ class CompanionApp:
                 self._subtitle.show_thinking(raw)
 
         try:
-            return self._ai.query_streaming(
+            if _SETTINGS.enable_streaming:
+                return self._ai.query_streaming(
+                    screen_context=self._last_screen_text if screen_context is None else screen_context,
+                    user_message=user_message,
+                    doc_content=doc_content,
+                    on_token=_on_token,
+                )
+            return self._ai.query(
                 screen_context=self._last_screen_text if screen_context is None else screen_context,
                 user_message=user_message,
                 doc_content=doc_content,
-                on_token=_on_token,
             )
         except Exception as exc:
             logger.error(f"_ai_query failed: {exc}")
@@ -1878,6 +2249,8 @@ class CompanionApp:
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
             self._poll_job = None
+        if self._voice:
+            self._voice.stop()
         self.root.quit()
 
     def run(self):
@@ -1889,87 +2262,64 @@ class CompanionApp:
                     self._bleep.stop()
                 except Exception:
                     pass
+            if self._voice:
+                self._voice.stop()
+
+
+def _warn_if_no_api_key():
+    """First-run hint when config exists but no AI backend is configured."""
+    from app_config import get_settings, CONFIG_PATH, ENV_PATH
+    s = get_settings()
+    if s.bool("USE_LOCAL_AI"):
+        if s.get("LOCAL_AI_MODEL", "").strip():
+            return
+    elif s.enable_openrouter:
+        if s.openrouter_api_key:
+            return
+    else:
+        has_key = bool(s.get("GROQ_API_KEY", "").strip())
+        if not has_key and ENV_PATH.exists():
+            for line in ENV_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.strip().startswith("GROQ_API_KEY") and "=" in line:
+                    if line.split("=", 1)[1].strip():
+                        return
+        if has_key:
+            return
+    flag = CONFIG_PATH.parent / ".agetha_setup_hint_shown"
+    if flag.exists():
+        return
+    try:
+        flag.write_text("1", encoding="utf-8")
+    except Exception:
+        pass
+    msg = (
+        "No Groq API key or Ollama model found.\n\n"
+        "Add GROQ_API_KEY to config.txt or .env,\n"
+        "or set USE_LOCAL_AI=yes and LOCAL_AI_MODEL.\n\n"
+        "Optional: TESSERACT_PATH for screen reading."
+    )
+    title = "Agetha — Setup"
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x30 | 0x1000)
+    except Exception:
+        print(f"[Agetha] {msg}")
 
 
 def _early_config_check():
     """
-    Run before pygame or any heavy import. If config.txt is missing,
-    create it, show the setup popup, and exit — before pygame can interfere.
+    Ensure config.txt exists; always continue with defaults if missing or invalid.
     """
-    import sys
-    from pathlib import Path
+    from app_config import ensure_config_file, get_last_config_load, get_settings, CONFIG_PATH
 
-    if getattr(sys, "frozen", False):
-        base = Path(sys.argv[0]).resolve().parent
-    else:
-        base = Path(__file__).parent
+    ensure_config_file(CONFIG_PATH, write_if_missing=True)
+    get_settings(reload=True)
+    load_info = get_last_config_load()
+    if load_info and load_info.warnings:
+        for w in load_info.warnings:
+            print(f"[Agetha] Config: {w}")
 
-    config_path = base / "config.txt"
-    if config_path.exists():
-        return  # Nothing to do
-
-    default_config = """# Agetha version 4.0.2 config file, @tomiszivacs on TikTok
-    
-    # Set to "yes" to use a local AI model via Ollama instead of Groq. Make sure to set LOCAL_AI_MODEL if enabling.
-    USE_LOCAL_AI = no
-    
-    # Groq configuration (make sure to use separate accounts per key to avoid rate limits)
-    GROQ_API_KEY = 
-    GROQ_API_KEY_2 = 
-    GROQ_API_KEY_3 = 
-    GROQ_API_KEY_4 = 
-    GROQ_API_KEY_5 = 
-    GROQ_API_KEY_6 = 
-    GROQ_API_KEY_7 = 
-    GROQ_API_KEY_8 = 
-    GROQ_API_KEY_9 = 
-    GROQ_API_KEY_10 = 
-    # Groq model configuration, stupider models may have more forgiving rate limits.
-    GROQ_MODEL = llama-3.3-70b-versatile
-    
-    # Local AI configuration (using Ollama, make sure to have a compatible model downloaded)
-    LOCAL_AI_MODEL = 
-    LOCAL_AI_TIMEOUT = 30
-
-    # If you are unsure what to put here, run `ollama list` in a terminal to see installed models.
-    # If LOCAL_AI_MODEL is incorrect or the model isn't installed, Agetha will
-    # disable local AI and fall back (which can cause repeated idle responses).
-
-    # Let Agetha run commands on your machine?
-    ENABLE_COMMAND_EXECUTION = yes
-    
-    # How many characters of stored memories to include for Agetha? (The higher, the more context but also the more expensive the prompts)
-    MEMORY_CHARS = 600
-    # How many previous interactions to keep in history? (The higher, the more context but also the more expensive the prompts)
-    HISTORY_LIMIT = 6
-    # How many characters Agetha can read from a file? (The higher, the more Agetha can understand documents but also the more expensive the prompts)
-    FILE_READ_CHARS = 200
-    # Animation speed multiplier for GIFs (lower = faster, higher = slower). Default: 0.6
-    ANIMATION_SPEED = 0.6
-"""
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(default_config, encoding="utf-8")
-    print(f"[Agetha] Created config.txt at {config_path}")
-    print("[Agetha] Please fill in your API keys and restart.")
-
-    msg   = "Please configure Agetha with your API keys.\nRead the README.txt for setup guide."
-    title = "Agetha \u2014 First Run"
-    try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x40 | 0x1000)
-    except Exception:
-        try:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            messagebox.showinfo(title, msg, parent=root)
-            root.destroy()
-        except Exception as e:
-            print(f"[Agetha] Could not show popup: {e}")
-
-    sys.exit(0)
+    _warn_if_no_api_key()
 
 
 if __name__ == "__main__":
