@@ -241,6 +241,28 @@ class PatternMatch:
     snippet:  str   # the matching line, capped at 120 chars
 
 
+_custom_patterns_loaded = False
+
+
+def _ensure_custom_patterns() -> None:
+    global _custom_patterns_loaded
+    if _custom_patterns_loaded:
+        return
+    try:
+        from app_config import get_settings
+        for label, mood, pattern_str in get_settings().ocr_custom_patterns():
+            try:
+                pat = re.compile(pattern_str, re.I)
+            except re.error:
+                logger.warning(f"Invalid OCR_CUSTOM_PATTERNS regex: {pattern_str!r}")
+                continue
+            key = f"custom_{label.lower().replace(' ', '_')[:40]}"
+            PATTERN_REGISTRY.append(PatternDef(key, mood, label, pat))
+    except Exception as exc:
+        logger.debug(f"Custom OCR patterns skipped: {exc}")
+    _custom_patterns_loaded = True
+
+
 def _scan_patterns(text: str) -> list[PatternMatch]:
     """Run every PatternDef against text. Returns one match per unique category."""
     seen:    set[str]         = set()
@@ -270,7 +292,7 @@ def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
     Returns {left, top, width, height, title, hwnd} in physical pixels, or None.
     skip_hwnd: pass Agetha's own HWND to avoid capturing herself.
     """
-    if not IS_WINDOWS or not PIL_OK:
+    if not IS_WINDOWS:
         return None
     try:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -319,7 +341,7 @@ def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | No
     """Return mss-compatible capture dict + metadata for the focused window on Linux.
     Uses xdotool, xprop, or wmctrl.
     """
-    if not IS_LINUX or not PIL_OK:
+    if not IS_LINUX:
         return None
 
     # 1. Try xdotool
@@ -602,20 +624,33 @@ class ScreenReader:
         self.last_active_window_title: str               = ""
 
         # Tesseract path (Windows)
-        if self._system == "Windows" and TESSERACT_OK:
-            tess = _find_tesseract_windows()
-            if tess:
-                pytesseract.pytesseract.tesseract_cmd = tess
+        from app_config import get_settings
+        _cfg = get_settings()
+        self._ocr_max_dimension = _cfg.ocr_max_dimension
+
+        if self._system == "Windows" and TESSERACT_OK and _cfg.enable_screen_reader:
+            custom_tess = _cfg.tesseract_path
+            if custom_tess and Path(custom_tess).is_file():
+                pytesseract.pytesseract.tesseract_cmd = custom_tess
             else:
-                print("[ScreenReader] WARNING: Tesseract not found in standard paths.")
+                tess = _find_tesseract_windows()
+                if tess:
+                    pytesseract.pytesseract.tesseract_cmd = tess
+                else:
+                    print("[ScreenReader] WARNING: Tesseract not found in standard paths.")
 
         self._backend_name = "lazy"
         self._backend_fn = None
         self._backend_candidates = self._ordered_backends()
-        self._available = TESSERACT_OK and _has_display()
+        if not _cfg.enable_screen_reader:
+            self._available = False
+        else:
+            self._available = TESSERACT_OK and _has_display()
 
         if not self._available:
             reasons = []
+            if not _cfg.enable_screen_reader:
+                reasons.append("ENABLE_SCREEN_READER=no")
             if not TESSERACT_OK:
                 reasons.append("pytesseract/tesseract missing")
             if not _has_display():
@@ -623,6 +658,21 @@ class ScreenReader:
             logger.warning(f"Screen capture disabled: {', '.join(reasons)}")
         else:
             logger.info("[ScreenReader] Phase 3 ready — backend: lazy (first capture)")
+
+        _ensure_custom_patterns()
+
+    def get_active_window_title(self, skip_hwnd: int | None = None) -> str:
+        """Lightweight foreground title (no OCR)."""
+        try:
+            if self._system == "Windows":
+                win = _get_foreground_window_info(skip_hwnd=skip_hwnd)
+                return (win or {}).get("title", "") or ""
+            if self._system == "Linux":
+                win = _get_foreground_window_info_linux(skip_hwnd=skip_hwnd)
+                return (win or {}).get("title", "") or ""
+        except Exception:
+            pass
+        return getattr(self, "last_active_window_title", "") or ""
 
     def _ensure_backend(self) -> bool:
         """Lazy-test screenshot backends on first capture call."""
@@ -655,18 +705,6 @@ class ScreenReader:
                 return [("spectacle", _grab_spectacle), ("grim", _grab_grim),
                         ("gnome-screenshot", _grab_gnome_screenshot), ("pyautogui", _grab_pyautogui)]
             return head + [("scrot", _grab_scrot), ("pyautogui", _grab_pyautogui)]
-
-    def _choose_backend(self) -> tuple:
-        if not _has_display():
-            return ("none", None)
-        for name, fn in self._ordered_backends():
-            try:
-                img = fn()
-                if img is not None:
-                    return (name, fn)
-            except Exception:
-                continue
-        return ("none", None)
 
     # ── 1. Own-window HWND cache ──────────────────────────────────────────────
 
@@ -759,7 +797,7 @@ class ScreenReader:
             # 2× upscale → greyscale  (same as Phase 1 — improves Tesseract accuracy)
             scale = 2
             w, h = screenshot.size
-            max_dim = 2560
+            max_dim = getattr(self, "_ocr_max_dimension", 2560)
             if max(w, h) > max_dim:
                 ratio = max_dim / max(w, h)
                 screenshot = screenshot.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
