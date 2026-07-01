@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
 
-from utils import IS_WINDOWS, IS_LINUX, native_error_popup, logger, load_env_file
+from utils import IS_WINDOWS, IS_LINUX, native_error_popup, logger
 from app_config import get_settings, parse_config_file, DEFAULT_CONFIG, ensure_config_file
 from window_control import is_self_window_target, is_self_process_target
 
@@ -110,17 +110,43 @@ class _LocalOllamaClient:
                 continue
         return text
 
+    def _prepare_messages(self, messages) -> list:
+        return [
+            {
+                "role": (m.get("role") if isinstance(m, dict) else getattr(m, "role", "user")),
+                "content": (m.get("content") if isinstance(m, dict) else getattr(m, "content", "")),
+            }
+            for m in (messages or [])
+        ]
+
+    def _generate_sync(self, model=None, messages=None, temperature=0.7,
+                       max_tokens=400, top_p=0.95, timeout=None):
+        msgs = self._prepare_messages(messages)
+        raw = self._generate(msgs) or ""
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=raw))]
+        )
+
+    def _generate_stream(self, model=None, messages=None, temperature=0.7,
+                         max_tokens=400, top_p=0.95, timeout=None):
+        msgs = self._prepare_messages(messages)
+        raw = self._generate(msgs) or ""
+        for ch in ([raw[i:i + 120] for i in range(0, len(raw), 120)] or [raw]):
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=ch))]
+            )
+
     def chat_completions_create(self, model=None, messages=None, temperature=0.7,
                                 max_tokens=400, top_p=0.95, timeout=None, stream=False):
-        msgs = [{"role": (m.get("role") if isinstance(m, dict) else getattr(m, "role", "user")),
-                 "content": (m.get("content") if isinstance(m, dict) else getattr(m, "content", ""))}
-                for m in (messages or [])]
-        raw = self._generate(msgs) or ""
         if stream:
-            for ch in ([raw[i:i+120] for i in range(0, len(raw), 120)] or [raw]):
-                yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=ch))])
-            return
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw))])
+            return self._generate_stream(
+                model=model, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, top_p=top_p, timeout=timeout,
+            )
+        return self._generate_sync(
+            model=model, messages=messages, temperature=temperature,
+            max_tokens=max_tokens, top_p=top_p, timeout=timeout,
+        )
 
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -219,7 +245,7 @@ VALID_COMMANDS = {
     "request_screen_read", "wake_user", "request_path",
     # File system
     "create_folder", "create_file", "delete_file", "rename_file",
-    "read_document", "list_dir", "list_directory", "write_file",
+    "read_document", "read_file", "list_dir", "list_directory", "write_file",
     # OS / Process
     "set_clipboard", "take_screenshot", "show_notification",
     "run_command", "force_close", "monitor_process",
@@ -528,11 +554,11 @@ FEW_SHOTS = [
 
     # open_url — user asks to open a website
     {"role":"user","content":'Time: Monday 14:30\nUser: "open youtube"\nSystem path: C:\\Users\\user\nJSON:'},
-    {"role":"assistant","content":'{"command":"open_url","url":"https://youtube.com","message":"Fine, pulling up YouTube... because apparently I\'m your personal butler now.","mood":"annoyed","segments":[{"text":"Fine, pulling up YouTube...","pause":0.3},{"text":"because apparently I\'m your personal butler now.","pause":0.0}]}'},
+    {"role":"assistant","content":'{"command":"open_url","url":"https://youtube.com","message":"Fine, pulling up YouTube... because apparently I\'m your personal butler now.","mood":"angry","segments":[{"text":"Fine, pulling up YouTube...","pause":0.3},{"text":"because apparently I\'m your personal butler now.","pause":0.0}]}'},
 
     # shutdown — user asks to shut down
     {"role":"user","content":'Time: Friday 23:50\nUser: "shut down the computer"\nSystem path: C:\\Users\\user\nJSON:'},
-    {"role":"assistant","content":'{"command":"shutdown","delay":120,"message":"Initiating shutdown... you have 2 minutes to reconsider your life choices.","mood":"dramatic","segments":[{"text":"Initiating shutdown...","pause":0.5},{"text":"you have 2 minutes to reconsider your life choices.","pause":0.0}]}'},
+    {"role":"assistant","content":'{"command":"shutdown","delay":120,"message":"Initiating shutdown... you have 2 minutes to reconsider your life choices.","mood":"dominant","segments":[{"text":"Initiating shutdown...","pause":0.5},{"text":"you have 2 minutes to reconsider your life choices.","pause":0.0}]}'},
 
     # system_info — user asks about system health
     {"role":"user","content":'Time: Monday 15:00\nUser: "how is my computer doing"\nSystem path: C:\\Users\\user\nJSON:'},
@@ -548,7 +574,7 @@ FEW_SHOTS = [
 
     # search_files — user asks to find files
     {"role":"user","content":'Time: Monday 11:00\nUser: "find all pdfs in my documents"\nSystem path: C:\\Users\\user\nJSON:'},
-    {"role":"assistant","content":'{"command":"search_files","pattern":"*.pdf","directory":"C:\\\\Users\\\\user\\\\Documents","message":"Digging through your messy Documents folder... you really need to organize this.","mood":"annoyed","segments":[{"text":"Digging through your messy Documents folder...","pause":0.3},{"text":"you really need to organize this.","pause":0.0}]}'},
+    {"role":"assistant","content":'{"command":"search_files","pattern":"*.pdf","directory":"C:\\\\Users\\\\user\\\\Documents","message":"Digging through your messy Documents folder... you really need to organize this.","mood":"angry","segments":[{"text":"Digging through your messy Documents folder...","pause":0.3},{"text":"you really need to organize this.","pause":0.0}]}'},
 ]
 
 FEW_SHOTS_FASTER = [
@@ -1053,8 +1079,9 @@ class AIEngine:
                 )
                 return process_name.lower() in result.stdout.lower()
             else:
+                basename = os.path.basename(process_name.strip())
                 result = subprocess.run(
-                    ["pgrep", "-f", process_name],
+                    ["pgrep", "-x", basename],
                     capture_output=True, text=True, timeout=5
                 )
                 return result.returncode == 0
@@ -1230,7 +1257,9 @@ class AIEngine:
         _IDLE_FALLBACKS = [[{"text": "Mm.", "pause": 0.0}]]
 
         retries = 0
+        total_retries = 0
         MAX_RETRIES_PER_KEY = 3
+        MAX_TOTAL_RETRIES = 30
 
         while True:
             try:
@@ -1270,6 +1299,10 @@ class AIEngine:
                 return result
 
             except Exception as e:
+                total_retries += 1
+                if total_retries >= MAX_TOTAL_RETRIES:
+                    logger.error(f"{self._provider_label()} exhausted max total retries ({MAX_TOTAL_RETRIES}).")
+                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                 provider = self._provider_label()
                 logger.warning(f"{provider} error: {e}")
                 errtxt = str(e).lower()
@@ -1342,7 +1375,9 @@ class AIEngine:
         ]
 
         retries = 0
+        total_retries = 0
         MAX_RETRIES_PER_KEY = 3
+        MAX_TOTAL_RETRIES = 30
 
         while True:
             try:
@@ -1369,6 +1404,10 @@ class AIEngine:
                 self._record(user_turn, raw)
                 return result
             except Exception as e:
+                total_retries += 1
+                if total_retries >= MAX_TOTAL_RETRIES:
+                    logger.error(f"{self._provider_label()} exhausted max total retries ({MAX_TOTAL_RETRIES}).")
+                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                 provider = self._provider_label()
                 logger.warning(f"{provider} error: {e}")
                 errtxt = str(e).lower()
@@ -1526,6 +1565,15 @@ class AIEngine:
             for field, default in _cmd_fields[command]:
                 val = obj.get(field, default)
                 result[field] = (val.strip() if isinstance(val, str) else val)
+
+        if command in ("show_notification", "show_dialog") and not result.get("message"):
+            seg_body = " ".join(
+                s.get("text", "").strip()
+                for s in segments
+                if isinstance(s, dict) and s.get("text")
+            ).strip()
+            if seg_body:
+                result["message"] = seg_body
 
         if command == "clear_memory":
             scope = (obj.get("memory_scope") or obj.get("scope") or "all").strip().lower()
