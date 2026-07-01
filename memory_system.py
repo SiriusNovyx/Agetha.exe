@@ -76,7 +76,7 @@ import json
 import os
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -100,14 +100,24 @@ EPISODIC_FILE = MEMORY_DIR / "episodic_memory.json"  # memory/episodic_memory.js
 #: 50 entries × ~80 chars/entry ≈ 4 KB — negligible disk cost but strict
 #: token budget: injected into every Groq API call as formatted context.
 EPISODIC_HARD_CAP: int = 50
-
-#: Number of entries injected into the LLM system prompt by default.
-#: Callers can override per-request via get_recent_memories(limit=N).
 EPISODIC_PROMPT_LIMIT: int = 10
-
-#: Maximum character length enforced per individual memory entry.
-#: Prevents a single verbose event from consuming the entire token budget.
 EPISODIC_ENTRY_MAX_CHARS: int = 300
+
+
+def _apply_memory_config() -> None:
+    """Load episodic limits from config.txt."""
+    global EPISODIC_HARD_CAP, EPISODIC_PROMPT_LIMIT, EPISODIC_ENTRY_MAX_CHARS
+    try:
+        from app_config import get_settings
+        s = get_settings()
+        EPISODIC_HARD_CAP = s.episodic_max_entries
+        EPISODIC_PROMPT_LIMIT = s.episodic_prompt_limit
+        EPISODIC_ENTRY_MAX_CHARS = s.episodic_entry_max_chars
+    except Exception:
+        pass
+
+
+_apply_memory_config()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -364,7 +374,7 @@ def _write_atomic(filepath: Path, content: str) -> None:
     fd, tmp_path = tempfile.mkstemp(
         dir=parent,
         prefix=".agetha_tmp_",
-        suffix=".json",
+        suffix=filepath.suffix or ".json",
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -526,6 +536,66 @@ def clear_episodic() -> None:
             print(f"[MemSys] clear_episodic() failed: {exc}")
 
 
+def clear_episodic_selective(
+    *,
+    keep_last: int = 0,
+    older_than_hours: int | None = None,
+    newer_than_hours: int | None = None,
+) -> int:
+    """Remove episodic entries by age or keep only the newest N. Returns count removed."""
+    with _lock:
+        try:
+            entries = _read_episodic_unsafe()
+            if not entries:
+                return 0
+            original = len(entries)
+            if keep_last > 0:
+                entries = entries[-keep_last:]
+            elif newer_than_hours is not None and newer_than_hours > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=newer_than_hours)
+                kept = []
+                for entry in entries:
+                    try:
+                        ts = datetime.fromisoformat(entry.get("ts", ""))
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        if ts < cutoff:
+                            kept.append(entry)
+                    except (ValueError, TypeError):
+                        kept.append(entry)
+                entries = kept
+            elif older_than_hours is not None and older_than_hours > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+                kept = []
+                for entry in entries:
+                    try:
+                        ts = datetime.fromisoformat(entry.get("ts", ""))
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        if ts >= cutoff:
+                            kept.append(entry)
+                    except (ValueError, TypeError):
+                        kept.append(entry)
+                entries = kept
+            else:
+                entries = []
+            _write_atomic(EPISODIC_FILE, json.dumps(entries, indent=2))
+            return original - len(entries)
+        except Exception as exc:
+            print(f"[MemSys] clear_episodic_selective() failed: {exc}")
+            return 0
+
+
+def format_memories_for_display(memories: list[dict]) -> list[str]:
+    """Popup-friendly lines for view_memory command."""
+    if not memories:
+        return []
+    lines: list[str] = []
+    for entry in memories:
+        lines.append(_format_memory_entry(entry).strip().lstrip("•").strip())
+    return lines
+
+
 def get_memory_stats() -> dict:
     """Return metadata about both memory layers. Useful for diagnostics.
 
@@ -552,24 +622,23 @@ def get_memory_stats() -> dict:
         }
     """
     soul_stat: dict = {"exists": False}
-    try:
-        if SOUL_FILE.exists():
-            st = SOUL_FILE.stat()
-            soul_stat = {
-                "exists": True,
-                "size_bytes": st.st_size,
-                "cached": (
-                    _soul_cache is not None
-                    and _soul_cache[1] == st.st_mtime
-                ),
-                "last_modified": datetime.fromtimestamp(
-                    st.st_mtime, tz=timezone.utc
-                ).isoformat(),
-            }
-    except OSError:
-        pass
-
     with _lock:
+        try:
+            if SOUL_FILE.exists():
+                st = SOUL_FILE.stat()
+                soul_stat = {
+                    "exists": True,
+                    "size_bytes": st.st_size,
+                    "cached": (
+                        _soul_cache is not None
+                        and _soul_cache[1] == st.st_mtime
+                    ),
+                    "last_modified": datetime.fromtimestamp(
+                        st.st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                }
+        except OSError:
+            pass
         entries = _read_episodic_unsafe()
 
     episodic_stat: dict = {
@@ -599,7 +668,9 @@ def _format_timestamp(ts: str) -> str:
     """
     try:
         dt = datetime.fromisoformat(ts)
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     except (ValueError, TypeError):
         return (ts[:16] if ts else "unknown time")
 
@@ -658,7 +729,7 @@ def format_memories_for_prompt(memories: list[dict]) -> str:
     ruler = "─" * 65
 
     lines = [
-        f"── EPISODIC MEMORY  ({label}) {ruler[:max(0, 65 - len(label) - 22)]}",
+        f"── EPISODIC MEMORY  ({label}) — USE THESE FACTS IN YOUR REPLIES {ruler[:20]}",
     ]
     for entry in memories:
         lines.append(_format_memory_entry(entry))
