@@ -16,6 +16,8 @@ import threading
 from typing import Callable
 
 from utils import IS_WINDOWS, logger
+from app_config import get_settings
+from window_control import is_self_process_target
 
 # Windows MessageBox flags
 _MB_OKCANCEL = 0x00000001
@@ -52,6 +54,7 @@ class CommandGuard:
         "show_notification": SAFE, "snap_to_center": SAFE, "move_window": SAFE,
         "request_screen_read": SAFE, "request_path": SAFE, "show_error_gif": SAFE,
         "wake_user": SAFE, "play_emotion_sound": SAFE, "monitor_process": SAFE,
+        "view_memory": SAFE,
         "read_document": SAFE, "get_clipboard": SAFE, "open_folder": SAFE,
         "clear_memory": CAUTION,
         "read_file": CAUTION, "open_file": CAUTION, "open_app": CAUTION,
@@ -63,8 +66,8 @@ class CommandGuard:
         "create_file": DANGER, "write_file": DANGER, "rename_file": DANGER,
         "create_folder": DANGER, "lock_screen": DANGER,
         "shutdown": DANGER, "restart": DANGER,
-        "target_window_move": DANGER, "target_window_resize": DANGER,
-        "target_window_close": DANGER,
+        "target_window_move": CAUTION, "target_window_resize": CAUTION,
+        "target_window_close": CAUTION,
     }
 
     TIER_TITLES = {
@@ -74,12 +77,46 @@ class CommandGuard:
 
     def __init__(self, root=None):
         self._root = root
+        self._settings = get_settings()
 
     def set_root(self, root) -> None:
         self._root = root
 
+    def describe(self, command: str, response: dict) -> str:
+        """Human-readable summary of a command (for dry-run UI)."""
+        return self._format_details(command, response)
+
+    def check_dry_run(self, command: str, details: str) -> bool:
+        """Dry-run gate: ask user to approve executing a suggested command."""
+        title = "Agetha — Dry Run"
+        message = (
+            f"DRY RUN MODE — execute this command?\n\n"
+            f"{details}\n\n"
+            f"Command: {command}"
+        )
+        if self._root is not None:
+            result: list[bool | None] = [None]
+            done = threading.Event()
+
+            def _on_main():
+                try:
+                    result[0] = self._native_confirm(title, message, "warning", "yesno", default_no=True)
+                finally:
+                    done.set()
+
+            self._root.after(0, _on_main)
+            done.wait(timeout=120)
+            if result[0] is None:
+                logger.warning("CommandGuard danger confirm timed out")
+                return False
+            return bool(result[0])
+
+        return self._native_confirm(title, message, "warning", "yesno", default_no=True)
+
     def check(self, command: str, response: dict) -> bool:
         """Return True if the command may proceed. Thread-safe (marshals to Tk main thread)."""
+        if not self._settings.enable_command_confirmations:
+            return True
         tier = self._resolve_tier(command, response)
         if tier == self.SAFE:
             return True
@@ -112,6 +149,10 @@ class CommandGuard:
     def _resolve_tier(self, command: str, response: dict) -> str:
         if command == "force_close":
             target = self._process_target(response)
+            if target and is_self_process_target(target):
+                return self.DANGER
+            if not self._settings.force_close_auto_allow:
+                return self.DANGER
             if target and not self._is_protected_process(target):
                 logger.info(f"force_close auto-allowed (user app): {target}")
                 return self.SAFE
@@ -123,18 +164,29 @@ class CommandGuard:
             response.get("app", "")
             or response.get("process", "")
             or response.get("name", "")
-            or response.get("process_name", "")
+            or             response.get("process_name", "")
+            or response.get("target_app", "")
         ).strip()
 
     def _is_protected_process(self, target: str) -> bool:
         name = target.lower().replace("\\", "/").split("/")[-1]
         if not name.endswith(".exe") and IS_WINDOWS:
             name = f"{name}.exe"
-        return name in self.PROTECTED_PROCESSES or name.replace(".exe", "") in self.PROTECTED_PROCESSES
+        protected = self._settings.protected_processes()
+        return name in protected or name.replace(".exe", "") in protected
+
+    def _owner_hwnd(self) -> int:
+        if self._root is None:
+            return 0
+        try:
+            return int(self._root.winfo_id())
+        except Exception:
+            return 0
 
     def _show_dialog(self, command: str, response: dict, tier: str) -> bool:
         details = self._format_details(command, response)
         title = self.TIER_TITLES.get(tier, "Agetha — Confirm")
+        owner = self._owner_hwnd()
 
         if tier == self.CAUTION:
             body = (
@@ -148,6 +200,7 @@ class CommandGuard:
                 style="info",
                 buttons="okcancel",
                 default_no=False,
+                owner_hwnd=owner,
             )
 
         body = (
@@ -162,6 +215,7 @@ class CommandGuard:
             style="warning",
             buttons="yesno",
             default_no=True,
+            owner_hwnd=owner,
         )
 
     @staticmethod
@@ -171,6 +225,7 @@ class CommandGuard:
         style: str = "warning",
         buttons: str = "yesno",
         default_no: bool = True,
+        owner_hwnd: int = 0,
     ) -> bool:
         """Native OS dialog. Returns True if user confirms."""
         if IS_WINDOWS:
@@ -188,12 +243,12 @@ class CommandGuard:
                     flags |= _MB_OKCANCEL
                     if default_no:
                         flags |= _MB_DEFBUTTON2
-                    result = ctypes.windll.user32.MessageBoxW(0, message, title, flags)
+                    result = ctypes.windll.user32.MessageBoxW(owner_hwnd, message, title, flags)
                     return result == 1  # IDOK
                 flags |= _MB_YESNO
                 if default_no:
                     flags |= _MB_DEFBUTTON2
-                result = ctypes.windll.user32.MessageBoxW(0, message, title, flags)
+                result = ctypes.windll.user32.MessageBoxW(owner_hwnd, message, title, flags)
                 return result == 6  # IDYES
             except Exception as exc:
                 logger.warning(f"MessageBoxW failed: {exc}")
@@ -235,7 +290,7 @@ class CommandGuard:
                 "This permanently removes the file or folder."
             ),
             "force_close": lambda r: (
-                f"Agetha wants to KILL process:\n\n  {self._process_target(r) or '???'}\n\n"
+                f"Agetha wants to KILL process:\n\n  {CommandGuard._process_target(r) or '???'}\n\n"
                 "This will force-close the application."
             ),
             "create_file": lambda r: (
@@ -266,7 +321,11 @@ class CommandGuard:
                 f"{r.get('width', '?')}×{r.get('height', '?')}"
             ),
             "target_window_close": lambda r: f"Close window: {r.get('target_app', '???')}",
-            "clear_memory": lambda r: "Erase all episodic memory entries. Soul.md is kept.",
+            "clear_memory": lambda r: (
+                f"Clear episodic memory"
+                f" (scope: {r.get('memory_scope', 'all') or 'all'})."
+                f" Soul.md is kept."
+            ),
             "open_app": lambda r: f"Launch: {r.get('app', '') or r.get('app_name', '???')}",
             "open_file": lambda r: f"Open file: {r.get('path', '???')}",
             "open_folder": lambda r: f"Open folder: {r.get('path', '???')}",
