@@ -5,15 +5,16 @@ Each handler receives (app, response, ctx) and returns True if it handled the co
 
 from __future__ import annotations
 
-import json
 import os
 import platform
+import re
+import shlex
 import shutil
 import subprocess
 import threading
+import urllib.parse
 import webbrowser
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
 from command_guard import CommandGuard
@@ -22,7 +23,13 @@ from system_commands import (
     restart_system, screenshot_path, search_files, set_reminder, set_volume,
     set_wallpaper, show_notification, shutdown_system, system_info, type_text,
 )
+from window_control import kill_process_by_name, operate_on_target, is_self_window_target, is_self_process_target
 from utils import IS_LINUX, IS_WINDOWS, WINDOW_W, WINDOW_H, logger
+from app_config import get_settings
+
+_WINDOW_COMMANDS = frozenset({
+    "target_window_move", "target_window_resize", "target_window_close", "force_close",
+})
 
 if TYPE_CHECKING:
     from main import CompanionApp
@@ -68,6 +75,24 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
     if not user_message and ctx.mood in app._ATTENTION_MOODS:
         app._maybe_snap_to_center(ctx.mood)
 
+    if command in _WINDOW_COMMANDS and not get_settings().enable_window_control:
+        logger.info(f"Blocked (ENABLE_WINDOW_CONTROL=no): {command}")
+        denied = [{"text": "Window control is off in config.", "pause": 0.0}]
+        app._speak_and_continue(denied, "neutral", False)
+        return
+
+    settings = get_settings()
+    _dry_run_skip = frozenset({"idle", "speak", "wake_user", "change_mood", "view_memory"})
+    if settings.dry_run_mode and command not in _dry_run_skip:
+        details = app._guard.describe(command, response)
+        proceed = app._guard.check_dry_run(command, details)
+        if not proceed:
+            app.root.after(0, lambda: app._subtitle.show_message("Dry run — skipped.", "#ffaa00"))
+            denied = [{"text": "Dry run. I won't.", "pause": 0.0}]
+            app._speak_and_continue(denied, "neutral", False)
+            return
+        app.root.after(0, lambda: app._subtitle.show_message(f"DRY RUN OK: {command}", "#ffaa00"))
+
     if command not in ("idle", "speak", "wake_user") and not app._guard.check(command, response):
         logger.info(f"User denied command: {command}")
         denied = [{"text": "Fine. I won't.", "pause": 0.0}]
@@ -94,6 +119,8 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     else:
         app._persistent_mood = None
+        if command == "idle" and not ctx.segments:
+            app.root.after(0, lambda: app._subtitle.clear())
         app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
         app._reschedule_screen_poll()
 
@@ -137,7 +164,11 @@ def handle_move_window(app, response, ctx):
                 "center": (max(0, (sw - ww) // 2), max(0, (sh - wh) // 2)),
             }
             nx, ny = dirs.get(direction, (10, cury))
-        app.root.geometry(f"+{nx}+{ny}")
+
+        def _go():
+            app.animate_geometry(nx, ny)
+
+        app.root.after(0, _go)
     except Exception as exc:
         logger.error(f"move_window failed: {exc}")
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
@@ -291,6 +322,10 @@ def handle_screenshot(app, response, ctx):
     save_path = response.get("save_path", "").strip()
     if not save_path and app._ai:
         save_path = screenshot_path(app._ai._system_path)
+    if not save_path:
+        app._show_op_error("Screenshot failed: no save path available.")
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        return True
     try:
         if app._screen:
             img = app._screen.capture_image()
@@ -305,7 +340,16 @@ def handle_screenshot(app, response, ctx):
 
 @register("show_notification")
 def handle_notification(app, response, ctx):
-    show_notification(response.get("title", "Agetha").strip(), response.get("message", "").strip())
+    title = response.get("title", "Agetha").strip()
+    message = response.get("message", "").strip()
+    seg_text = " ".join(
+        s.get("text", "").strip()
+        for s in (response.get("segments") or [])
+        if isinstance(s, dict)
+    ).strip()
+    alt_text = (response.get("text") or response.get("body") or "").strip()
+    effective_message = message or seg_text or alt_text
+    show_notification(title, effective_message)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
@@ -315,11 +359,15 @@ def handle_run_command(app, response, ctx):
     cmd_str = response.get("cmd", "").strip()
     if cmd_str:
         try:
-            r = subprocess.run(
-                cmd_str, shell=bool(response.get("shell", True)),
-                capture_output=True, text=True, timeout=15,
-            )
-            logger.info(f"run_command: {cmd_str} exit={r.returncode}")
+            if re.search(r"[|&;<>$`(){}]", cmd_str):
+                app._show_op_error("Shell metacharacters are not allowed in commands.")
+            else:
+                args = shlex.split(cmd_str, posix=not IS_WINDOWS)
+                r = subprocess.run(
+                    args, shell=False,
+                    capture_output=True, text=True, timeout=15,
+                )
+                logger.info(f"run_command: {cmd_str} exit={r.returncode}")
         except Exception as exc:
             app._show_op_error(f"Command failed: {exc}")
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
@@ -338,6 +386,11 @@ def handle_read_document(app, response, ctx):
 
     threading.Thread(target=_requery, daemon=True).start()
     return True
+
+
+@register("read_file")
+def handle_read_file(app, response, ctx):
+    return handle_read_document(app, response, ctx)
 
 
 @register("open_file")
@@ -384,9 +437,13 @@ def handle_monitor_process(app, response, ctx):
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
         return True
 
+    app.root.after(0, lambda: app._subtitle.show_message(f"Checking {process_name}…", "#888888"))
+
     def _check():
         running = app._ai.monitor_process(process_name)
         status = "running" if running else "not running"
+        color = "#44cc66" if running else "#ffaa00"
+        app.root.after(0, lambda: app._subtitle.show_message(f"{process_name}: {status}", color))
         follow = app._ai_query(f"[SYSTEM] Process '{process_name}' is {status}.")
         if follow:
             dispatch(app, follow, ctx.user_message)
@@ -417,9 +474,11 @@ def handle_show_dialog(app, response, ctx):
         if dlg_type == "yesno":
             ok = guard._native_confirm(dlg_title, dlg_msg, "info", "yesno", default_no=True)
             if ok and app._ai:
-                follow = app._ai_query(f"[SYSTEM] User answered YES to: {dlg_msg[:120]}")
-                if follow:
-                    dispatch(app, follow, ctx.user_message)
+                def _requery_yes():
+                    follow = app._ai_query(f"[SYSTEM] User answered YES to: {dlg_msg[:120]}")
+                    if follow:
+                        dispatch(app, follow, ctx.user_message)
+                threading.Thread(target=_requery_yes, daemon=True).start()
         elif dlg_type == "warning":
             guard._native_confirm(dlg_title, dlg_msg, "warning", "okcancel", False)
         elif dlg_type == "error":
@@ -436,12 +495,18 @@ def handle_show_dialog(app, response, ctx):
 def handle_snap_to_center(app, response, ctx):
     def _snap():
         sw, sh = app.root.winfo_screenwidth(), app.root.winfo_screenheight()
-        app.root.geometry(f"+{(sw - WINDOW_W) // 2}+{(sh - WINDOW_H) // 2}")
-        try:
-            app.root.attributes("-topmost", True)
-        except Exception:
-            pass
-        app.root.lift()
+        nx = (sw - WINDOW_W) // 2
+        ny = (sh - WINDOW_H) // 2
+
+        def _after():
+            try:
+                app.root.attributes("-topmost", True)
+            except Exception:
+                pass
+            app.root.lift()
+
+        app.animate_geometry(nx, ny, on_done=_after)
+
     app.root.after(0, _snap)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
@@ -465,21 +530,31 @@ def handle_target_close(app, response, ctx):
     if not target_app:
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
         return True
+    if is_self_window_target(target_app):
+        fail = [
+            {"text": "I'm not closing myself.", "pause": 0.5},
+            {"text": "Try a real app window.", "pause": 0.0},
+        ]
+        app._speak_and_continue(fail, ctx.mood, ctx.shutdown_requested)
+        return True
 
     def _close():
-        if IS_WINDOWS:
-            from main import _find_window_hwnd
-            import ctypes
-            hwnd = _find_window_hwnd(target_app)
-            if hwnd:
-                ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-            else:
-                app._show_op_error(f"Window not found: {target_app}")
-        elif IS_LINUX:
-            subprocess.run(["wmctrl", "-c", target_app], timeout=3)
+        exclude = _self_hwnd(app)
+        ok, msg = operate_on_target(
+            target_app, exclude_hwnd=exclude, close=True, picker=_window_picker(app),
+        )
+        if not ok and IS_LINUX:
+            wmctrl_result = subprocess.run(
+                ["wmctrl", "-c", target_app], timeout=3, capture_output=True,
+            )
+            if wmctrl_result.returncode == 0:
+                _finish_target_op(app, ctx, True, "wmctrl closed window")
+                return
+            _finish_target_op(app, ctx, False, msg)
+            return
+        _finish_target_op(app, ctx, ok, msg)
 
     threading.Thread(target=_close, daemon=True).start()
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
 
@@ -499,6 +574,7 @@ def handle_open_app(app, response, ctx):
                 subprocess.Popen([app_name])
         except Exception as exc:
             app._show_op_error(f"Launch failed: {exc}")
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
     app._reschedule_screen_poll()
     return True
@@ -506,17 +582,28 @@ def handle_open_app(app, response, ctx):
 
 @register("force_close")
 def handle_force_close(app, response, ctx):
-    target = (
-        response.get("app", "") or response.get("process", "") or response.get("name", "")
-    ).strip()
+    target = CommandGuard._process_target(response)
+    if target and is_self_process_target(target):
+        fail = [
+            {"text": "I'm not killing myself.", "pause": 0.5},
+            {"text": "Nice try.", "pause": 0.0},
+        ]
+        app._speak_and_continue(fail, ctx.mood, ctx.shutdown_requested)
+        return True
     if target:
-        try:
-            if IS_WINDOWS:
-                subprocess.run(["taskkill", "/IM", os.path.basename(target), "/F"], capture_output=True, check=False)
-            else:
-                subprocess.run(["pkill", "-f", target], check=False)
-        except Exception as exc:
-            app._show_op_error(f"Force close failed: {exc}")
+        def _kill():
+            exclude = _self_hwnd(app)
+            picker = _window_picker(app)
+            ok, msg = operate_on_target(target, exclude_hwnd=exclude, kill=True, picker=picker)
+            if not ok:
+                ok, msg = kill_process_by_name(target)
+            if not ok:
+                _finish_target_op(app, ctx, False, msg or "Process not found.")
+                return
+            _finish_target_op(app, ctx, ok, msg)
+
+        threading.Thread(target=_kill, daemon=True).start()
+        return True
     segs = ctx.segments or [{"text": "Gone.", "pause": 0.0}]
     app._speak_and_continue(segs, ctx.mood, ctx.shutdown_requested)
     return True
@@ -532,7 +619,7 @@ def handle_open_browser(app, response, ctx):
             "duckduckgo": "https://duckduckgo.com/?q=",
             "bing": "https://www.bing.com/search?q=",
         }
-        url = engines.get(response.get("engine", "google"), engines["google"]) + search.replace(" ", "+")
+        url = engines.get(response.get("engine", "google"), engines["google"]) + urllib.parse.quote_plus(search)
     if url:
         webbrowser.open(url)
     app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
@@ -660,29 +747,107 @@ def handle_change_mood(app, response, ctx):
 
 @register("clear_memory")
 def handle_clear_memory(app, response, ctx):
+    scope = (response.get("memory_scope") or response.get("scope") or "all").strip().lower()
     try:
-        from memory_system import clear_episodic
-        clear_episodic()
+        from memory_system import clear_episodic, clear_episodic_selective
+        if scope in ("recent", "last_hour"):
+            removed = clear_episodic_selective(newer_than_hours=1)
+            msg = f"Cleared {removed} recent memories."
+        elif scope in ("old", "older_than_day"):
+            removed = clear_episodic_selective(older_than_hours=24)
+            msg = f"Cleared {removed} old memories."
+        elif scope in ("keep_recent", "keep_5"):
+            removed = clear_episodic_selective(keep_last=5)
+            msg = f"Cleared {removed} memories (kept last 5)."
+        else:
+            clear_episodic()
+            msg = "Episodic memory cleared."
+        app.root.after(0, lambda: app._show_op_success(msg))
     except ImportError:
         pass
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
 
+@register("view_memory")
+def handle_view_memory(app, response, ctx):
+    from main import AgethaPopup
+    try:
+        from memory_system import get_recent_memories, format_memories_for_display
+        limit = int(response.get("limit", 15) or 15)
+        lines = format_memories_for_display(get_recent_memories(limit=limit))
+    except Exception as exc:
+        lines = [f"[memory error: {exc}]"]
+    app.root.after(0, lambda: AgethaPopup(app.root, lines or ["[no episodic memories]"], ctx.mood))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
 @register("request_screen_read")
 def handle_request_screen_read(app, response, ctx):
-    if not app._screen:
+    if ctx.segments:
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    if not app._screen:
         return True
     screen_text = app._screen.capture_text()
     app._last_screen_text = screen_text
 
     def _requery():
-        follow = app._ai_query("", screen_context=screen_text, user_message=ctx.user_message or "")
+        follow = app._ai_query(ctx.user_message or "", screen_context=screen_text)
         if follow:
-            dispatch(app, follow, ctx.user_message)
+            app._dispatch_response(follow, ctx.user_message)
 
     threading.Thread(target=_requery, daemon=True).start()
+    return True
+
+
+def _self_hwnd(app) -> int | None:
+    try:
+        return int(app.root.winfo_id())
+    except Exception:
+        return None
+
+
+def _window_picker(app):
+    return lambda matches: app.pick_window_sync(matches)
+
+
+def _finish_target_op(app, ctx, ok: bool, msg: str) -> None:
+    """Speak only after window op finishes — avoids 'Watch this' when nothing moved."""
+    if ok:
+        logger.info(msg)
+        app.root.after(0, lambda: app._show_op_success(msg))
+        app.root.after(0, lambda: app._speak_and_continue(
+            ctx.segments, ctx.mood, ctx.shutdown_requested,
+        ))
+    else:
+        logger.warning(f"target_window op failed: {msg}")
+        app.root.after(0, lambda: app._show_op_error(msg))
+        fail_segs = [
+            {"text": "It's not there.", "pause": 0.5},
+            {"text": "No window matched that name.", "pause": 0.0},
+        ]
+        app.root.after(0, lambda: app._speak_and_continue(
+            fail_segs, ctx.mood, False,
+        ))
+
+
+def _redirect_self_move(app, response, ctx) -> bool:
+    """target_window_* aimed at Agetha → move her own window instead."""
+    target_app = response.get("target_app", "").strip()
+    if not is_self_window_target(target_app):
+        return False
+    try:
+        tx = int(response.get("x", 0) or 0)
+        ty = int(response.get("y", 0) or 0)
+    except (TypeError, ValueError):
+        tx, ty = 0, 0
+
+    def _go():
+        app.animate_geometry(tx, ty)
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+
+    app.root.after(0, _go)
     return True
 
 
@@ -690,6 +855,8 @@ def _target_window_op(app, response, ctx, move: bool):
     target_app = response.get("target_app", "").strip()
     if not target_app:
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        return
+    if _redirect_self_move(app, response, ctx):
         return
 
     try:
@@ -701,23 +868,26 @@ def _target_window_op(app, response, ctx, move: bool):
         tw, th = 800, 600
 
     def _do():
+        exclude = _self_hwnd(app)
+        picker = _window_picker(app)
         if IS_WINDOWS:
-            from main import _find_window_hwnd
-            import ctypes
-            hwnd = _find_window_hwnd(target_app)
-            if not hwnd:
-                fail = [{"text": "It's not here.", "pause": 0.4}, {"text": "Where did it go.", "pause": 0.0}]
-                app.root.after(0, lambda: app._subtitle.speak(fail))
-                return
             if move:
-                ctypes.windll.user32.SetWindowPos(hwnd, 0, tx, ty, 0, 0, 0x0001 | 0x0004)
+                ok, msg = operate_on_target(
+                    target_app, exclude_hwnd=exclude, move=(tx, ty), picker=picker,
+                )
             else:
-                ctypes.windll.user32.MoveWindow(hwnd, tx, ty, tw, th, True)
-        elif IS_LINUX:
+                ok, msg = operate_on_target(
+                    target_app, exclude_hwnd=exclude, resize=(tx, ty, tw, th), picker=picker,
+                )
+            _finish_target_op(app, ctx, ok, msg)
+            return
+        if IS_LINUX:
             if move:
                 subprocess.run(["wmctrl", "-r", target_app, "-e", f"0,{tx},{ty},-1,-1"], timeout=3)
             else:
                 subprocess.run(["wmctrl", "-r", target_app, "-e", f"0,{tx},{ty},{tw},{th}"], timeout=3)
+            _finish_target_op(app, ctx, True, "wmctrl sent")
+            return
+        _finish_target_op(app, ctx, False, "Not supported on this platform")
 
     threading.Thread(target=_do, daemon=True).start()
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
