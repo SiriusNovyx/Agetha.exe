@@ -45,8 +45,8 @@ def native_error_popup(title: str, message: str) -> None:
     if IS_WINDOWS:
         try:
             import ctypes
-            # 0x10 = MB_ICONERROR, 0x1000 = MB_TOPMOST
-            ctypes.windll.user32.MessageBoxW(0, message, title, 0x10 | 0x1000)
+            # 0x10 = MB_ICONERROR, 0x00040000 = MB_TOPMOST
+            ctypes.windll.user32.MessageBoxW(0, message, title, 0x10 | 0x00040000)
             return
         except Exception:
             pass
@@ -80,6 +80,8 @@ def load_env_file(env_path: Path = None) -> dict:
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
                 if value:  # only store non-empty values
                     env_vars[key] = value
     except Exception as e:
@@ -87,64 +89,33 @@ def load_env_file(env_path: Path = None) -> dict:
     return env_vars
 
 # ── Default Config Template ────────────────────────────────────────────────────
-DEFAULT_CONFIG = """# Agetha config file
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── AI Backend ────────────────────────────────────────────────────────────────
-
-# Set to "yes" to use a local AI (Ollama) instead of Groq.
-USE_LOCAL_AI = no
-
-# Set to "no" to fully disable Groq even when USE_LOCAL_AI = no.
-ENABLE_GROQ = yes
-
-# ── Groq API Keys ─────────────────────────────────────────────────────────────
-# Add up to 10 keys. Or use .env file for sensitive keys.
-GROQ_API_KEY =
-GROQ_API_KEY_2 =
-GROQ_API_KEY_3 =
-GROQ_API_KEY_4 =
-GROQ_API_KEY_5 =
-GROQ_API_KEY_6 =
-GROQ_API_KEY_7 =
-GROQ_API_KEY_8 =
-GROQ_API_KEY_9 =
-GROQ_API_KEY_10 =
-
-# Groq model.
-GROQ_MODEL = llama-3.3-70b-versatile
-
-# ── Local AI (Ollama) ─────────────────────────────────────────────────────────
-LOCAL_AI_MODEL =
-LOCAL_AI_TIMEOUT = 30
-
-# ── OS Permissions ────────────────────────────────────────────────────────────
-ENABLE_COMMAND_EXECUTION = yes
-
-# ── Context & Memory ─────────────────────────────────────────────────────────
-MEMORY_CHARS = 600
-HISTORY_LIMIT = 6
-FILE_READ_CHARS = 200
-
-# ── Animation ─────────────────────────────────────────────────────────────────
-ANIMATION_SPEED = 0.6
-"""
+from app_config import DEFAULT_CONFIG, create_default_config as _create_default_config
 
 def create_default_config(config_path: Path = None) -> None:
     """Write the default config template."""
-    config_path = config_path or CONFIG_PATH
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
-    logger.info(f"Created config.txt at {config_path}")
+    _create_default_config(config_path or CONFIG_PATH)
+    logger.info(f"Created config.txt at {config_path or CONFIG_PATH}")
 
-# ── Named Constants ────────────────────────────────────────────────────────────
-# Replaces magic numbers scattered throughout the codebase
-TOUCH_COOLDOWN_SEC = 10.0
-WAKE_DELAY_MS = 8000
-LOAF_TIMER_MS = 15 * 60 * 1000  # 15 minutes
+# ── Named Constants (from config.txt) ─────────────────────────────────────────
+from app_config import get_settings
+
+_cfg = get_settings()
+TOUCH_COOLDOWN_SEC = _cfg.touch_cooldown_sec
+WAKE_DELAY_MS = _cfg.wake_delay_ms
+LOAF_TIMER_MS = _cfg.loaf_timer_ms
 THREAD_JOIN_TIMEOUT = 0.4
-SCREEN_POLL_INTERVAL_MS = 2 * 60 * 1000  # 2 minutes
+SCREEN_POLL_INTERVAL_MS = _cfg.screen_poll_interval_ms
 WINDOW_W = 340
 WINDOW_H = 560
 GIF_W = 340
 GIF_H = 300
+
+
+def refresh_config_constants() -> None:
+    """Re-read config.txt and update module-level timing constants."""
+    global TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS
+    cfg = get_settings(reload=True)
+    TOUCH_COOLDOWN_SEC = cfg.touch_cooldown_sec
+    WAKE_DELAY_MS = cfg.wake_delay_ms
+    LOAF_TIMER_MS = cfg.loaf_timer_ms
+    SCREEN_POLL_INTERVAL_MS = cfg.screen_poll_interval_ms
