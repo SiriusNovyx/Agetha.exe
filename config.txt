@@ -1,58 +1,270 @@
-# Agetha v5.0.0 (Mod) config — original author is @tomiszivacs github
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Agetha Mod — config.txt FOR THIS PROJECT ONLY NOT WORK ON ORIGINAL AGETHA
+# =============================================================================
+#
+# HOW THIS FILE WORKS
+#   • Format:  KEY = value   (one setting per line)
+#   • Comments start with #
+#   • Booleans: yes / no  (also: true, false, 1, 0, on, off)
+#   • If a line is missing, corrupt, or has an invalid value → built-in default
+#   • Secrets: prefer .env for API keys (copy .env.example → .env)
+#             .env overrides the same key here when non-empty
+#
+# After editing, restart Agetha (or re-run Medic_Checker.bat).
+# =============================================================================
 
-# ── AI Backend ────────────────────────────────────────────────────────────────
 
-# Set to "yes" to use a local AI (Ollama) instead of Groq.
-# If "no", Agetha uses Groq. Run `ollama list` to see installed models.
+# ── AI Backend ───────────────────────────────────────────────────────────────
+# Choose cloud Groq OR local Ollama — not both at once.
+
+# USE_LOCAL_AI — yes = use Ollama on this PC; no = use Groq cloud API.
 USE_LOCAL_AI = no
 
-# Set to "no" to fully disable Groq even when USE_LOCAL_AI = no.
-# (Useful if you only want to test without any API calls.)
+# ENABLE_GROQ — yes = allow Groq API (ignored when USE_LOCAL_AI = yes).
 ENABLE_GROQ = yes
 
-# ── Groq API Keys ─────────────────────────────────────────────────────────────
-# Add up to 10 keys (separate free-tier accounts) to rotate around rate limits.
-# You can also use a .env file for sensitive keys (see .env.example).
-GROQ_API_KEY = gsk_
-GROQ_API_KEY_2 =
-GROQ_API_KEY_3 =
-GROQ_API_KEY_4 =
-GROQ_API_KEY_5 =
-GROQ_API_KEY_6 =
-GROQ_API_KEY_7 =
-GROQ_API_KEY_8 =
-GROQ_API_KEY_9 =
-GROQ_API_KEY_10 =
+# ENABLE_OPENROUTER — yes = use OpenRouter instead of Groq (experimental).
+# Ignored when USE_LOCAL_AI = yes. Key lives in .env → OPENROUTER_API_KEY
+ENABLE_OPENROUTER = no
 
-# Groq model. Smaller/cheaper models have more forgiving rate limits.
+# OPENROUTER_MODEL — model slug from https://openrouter.ai/models
+OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+
+# FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
+FASTER_MODE = no
+
+
+# ── API keys (secrets) ───────────────────────────────────────────────────────
+# All keys are in .env only — copy .env.example → .env and fill in:
+#   GROQ_API_KEY_1 … GROQ_API_KEY_10   (Groq — https://console.groq.com)
+#   OPENROUTER_API_KEY                   (if ENABLE_OPENROUTER = yes)
+# .env overrides config.txt when non-empty. Do not put keys in this file.
+
+
+# ── Groq model ───────────────────────────────────────────────────────────────
 GROQ_MODEL = llama-3.3-70b-versatile
 
+
 # ── Local AI (Ollama) ─────────────────────────────────────────────────────────
-# Only used when USE_LOCAL_AI = yes.
-# If LOCAL_AI_MODEL is wrong or not installed, Agetha falls back to idle responses.
+# Requires Ollama running: https://ollama.com — run "ollama list" for model names.
+
+# LOCAL_AI_MODEL — e.g. llama3, mistral, qwen2.5 (must be installed in Ollama).
 LOCAL_AI_MODEL =
+
+# LOCAL_AI_TIMEOUT — seconds to wait for Ollama reply (5–120).
 LOCAL_AI_TIMEOUT = 30
 
+
+# ── AI tuning ─────────────────────────────────────────────────────────────────
+# Controls how Agetha's brain writes replies (Groq and Ollama).
+
+# AI_TEMPERATURE — randomness (0.0 = stiff, 2.0 = chaotic). Default 0.85.
+AI_TEMPERATURE = 0.85
+
+# AI_MAX_TOKENS — max length of each AI reply (64–8192). Default 400.
+AI_MAX_TOKENS = 400
+
+# AI_TOP_P — nucleus sampling 0.0–1.0. Lower = more focused. Default 0.95.
+AI_TOP_P = 0.95
+
+# ENABLE_STREAMING — yes = typewriter subtitle while Groq streams; no = wait for full reply.
+ENABLE_STREAMING = yes
+
+# ENABLE_AMBIENT_POLLS — yes = periodic background screen checks when idle; no = only when you chat.
+ENABLE_AMBIENT_POLLS = yes
+
+
 # ── OS Permissions ────────────────────────────────────────────────────────────
-# Allow Agetha to run shell commands, open/create/delete files, and control
-# other application windows (target_window_move / target_window_resize)?
+# Master switches for commands that touch files, apps, or other windows.
+
+# ENABLE_COMMAND_EXECUTION — no = block ALL OS commands (speak/idle still work).
 ENABLE_COMMAND_EXECUTION = yes
 
+# ENABLE_WINDOW_CONTROL — no = block target_window_move / resize / close / force_close.
+ENABLE_WINDOW_CONTROL = yes
+
+# ENABLE_COMMAND_CONFIRMATIONS — no = skip native Yes/No dialogs for risky actions.
+ENABLE_COMMAND_CONFIRMATIONS = yes
+
+# FORCE_CLOSE_AUTO_ALLOW — yes = kill user apps without confirm; system apps still protected.
+FORCE_CLOSE_AUTO_ALLOW = yes
+
+# PROTECTED_PROCESSES — extra comma-separated names Agetha must not kill
+# (explorer.exe, python.exe, etc. are always protected). Example: myapp.exe,obs64.exe
+PROTECTED_PROCESSES =
+
+
 # ── Context & Memory ─────────────────────────────────────────────────────────
-# Characters of long-term memory to inject into each prompt.
-# Higher = richer personality memory, higher token cost.
+# soul.md = permanent personality (memory/soul.md). episodic = recent events JSON.
+
+# MEMORY_CHARS — chars from long-term memory.txt injected per prompt.
 MEMORY_CHARS = 600
 
-# Number of recent exchanges kept in short-term conversation history.
-# Higher = longer context, higher token cost.
+# HISTORY_LIMIT — recent chat turns kept in context (1–20).
 HISTORY_LIMIT = 6
 
-# Maximum characters Agetha reads when you ask her to open a document.
-# Higher = she understands more of the file, higher token cost.
+# FILE_READ_CHARS — max chars when AI reads a file into context.
 FILE_READ_CHARS = 200
 
-# ── Animation ─────────────────────────────────────────────────────────────────
-# GIF playback speed multiplier. Lower = faster, higher = slower.
-# 0.4 = snappy  |  0.6 = default  |  1.0 = original speed
+# EPISODIC_PROMPT_LIMIT — how many episodic memories injected per prompt (0–50).
+EPISODIC_PROMPT_LIMIT = 10
+
+# EPISODIC_ENTRY_MAX_CHARS — max chars per episodic log entry.
+EPISODIC_ENTRY_MAX_CHARS = 300
+
+# EPISODIC_MAX_ENTRIES — max entries stored in memory/episodic_memory.json.
+EPISODIC_MAX_ENTRIES = 50
+
+
+# ── Behavior & timing ─────────────────────────────────────────────────────────
+
+# SCREEN_POLL_INTERVAL_SEC — seconds between ambient screen AI polls (15–3600).
+SCREEN_POLL_INTERVAL_SEC = 120
+
+# TOUCH_COOLDOWN_SEC — seconds after clicking her GIF before another touch counts.
+TOUCH_COOLDOWN_SEC = 10
+
+# WAKE_DELAY_SEC — seconds before wake-from-sleep animation after idle.
+WAKE_DELAY_SEC = 8
+
+# LOAF_TIMER_MIN — minutes idle before loaf/sleeping animation.
+LOAF_TIMER_MIN = 15
+
+
+# ── Mood & attention snap ─────────────────────────────────────────────────────
+# When idle in certain moods, Agetha may move herself (snap_to_center or side drift).
+
+# ENABLE_ATTENTION_SNAP — yes = mood-based auto reposition; no = never auto-move.
+ENABLE_ATTENTION_SNAP = yes
+
+# MOOD_SNAP_*_SEC — seconds of user inactivity before snap triggers per mood.
+# Lower = more aggressive (manic snaps fastest). Range per key: 30–3600.
+MOOD_SNAP_MANIC_SEC = 120
+MOOD_SNAP_ANGRY_SEC = 180
+MOOD_SNAP_PARANOID_SEC = 240
+MOOD_SNAP_DOMINANT_SEC = 300
+MOOD_SNAP_SURPRISED_SEC = 360
+MOOD_SNAP_EXCITED_SEC = 420
+MOOD_SNAP_HAPPY_SEC = 600
+MOOD_SNAP_NEUTRAL_SEC = 600
+MOOD_SNAP_THINKING_SEC = 600
+MOOD_SNAP_VULNERABLE_SEC = 720
+MOOD_SNAP_MELANCHOLIC_SEC = 900
+MOOD_SNAP_SAD_SEC = 900
+MOOD_SNAP_WHISPER_SEC = 900
+
+
+# ── Screen reader / OCR ─────────────────────────────────────────────────────
+# Needs Tesseract installed (optional). Medic_Checker step [4/7] verifies it.
+
+# ENABLE_SCREEN_READER — no = disable OCR entirely (app still runs).
+ENABLE_SCREEN_READER = yes
+
+# OCR_MAX_DIMENSION — max screenshot edge in pixels before OCR (640–8192). Lower = faster.
+OCR_MAX_DIMENSION = 2560
+
+# OCR_FOCUSED_WINDOW_ONLY — yes = OCR only the active window; no = full screen.
+OCR_FOCUSED_WINDOW_ONLY = yes
+
+# INCLUDE_WINDOW_TITLE_IN_CONTEXT — yes = send [Active: Window Title] to AI each poll.
+INCLUDE_WINDOW_TITLE_IN_CONTEXT = yes
+
+# TESSERACT_PATH — Manual set full path to tesseract.exe if not on PATH (Windows).
+# Example: C:\Program Files\Tesseract-OCR\tesseract.exe
+TESSERACT_PATH =
+
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+
+# WINDOW_TOPMOST — yes = Agetha stays above other windows.
+WINDOW_TOPMOST = yes
+
+# WINDOW_START_X / Y — pixel position when Agetha first opens.
+WINDOW_START_X = 80
+WINDOW_START_Y = 80
+
+# SUBTITLE_CHAR_DELAY — seconds between subtitle typewriter chars (0.005–0.5).
+SUBTITLE_CHAR_DELAY = 0.035
+
+# ANIMATION_SPEED — GIF playback multiplier (0.1–3.0). Lower = slower loops.
 ANIMATION_SPEED = 0.6
+
+# WINDOW_MOVE_SMOOTH — yes = eased slide for move_window / target_window_* / snap.
+WINDOW_MOVE_SMOOTH = yes
+
+# WINDOW_MOVE_DURATION_MS — animation length in ms (0 = instant, max 2000).
+WINDOW_MOVE_DURATION_MS = 280
+
+
+# ── Medic_Checker (launcher) ────────────────────────────────────────────────
+# Settings for Medic_Checker.ps1 / Medic_Checker.bat only.
+
+# SKIP_TESSERACT_CHECK — yes = skip Tesseract step in health check.
+SKIP_TESSERACT_CHECK = no
+
+# SKIP_ASSET_CHECK — yes = skip verifying assets\ GIFs and fonts.
+SKIP_ASSET_CHECK = no
+
+# AUTO_PIP_INSTALL — yes = auto pip install -r requirements.txt if packages missing.
+AUTO_PIP_INSTALL = yes
+
+# CREATE_DESKTOP_SHORTCUT — yes = create Desktop\Agetha.lnk on each Medic_Checker run.
+CREATE_DESKTOP_SHORTCUT = yes
+
+# CHECK_FOR_UPDATES — yes = compare APP_VERSION to GITHUB_RELEASES_URL (needs URL below).
+CHECK_FOR_UPDATES = yes
+
+
+# ── App meta ──────────────────────────────────────────────────────────────────
+
+# APP_VERSION — shown in window title and Medic_Checker banner.
+APP_VERSION = 3.5.5
+
+# GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
+# Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
+GITHUB_RELEASES_URL = https://api.github.com/repos/SiriusNovyx/Agetha.exe/releases/latest
+
+
+# ── Window control ────────────────────────────────────────────────────────────
+# For target_window_move / resize / close — match windows by partial title.
+
+# TARGET_APP_ALIASES — short name = partial title fragment (comma-separated).
+# AI can say "notepad" and Agetha searches for "Notepad" in window titles.
+TARGET_APP_ALIASES = notepad=Notepad,chrome=Google Chrome,firefox=Mozilla Firefox,code=Visual Studio Code,cursor=Cursor
+
+# WINDOW_PICKER_ON_AMBIGUOUS — yes = dialog if multiple windows match same name.
+WINDOW_PICKER_ON_AMBIGUOUS = yes
+
+
+# ── Command safety ────────────────────────────────────────────────────────────
+
+# DRY_RUN_MODE — yes = every command shows confirm dialog before running (test mode).
+DRY_RUN_MODE = no
+
+
+# ── Voice input (microphone) ──────────────────────────────────────────────────
+# Medic_Checker installs deps when ENABLE_VOICE = yes.
+
+# ENABLE_VOICE — yes = show 🎤 button in UI.
+ENABLE_VOICE = no
+
+# USE_LOCAL_STT — yes = faster-whisper (offline); no = Google STT (online).
+USE_LOCAL_STT = no
+
+
+# ── File drag-and-drop ────────────────────────────────────────────────────────
+# Drop files onto Agetha's GIF. Needs tkinterdnd2 (Windows).
+
+# ENABLE_FILE_DRAG_DROP — yes = enable drag-and-drop onto the character.
+ENABLE_FILE_DRAG_DROP = yes
+
+
+# ── OCR extras ────────────────────────────────────────────────────────────────
+
+# OCR_CUSTOM_PATTERNS — extra screen text triggers for AI context.
+# Format per pattern:  label:mood:regex   mood optional (default: thinking)
+# Separate multiple with ;  Example: Banned:angry:you have been banned;Deploy:happy:build succeeded
+OCR_CUSTOM_PATTERNS =
+
+# OCR_PAUSE_WHILE_TYPING_SEC — skip OCR for N seconds after you type or touch her (saves CPU).
+OCR_PAUSE_WHILE_TYPING_SEC = 8
