@@ -106,6 +106,9 @@ class CommandGuard:
 
             self._root.after(0, _on_main)
             done.wait(timeout=120)
+            if result[0] is None:
+                logger.warning("CommandGuard danger confirm timed out")
+                return False
             return bool(result[0])
 
         return self._native_confirm(title, message, "warning", "yesno", default_no=True)
@@ -287,7 +290,7 @@ class CommandGuard:
                 "This permanently removes the file or folder."
             ),
             "force_close": lambda r: (
-                f"Agetha wants to KILL process:\n\n  {self._process_target(r) or '???'}\n\n"
+                f"Agetha wants to KILL process:\n\n  {CommandGuard._process_target(r) or '???'}\n\n"
                 "This will force-close the application."
             ),
             "create_file": lambda r: (

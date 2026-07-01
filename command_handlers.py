@@ -5,15 +5,16 @@ Each handler receives (app, response, ctx) and returns True if it handled the co
 
 from __future__ import annotations
 
-import json
 import os
 import platform
+import re
+import shlex
 import shutil
 import subprocess
 import threading
+import urllib.parse
 import webbrowser
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
 from command_guard import CommandGuard
@@ -118,6 +119,8 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     else:
         app._persistent_mood = None
+        if command == "idle" and not ctx.segments:
+            app.root.after(0, lambda: app._subtitle.clear())
         app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
         app._reschedule_screen_poll()
 
@@ -319,6 +322,10 @@ def handle_screenshot(app, response, ctx):
     save_path = response.get("save_path", "").strip()
     if not save_path and app._ai:
         save_path = screenshot_path(app._ai._system_path)
+    if not save_path:
+        app._show_op_error("Screenshot failed: no save path available.")
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        return True
     try:
         if app._screen:
             img = app._screen.capture_image()
@@ -333,7 +340,16 @@ def handle_screenshot(app, response, ctx):
 
 @register("show_notification")
 def handle_notification(app, response, ctx):
-    show_notification(response.get("title", "Agetha").strip(), response.get("message", "").strip())
+    title = response.get("title", "Agetha").strip()
+    message = response.get("message", "").strip()
+    seg_text = " ".join(
+        s.get("text", "").strip()
+        for s in (response.get("segments") or [])
+        if isinstance(s, dict)
+    ).strip()
+    alt_text = (response.get("text") or response.get("body") or "").strip()
+    effective_message = message or seg_text or alt_text
+    show_notification(title, effective_message)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
@@ -343,11 +359,15 @@ def handle_run_command(app, response, ctx):
     cmd_str = response.get("cmd", "").strip()
     if cmd_str:
         try:
-            r = subprocess.run(
-                cmd_str, shell=bool(response.get("shell", True)),
-                capture_output=True, text=True, timeout=15,
-            )
-            logger.info(f"run_command: {cmd_str} exit={r.returncode}")
+            if re.search(r"[|&;<>$`(){}]", cmd_str):
+                app._show_op_error("Shell metacharacters are not allowed in commands.")
+            else:
+                args = shlex.split(cmd_str, posix=not IS_WINDOWS)
+                r = subprocess.run(
+                    args, shell=False,
+                    capture_output=True, text=True, timeout=15,
+                )
+                logger.info(f"run_command: {cmd_str} exit={r.returncode}")
         except Exception as exc:
             app._show_op_error(f"Command failed: {exc}")
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
@@ -366,6 +386,11 @@ def handle_read_document(app, response, ctx):
 
     threading.Thread(target=_requery, daemon=True).start()
     return True
+
+
+@register("read_file")
+def handle_read_file(app, response, ctx):
+    return handle_read_document(app, response, ctx)
 
 
 @register("open_file")
@@ -449,9 +474,11 @@ def handle_show_dialog(app, response, ctx):
         if dlg_type == "yesno":
             ok = guard._native_confirm(dlg_title, dlg_msg, "info", "yesno", default_no=True)
             if ok and app._ai:
-                follow = app._ai_query(f"[SYSTEM] User answered YES to: {dlg_msg[:120]}")
-                if follow:
-                    dispatch(app, follow, ctx.user_message)
+                def _requery_yes():
+                    follow = app._ai_query(f"[SYSTEM] User answered YES to: {dlg_msg[:120]}")
+                    if follow:
+                        dispatch(app, follow, ctx.user_message)
+                threading.Thread(target=_requery_yes, daemon=True).start()
         elif dlg_type == "warning":
             guard._native_confirm(dlg_title, dlg_msg, "warning", "okcancel", False)
         elif dlg_type == "error":
@@ -517,7 +544,12 @@ def handle_target_close(app, response, ctx):
             target_app, exclude_hwnd=exclude, close=True, picker=_window_picker(app),
         )
         if not ok and IS_LINUX:
-            subprocess.run(["wmctrl", "-c", target_app], timeout=3)
+            wmctrl_result = subprocess.run(
+                ["wmctrl", "-c", target_app], timeout=3, capture_output=True,
+            )
+            if wmctrl_result.returncode == 0:
+                _finish_target_op(app, ctx, True, "wmctrl closed window")
+                return
             _finish_target_op(app, ctx, False, msg)
             return
         _finish_target_op(app, ctx, ok, msg)
@@ -542,6 +574,7 @@ def handle_open_app(app, response, ctx):
                 subprocess.Popen([app_name])
         except Exception as exc:
             app._show_op_error(f"Launch failed: {exc}")
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
     app._reschedule_screen_poll()
     return True
@@ -549,10 +582,7 @@ def handle_open_app(app, response, ctx):
 
 @register("force_close")
 def handle_force_close(app, response, ctx):
-    target = (
-        response.get("app", "") or response.get("process", "") or response.get("name", "")
-        or response.get("target_app", "")
-    ).strip()
+    target = CommandGuard._process_target(response)
     if target and is_self_process_target(target):
         fail = [
             {"text": "I'm not killing myself.", "pause": 0.5},
@@ -567,9 +597,8 @@ def handle_force_close(app, response, ctx):
             ok, msg = operate_on_target(target, exclude_hwnd=exclude, kill=True, picker=picker)
             if not ok:
                 ok, msg = kill_process_by_name(target)
-            if not ok and not IS_WINDOWS:
-                subprocess.run(["pkill", "-f", target], check=False)
-                _finish_target_op(app, ctx, False, "Process not found.")
+            if not ok:
+                _finish_target_op(app, ctx, False, msg or "Process not found.")
                 return
             _finish_target_op(app, ctx, ok, msg)
 
@@ -590,7 +619,7 @@ def handle_open_browser(app, response, ctx):
             "duckduckgo": "https://duckduckgo.com/?q=",
             "bing": "https://www.bing.com/search?q=",
         }
-        url = engines.get(response.get("engine", "google"), engines["google"]) + search.replace(" ", "+")
+        url = engines.get(response.get("engine", "google"), engines["google"]) + urllib.parse.quote_plus(search)
     if url:
         webbrowser.open(url)
     app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
@@ -722,7 +751,7 @@ def handle_clear_memory(app, response, ctx):
     try:
         from memory_system import clear_episodic, clear_episodic_selective
         if scope in ("recent", "last_hour"):
-            removed = clear_episodic_selective(older_than_hours=1)
+            removed = clear_episodic_selective(newer_than_hours=1)
             msg = f"Cleared {removed} recent memories."
         elif scope in ("old", "older_than_day"):
             removed = clear_episodic_selective(older_than_hours=24)
@@ -756,16 +785,17 @@ def handle_view_memory(app, response, ctx):
 
 @register("request_screen_read")
 def handle_request_screen_read(app, response, ctx):
-    if not app._screen:
+    if ctx.segments:
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    if not app._screen:
         return True
     screen_text = app._screen.capture_text()
     app._last_screen_text = screen_text
 
     def _requery():
-        follow = app._ai_query("", screen_context=screen_text, user_message=ctx.user_message or "")
+        follow = app._ai_query(ctx.user_message or "", screen_context=screen_text)
         if follow:
-            dispatch(app, follow, ctx.user_message)
+            app._dispatch_response(follow, ctx.user_message)
 
     threading.Thread(target=_requery, daemon=True).start()
     return True
@@ -857,5 +887,7 @@ def _target_window_op(app, response, ctx, move: bool):
             else:
                 subprocess.run(["wmctrl", "-r", target_app, "-e", f"0,{tx},{ty},{tw},{th}"], timeout=3)
             _finish_target_op(app, ctx, True, "wmctrl sent")
+            return
+        _finish_target_op(app, ctx, False, "Not supported on this platform")
 
     threading.Thread(target=_do, daemon=True).start()

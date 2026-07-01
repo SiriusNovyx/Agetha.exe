@@ -11,12 +11,19 @@ def cmd_platform() -> None:
     print(platform.machine())
 
 
+_MEDIC_DIR = Path(__file__).resolve().parent
+
+
 def cmd_env_status() -> None:
-    path = Path(".env")
+    path = _MEDIC_DIR / ".env"
     if not path.is_file():
         print("EMPTY")
         return
-    text = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"EMPTY:{exc}")
+        return
     keys = [
         m.group(1).strip()
         for m in re.finditer(r"^GROQ_API_KEY(?:_\d+)?\s*=\s*(.+)$", text, re.M)
@@ -30,7 +37,7 @@ def cmd_env_status() -> None:
 
 
 def cmd_config_status() -> None:
-    path = Path("config.txt")
+    path = _MEDIC_DIR / "config.txt"
     if not path.is_file():
         print("MISSING")
         return
@@ -66,7 +73,7 @@ def cmd_voice_deps() -> None:
         print(f"VOICE_MISSING:{msg}")
         return
     print("VOICE_OK")
-    path = Path("config.txt")
+    path = _MEDIC_DIR / "config.txt"
     use_local = False
     if path.is_file():
         m = re.search(r"USE_LOCAL_STT\s*=\s*(\S+)", path.read_text(encoding="utf-8", errors="replace"))

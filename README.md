@@ -2,7 +2,7 @@
 
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
-**Version:** Overhaul v3.5.0 · **Medic_Checker:** v3.5 · **Original author:** @tomiszivacs
+**Version:** Overhaul v3.5.5 · **Medic_Checker:** v3.5 · **Original author:** @tomiszivacs
 
 ---
 
@@ -322,7 +322,7 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `conf
 | `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
 | `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
 | `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
-| `APP_VERSION` | `3.5.0` | Shown in window title |
+| `APP_VERSION` | `3.5.5` | Shown in window title |
 | `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
 | `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
 | `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |

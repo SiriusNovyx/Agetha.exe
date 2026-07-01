@@ -292,7 +292,7 @@ def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
     Returns {left, top, width, height, title, hwnd} in physical pixels, or None.
     skip_hwnd: pass Agetha's own HWND to avoid capturing herself.
     """
-    if not IS_WINDOWS or not PIL_OK:
+    if not IS_WINDOWS:
         return None
     try:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -341,7 +341,7 @@ def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | No
     """Return mss-compatible capture dict + metadata for the focused window on Linux.
     Uses xdotool, xprop, or wmctrl.
     """
-    if not IS_LINUX or not PIL_OK:
+    if not IS_LINUX:
         return None
 
     # 1. Try xdotool
@@ -705,18 +705,6 @@ class ScreenReader:
                 return [("spectacle", _grab_spectacle), ("grim", _grab_grim),
                         ("gnome-screenshot", _grab_gnome_screenshot), ("pyautogui", _grab_pyautogui)]
             return head + [("scrot", _grab_scrot), ("pyautogui", _grab_pyautogui)]
-
-    def _choose_backend(self) -> tuple:
-        if not _has_display():
-            return ("none", None)
-        for name, fn in self._ordered_backends():
-            try:
-                img = fn()
-                if img is not None:
-                    return (name, fn)
-            except Exception:
-                continue
-        return ("none", None)
 
     # ── 1. Own-window HWND cache ──────────────────────────────────────────────
 

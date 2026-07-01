@@ -45,8 +45,8 @@ def native_error_popup(title: str, message: str) -> None:
     if IS_WINDOWS:
         try:
             import ctypes
-            # 0x10 = MB_ICONERROR, 0x1000 = MB_TOPMOST
-            ctypes.windll.user32.MessageBoxW(0, message, title, 0x10 | 0x1000)
+            # 0x10 = MB_ICONERROR, 0x00040000 = MB_TOPMOST
+            ctypes.windll.user32.MessageBoxW(0, message, title, 0x10 | 0x00040000)
             return
         except Exception:
             pass
@@ -80,6 +80,8 @@ def load_env_file(env_path: Path = None) -> dict:
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
                 if value:  # only store non-empty values
                     env_vars[key] = value
     except Exception as e:
@@ -107,3 +109,13 @@ WINDOW_W = 340
 WINDOW_H = 560
 GIF_W = 340
 GIF_H = 300
+
+
+def refresh_config_constants() -> None:
+    """Re-read config.txt and update module-level timing constants."""
+    global TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS
+    cfg = get_settings(reload=True)
+    TOUCH_COOLDOWN_SEC = cfg.touch_cooldown_sec
+    WAKE_DELAY_MS = cfg.wake_delay_ms
+    LOAF_TIMER_MS = cfg.loaf_timer_ms
+    SCREEN_POLL_INTERVAL_MS = cfg.screen_poll_interval_ms

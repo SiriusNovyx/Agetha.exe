@@ -50,18 +50,18 @@ from screen_reader import ScreenReader
 from command_guard import CommandGuard
 from voice_input import (
     VoiceInput, MicPickerDialog, list_microphones,
-    load_mic_settings, save_mic_settings,
+    load_mic_settings, save_mic_settings, coerce_device_index,
 )
 from utils import (
     native_error_popup, logger, BASE_DIR, WINDOW_W, WINDOW_H,
     TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS,
+    refresh_config_constants,
 )
 from app_config import get_settings
 from window_control import ease_out_cubic
 
 _SETTINGS = get_settings()
 
-BASE_DIR = BASE_DIR
 ASSETS      = BASE_DIR / "assets"
 FONT_PATH   = ASSETS / "barrio.ttf"
 
@@ -582,6 +582,8 @@ class SubtitleRenderer:
         self._last_layout = None
 
     def clear(self):
+        self._draw_pending = False
+        self._pending_text = ""
         self._canvas.delete("all")
         self._reset_items()
 
@@ -1007,6 +1009,9 @@ class CompanionApp:
         self._guard = CommandGuard(self.root)
         self._cancel_event = threading.Event()
         self._ai_busy = False
+        self._ai_tick_lock = threading.Lock()
+        self._pending_user_message: str | None = None
+        self._speech_active = False
         self._state_lock = threading.Lock()
         self._voice: VoiceInput | None = None
         self._mic_active = False
@@ -1146,8 +1151,7 @@ class CompanionApp:
                                      bg="#a0a0a0", bd=2, relief="sunken",
                                      highlightthickness=0)
         self._sub_canvas.pack(fill="x", padx=4, pady=(4, 0))
-        self._subtitle = SubtitleRenderer(self._sub_canvas, font_size=17,
-                                          bleep_player=self._bleep)
+        self._subtitle = None
 
         # ── Input row — Win95 style ───────────────────────────────────────────
         input_frame = tk.Frame(self._outer, bg=W95_BG)
@@ -1253,17 +1257,32 @@ class CompanionApp:
             self.root.after(10000, _tick)
         self.root.after(10000, _tick)
 
+    def _reset_mic_button(self) -> None:
+        self._mic_active = False
+        self._mic_btn_var.set("🎤")
+        self._mic_btn.config(bg=W95_BTN_BG, fg=W95_TEXT, activebackground=W95_BTN_BG)
+
     def _toggle_mic(self) -> None:
         if self._voice is None:
             settings = load_mic_settings()
-            device_index = settings.get("mic_device_index")
+            device_index = coerce_device_index(settings.get("mic_device_index"))
+            mics = list_microphones()
+            if device_index is not None:
+                valid_indices = {i for i, _ in mics}
+                if device_index not in valid_indices:
+                    logger.warning(
+                        f"[Voice] Saved mic index {device_index} is no longer available; re-picking…"
+                    )
+                    device_index = None
+                    settings.pop("mic_device_index", None)
+                    settings.pop("mic_device_name", None)
+                    save_mic_settings(settings)
             if device_index is None:
-                mics = list_microphones()
                 if not mics:
                     native_error_popup(
                         "Agetha — Microphone",
                         "No microphone devices found.\n"
-                        "Connect a mic and ensure pyaudio is installed.\n"
+                        "Connect a mic and ensure PyAudio or sounddevice is installed.\n"
                         "Run Medic_Checker with ENABLE_VOICE=yes.",
                     )
                     return
@@ -1282,6 +1301,7 @@ class CompanionApp:
                 on_text_callback=self._on_voice_text,
                 device_index=device_index,
                 use_local_stt=_SETTINGS.use_local_stt,
+                on_fatal_error=lambda: self.root.after(0, self._reset_mic_button),
             )
             if not self._voice.available:
                 native_error_popup(
@@ -1509,7 +1529,7 @@ class CompanionApp:
         A 10-second cooldown prevents spamming."""
         now = time.time()
         self._last_direct_interaction_time = now  # Phase 2: stamp interaction clock
-        if now - self._last_touch_time < 10.0:
+        if now - self._last_touch_time < TOUCH_COOLDOWN_SEC:
             return   # still in cooldown, silently ignore
         self._last_touch_time = now
         # Don't interrupt an ongoing AI response or block the input box permanently
@@ -1529,6 +1549,12 @@ class CompanionApp:
             return
         if self._input_box["state"] == "disabled":
             return
+        if self._poll_job:
+            try:
+                self.root.after_cancel(self._poll_job)
+            except Exception:
+                pass
+            self._poll_job = None
         self._input_var.set("")
         self._input_box.config(state="disabled")
         if hasattr(self, "_placeholder_lbl"):
@@ -1702,12 +1728,12 @@ class CompanionApp:
                     self._bleep = bleep
                     self._screen = screen
                     self._ai = ai
-                    # Attach bleep to subtitle renderer
-                    try:
-                        if hasattr(self, "_subtitle") and self._subtitle:
-                            self._subtitle._bleep = self._bleep
-                    except Exception:
-                        pass
+                    if self._subtitle is None and hasattr(self, "_sub_canvas"):
+                        self._subtitle = SubtitleRenderer(
+                            self._sub_canvas, font_size=17, bleep_player=self._bleep,
+                        )
+                    elif hasattr(self, "_subtitle") and self._subtitle:
+                        self._subtitle._bleep = self._bleep
                     # Load GIFs and start wake sequence — simple, flat loader
                     try:
                         self.root.after(0, self._load_gifs_simple)
@@ -1791,6 +1817,9 @@ class CompanionApp:
             self._talking_rotate_job = None
 
     def _set_state(self, state: str, mood: str = "neutral"):
+        if threading.current_thread() is not threading.main_thread():
+            self.root.after(0, lambda s=state, m=mood: self._set_state(s, m))
+            return
         with self._state_lock:
             self._apply_state(state, mood)
 
@@ -1858,7 +1887,7 @@ class CompanionApp:
                         self._play_gif(random.choice(available))
             # Schedule loaf.gif after 15 minutes of idle
             try:
-                self._loaf_job = self.root.after(15 * 60 * 1000, self._enter_loaf)
+                self._loaf_job = self.root.after(LOAF_TIMER_MS, self._enter_loaf)
             except Exception:
                 self._loaf_job = None
         elif state == self.STATE_TALKING:
@@ -1926,13 +1955,24 @@ class CompanionApp:
     def _ai_tick(self, user_message: str | None = None):
         is_user = user_message is not None
 
+        with self._ai_tick_lock:
+            if self._ai_busy or self._speech_active:
+                if is_user:
+                    self._cancel_event.set()
+                    self._pending_user_message = user_message
+                else:
+                    self._reschedule_screen_poll()
+                return
+            self._ai_busy = True
+
         if not self._ai:
+            self._ai_busy = False
             self._re_enable_input()
             self._reschedule_screen_poll()
+            self._drain_pending_user_message()
             return
 
         self._cancel_event.clear()
-        self._ai_busy = True
 
         if is_user:
             self.root.after(0, lambda: self._input_box.config(state="disabled"))
@@ -1989,7 +2029,7 @@ class CompanionApp:
 
         def _on_token(raw_so_far: str):
             if not self._cancel_event.is_set():
-                self._subtitle.show_thinking(raw_so_far)
+                self.root.after(0, lambda r=raw_so_far: self._subtitle.show_thinking(r))
 
         try:
             if _SETTINGS.enable_streaming:
@@ -2014,11 +2054,13 @@ class CompanionApp:
             self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
             self._ai_busy = False
             self._reschedule_screen_poll()
+            self._drain_pending_user_message()
             return
 
         if self._cancel_event.is_set():
             self._ai_busy = False
             self.root.after(0, self._re_enable_input)
+            self._drain_pending_user_message()
             return
 
         print("\n" + "-" * 52)
@@ -2029,8 +2071,23 @@ class CompanionApp:
 
         self.root.after(0, self._re_enable_input)
         self.root.after(0, self._update_token_status)
-        self._ai_busy = False
-        self._dispatch_response(response, user_message)
+        try:
+            self._dispatch_response(response, user_message)
+        finally:
+            self._ai_busy = False
+            self._drain_pending_user_message()
+
+    def _drain_pending_user_message(self) -> None:
+        pending: str | None
+        with self._ai_tick_lock:
+            pending = self._pending_user_message
+            self._pending_user_message = None
+        if pending is not None:
+            threading.Thread(
+                target=self._ai_tick,
+                kwargs={"user_message": pending},
+                daemon=True,
+            ).start()
 
     # ── Emotion Sound Player ──────────────────────────────────────────────────
     def _play_emotion_sound(self, emotion: str) -> None:
@@ -2104,6 +2161,7 @@ class CompanionApp:
 
     def _speak_and_continue(self, segments, mood, shutdown_requested: bool = False):
         if segments:
+            self._speech_active = True
             self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
             self.root.after(0, lambda: self._subtitle.speak(
                 segments,
@@ -2185,11 +2243,15 @@ class CompanionApp:
     def _ai_query(self, user_message: str, screen_context=None, doc_content: str = ""):
         if self._cancel_event.is_set() or not self._ai:
             return None
+        with self._ai_tick_lock:
+            if self._ai_busy or self._speech_active:
+                return None
+            self._ai_busy = True
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
         def _on_token(raw):
             if not self._cancel_event.is_set():
-                self._subtitle.show_thinking(raw)
+                self.root.after(0, lambda r=raw: self._subtitle.show_thinking(r))
 
         try:
             if _SETTINGS.enable_streaming:
@@ -2207,6 +2269,9 @@ class CompanionApp:
         except Exception as exc:
             logger.error(f"_ai_query failed: {exc}")
             return None
+        finally:
+            self._ai_busy = False
+            self._drain_pending_user_message()
 
     def _try_short_mood_speak(self, command: str, ctx) -> bool:
         try:
@@ -2226,6 +2291,7 @@ class CompanionApp:
             if not static_name or static_name not in self._gif_cache:
                 return False
             self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
+            self._speech_active = True
             self.root.after(12, lambda: self._play_gif(static_name))
             self.root.after(0, lambda: self._subtitle.speak(
                 segments,
@@ -2236,14 +2302,11 @@ class CompanionApp:
             return False
 
     def _dispatch_response(self, response: dict, user_message: str | None = None):
-        try:
-            self.root.after(0, lambda: self._subtitle.clear())
-        except Exception:
-            pass
         from command_handlers import dispatch
         dispatch(self, response, user_message)
 
     def _on_speech_done(self, shutdown: bool = False):
+        self._speech_active = False
         # _persistent_mood already set — _set_state(STATE_IDLE) picks it up
         self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
         if shutdown:
@@ -2326,6 +2389,7 @@ def _early_config_check():
 
     ensure_config_file(CONFIG_PATH, write_if_missing=True)
     get_settings(reload=True)
+    refresh_config_constants()
     load_info = get_last_config_load()
     if load_info and load_info.warnings:
         for w in load_info.warnings:

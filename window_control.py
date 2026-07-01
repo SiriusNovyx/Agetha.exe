@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import subprocess
 import time
 from ctypes import wintypes
@@ -85,7 +86,20 @@ def _animation_settings() -> tuple[bool, int]:
         return True, 280
 
 
+_PROCESS_NAME_UNSAFE = re.compile(r"[.*+?\[\]()\\|&;`$<>]")
+
+
+def _safe_process_name(target: str) -> str | None:
+    """Validate and normalize a process name for safe pkill -x usage."""
+    name = os.path.basename(resolve_target_name(target).strip())
+    if not name or _PROCESS_NAME_UNSAFE.search(name):
+        return None
+    return name
+
+
 def _window_title(hwnd: int) -> str:
+    if not IS_WINDOWS:
+        return ""
     length = _user32.GetWindowTextLengthW(hwnd)
     if length <= 0:
         return ""
@@ -95,6 +109,8 @@ def _window_title(hwnd: int) -> str:
 
 
 def _window_pid(hwnd: int) -> int | None:
+    if not IS_WINDOWS:
+        return None
     pid = wintypes.DWORD()
     _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     return int(pid.value) if pid.value else None
@@ -157,7 +173,8 @@ def find_windows(partial_name: str, *, exclude_hwnd: int | None = None) -> list[
         return True
 
     try:
-        _user32.EnumWindows(_WNDENUMPROC(_enum_cb), 0)
+        cb = _WNDENUMPROC(_enum_cb)
+        _user32.EnumWindows(cb, 0)
     except Exception as exc:
         logger.error(f"EnumWindows failed: {exc}")
     return matches
@@ -386,9 +403,14 @@ def kill_process_by_name(target: str) -> tuple[bool, str]:
             return True, f"killed {name}"
         detail = (result.stderr or result.stdout or "").strip()
         return False, detail or f"taskkill failed for {name}"
-    result = subprocess.run(["pkill", "-f", target], capture_output=True, text=True, check=False)
+    safe_name = _safe_process_name(target)
+    if not safe_name:
+        return False, "Invalid process name."
+    result = subprocess.run(
+        ["pkill", "-x", safe_name], capture_output=True, text=True, check=False,
+    )
     if result.returncode == 0:
-        return True, f"killed {target}"
+        return True, f"killed {safe_name}"
     return False, (result.stderr or result.stdout or "").strip() or "pkill failed"
 
 
@@ -429,7 +451,8 @@ def resolve_target_hwnd(
                             return False
                     return True
 
-                _user32.EnumWindows(_WNDENUMPROC(_enum_pid), 0)
+                cb_pid = _WNDENUMPROC(_enum_pid)
+                _user32.EnumWindows(cb_pid, 0)
                 if hwnd:
                     return hwnd, _window_title(hwnd)
             except (psutil.Error, OSError):

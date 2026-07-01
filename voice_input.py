@@ -59,13 +59,61 @@ def save_mic_settings(data: dict) -> None:
         logger.warning(f"Could not save mic settings: {exc}")
 
 
-def list_microphones() -> list[tuple[int, str]]:
+def _has_sounddevice() -> bool:
     try:
-        import speech_recognition as sr
-        return [(i, name) for i, name in enumerate(sr.Microphone.list_microphone_names())]
-    except Exception as exc:
-        logger.warning(f"Could not list microphones: {exc}")
+        import sounddevice  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _has_pyaudio() -> bool:
+    try:
+        import pyaudio  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _list_input_devices() -> list[tuple[int, str]]:
+    """Enumerate input devices via sounddevice, falling back to SpeechRecognition."""
+    devices: list[tuple[int, str]] = []
+    if _has_sounddevice():
+        try:
+            import sounddevice as sd
+            for i, info in enumerate(sd.query_devices()):
+                if info.get("max_input_channels", 0) <= 0:
+                    continue
+                name = (info.get("name") or f"Device {i}").strip()
+                lower = name.lower()
+                if "loopback" in lower or "stereo mix" in lower:
+                    continue
+                devices.append((i, name))
+        except Exception as exc:
+            logger.warning(f"sounddevice device query failed: {exc}")
+    if not devices:
+        try:
+            import speech_recognition as sr
+            devices = [
+                (i, name or f"Device {i}")
+                for i, name in enumerate(sr.Microphone.list_microphone_names())
+            ]
+        except Exception as exc:
+            logger.warning(f"Could not list microphones: {exc}")
+    return devices
+
+
+def list_microphones() -> list[tuple[int, str]]:
+    """Return microphones that can actually be opened (probed)."""
+    all_devices = _list_input_devices()
+    if not all_devices:
         return []
+    working: list[tuple[int, str]] = []
+    for idx, name in all_devices:
+        ok, _, _ = probe_microphone(idx)
+        if ok:
+            working.append((idx, name))
+    return working or all_devices
 
 
 def check_voice_dependencies() -> tuple[bool, str]:
@@ -74,11 +122,9 @@ def check_voice_dependencies() -> tuple[bool, str]:
         import speech_recognition  # noqa: F401
     except ImportError:
         return False, "SpeechRecognition not installed"
-    try:
-        import pyaudio  # noqa: F401
-    except ImportError:
-        return False, "PyAudio not installed"
-    return True, "ok"
+    if _has_pyaudio() or _has_sounddevice():
+        return True, "ok"
+    return False, "PyAudio or sounddevice not installed"
 
 
 def check_local_stt_dependencies() -> tuple[bool, str]:
@@ -88,6 +134,194 @@ def check_local_stt_dependencies() -> tuple[bool, str]:
     except ImportError as exc:
         return False, str(exc)
     return True, "ok"
+
+
+def coerce_device_index(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_mic_open_error(pyaudio_err: Exception, sd_err: Exception) -> str:
+    parts = [f"PyAudio: {pyaudio_err}", f"sounddevice: {sd_err}"]
+    err_text = " ".join(parts).lower()
+    hint = ""
+    if "-9999" in err_text or "unanticipated host" in err_text:
+        hint = (
+            "\n\nWindows may be blocking microphone access.\n"
+            "Go to Settings → Privacy & security → Microphone and enable:\n"
+            "  • Microphone access\n"
+            "  • Let desktop apps access your microphone\n"
+            "Then restart Agetha."
+        )
+    return "Could not open any microphone.\n" + "\n".join(parts) + hint
+
+
+class _SounddeviceStream:
+    """Frame reader backed by a sounddevice InputStream."""
+
+    def __init__(self, sd_stream) -> None:
+        self._sd = sd_stream
+
+    def read(self, num_frames: int) -> bytes:
+        data, _ = self._sd.read(num_frames)
+        return data.tobytes()
+
+    def close(self) -> None:
+        pass
+
+
+class _SounddeviceMic:
+    """AudioSource-compatible microphone using sounddevice (PyAudio fallback)."""
+
+    def __init__(self, device_index: int | None = None, chunk_size: int = 1024) -> None:
+        import sounddevice as sd
+
+        if device_index is None:
+            info = sd.query_devices(kind="input")
+            self.device_index = int(info["index"])
+        else:
+            info = sd.query_devices(device_index)
+            self.device_index = device_index
+        self.SAMPLE_RATE = int(info["default_samplerate"])
+        self.SAMPLE_WIDTH = 2
+        self.CHUNK = chunk_size
+        self.stream: _SounddeviceStream | None = None
+        self._sd_stream = None
+
+    def __enter__(self):
+        import sounddevice as sd
+
+        self._sd_stream = sd.InputStream(
+            device=self.device_index,
+            channels=1,
+            samplerate=self.SAMPLE_RATE,
+            dtype="int16",
+            blocksize=self.CHUNK,
+        )
+        self._sd_stream.start()
+        self.stream = _SounddeviceStream(self._sd_stream)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self._sd_stream is not None:
+            try:
+                self._sd_stream.stop()
+            except Exception:
+                pass
+            try:
+                self._sd_stream.close()
+            except Exception:
+                pass
+        self._sd_stream = None
+        self.stream = None
+
+
+def probe_microphone(device_index: int | None = None) -> tuple[bool, str | None, str | None]:
+    """Return (ok, backend_name, error_message)."""
+    pyaudio_err: str | None = None
+    sd_err: str | None = None
+
+    if _has_pyaudio():
+        try:
+            import speech_recognition as sr
+            mic = _open_pyaudio_mic(sr, device_index)
+            _close_pyaudio_mic(mic)
+            return True, "pyaudio", None
+        except OSError as exc:
+            pyaudio_err = str(exc)
+
+    if _has_sounddevice():
+        try:
+            mic = _SounddeviceMic(device_index)
+            with mic:
+                if mic.stream is not None:
+                    mic.stream.read(mic.CHUNK)
+            return True, "sounddevice", None
+        except Exception as exc:
+            sd_err = str(exc)
+
+    if pyaudio_err and sd_err:
+        return False, None, f"PyAudio: {pyaudio_err}; sounddevice: {sd_err}"
+    if pyaudio_err:
+        return False, None, pyaudio_err
+    if sd_err:
+        return False, None, sd_err
+    return False, None, "No audio backend available (install PyAudio or sounddevice)"
+
+
+def _open_pyaudio_mic(sr, device_index: int | None):
+    kwargs: dict = {}
+    if device_index is not None:
+        kwargs["device_index"] = device_index
+    mic = sr.Microphone(**kwargs)
+    mic.__enter__()
+    if mic.stream is None:
+        _close_pyaudio_mic(mic)
+        label = f"device_index={device_index}" if device_index is not None else "default device"
+        raise OSError(f"PyAudio could not open microphone ({label})")
+    return mic
+
+
+def _close_pyaudio_mic(mic) -> None:
+    if mic is None:
+        return
+    try:
+        if mic.stream is not None:
+            mic.stream.close()
+    except Exception:
+        pass
+    finally:
+        mic.stream = None
+        if getattr(mic, "audio", None) is not None:
+            try:
+                mic.audio.terminate()
+            except Exception:
+                pass
+            mic.audio = None
+
+
+def _open_microphone(sr, device_index: int | None):
+    """Open microphone; PyAudio first, then sounddevice fallback."""
+    pyaudio_err: OSError | None = None
+    if _has_pyaudio():
+        try:
+            return _open_pyaudio_mic(sr, device_index)
+        except OSError as exc:
+            pyaudio_err = exc
+            logger.warning(f"[Voice] PyAudio failed ({exc}); trying sounddevice…")
+
+    if _has_sounddevice():
+        try:
+            mic = _SounddeviceMic(device_index)
+            mic.__enter__()
+            if mic.stream is None:
+                mic.__exit__(None, None, None)
+                raise OSError("sounddevice stream not started")
+            logger.info(
+                f"[Voice] Using sounddevice backend (device_index={mic.device_index})"
+            )
+            return mic
+        except Exception as sd_exc:
+            if pyaudio_err is not None:
+                raise OSError(_format_mic_open_error(pyaudio_err, sd_exc)) from sd_exc
+            raise OSError(f"sounddevice could not open microphone: {sd_exc}") from sd_exc
+
+    if pyaudio_err is not None:
+        raise pyaudio_err
+    raise OSError("No audio backend available (install PyAudio or sounddevice)")
+
+
+def _close_microphone(mic) -> None:
+    if mic is None:
+        return
+    if isinstance(mic, _SounddeviceMic):
+        mic.__exit__(None, None, None)
+        return
+    _close_pyaudio_mic(mic)
 
 
 def _get_whisper_model():
@@ -223,9 +457,11 @@ class VoiceInput:
         device_index: int | None = None,
         *,
         use_local_stt: bool | None = None,
+        on_fatal_error: Callable[[], None] | None = None,
     ):
         self._cb = on_text_callback
-        self._device_index = device_index
+        self._device_index = coerce_device_index(device_index)
+        self._on_fatal_error = on_fatal_error
         self._use_local_stt = (
             get_settings().use_local_stt if use_local_stt is None else use_local_stt
         )
@@ -241,7 +477,7 @@ class VoiceInput:
         except ImportError:
             self._error = (
                 "SpeechRecognition not installed.\n"
-                "Run Medic_Checker or: pip install SpeechRecognition pyaudio"
+                "Run Medic_Checker or: pip install SpeechRecognition pyaudio sounddevice"
             )
 
     @property
@@ -272,15 +508,52 @@ class VoiceInput:
         recognizer.energy_threshold = 300
         recognizer.dynamic_energy_threshold = True
 
-        mic_kwargs: dict = {}
+        candidates: list[int | None] = []
         if self._device_index is not None:
-            mic_kwargs["device_index"] = self._device_index
+            candidates.append(self._device_index)
+        candidates.append(None)
 
-        with sr.Microphone(**mic_kwargs) as source:
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+        mic = None
+        opened_index: int | None = None
+        last_err: Exception | None = None
+        for idx in candidates:
+            if self._stop.is_set():
+                return
+            try:
+                mic = _open_microphone(sr, idx)
+                opened_index = idx
+                break
+            except OSError as exc:
+                last_err = exc
+                if idx is not None:
+                    logger.warning(
+                        f"[Voice] Microphone [{idx}] failed ({exc}); trying default device…"
+                    )
+                continue
+
+        if mic is None:
+            msg = str(last_err) if last_err else "Could not open any microphone."
+            logger.error(f"[Voice] {msg}")
+            self._active = False
+            native_error_popup("Agetha — Microphone", msg)
+            if self._on_fatal_error:
+                try:
+                    self._on_fatal_error()
+                except Exception as exc:
+                    logger.warning(f"[Voice] on_fatal_error callback failed: {exc}")
+            return
+
+        if (
+            self._device_index is not None
+            and opened_index is None
+        ):
+            logger.info("[Voice] Using default microphone (saved device could not be opened)")
+
+        try:
+            recognizer.adjust_for_ambient_noise(mic, duration=0.5)
             while not self._stop.is_set():
                 try:
-                    audio = recognizer.listen(source, timeout=None, phrase_time_limit=30)
+                    audio = recognizer.listen(mic, timeout=5, phrase_time_limit=30)
                     if self._stop.is_set():
                         break
                     threading.Thread(
@@ -288,9 +561,14 @@ class VoiceInput:
                         args=(recognizer, audio),
                         daemon=True,
                     ).start()
-                except Exception:
+                except sr.WaitTimeoutError:
+                    continue
+                except Exception as exc:
                     if not self._stop.is_set():
+                        logger.warning(f"[Voice] listen loop error: {exc}")
                         time.sleep(0.5)
+        finally:
+            _close_microphone(mic)
 
     def _recognise(self, recognizer, audio) -> None:
         try:
@@ -311,5 +589,5 @@ class VoiceInput:
             if text:
                 logger.info(f"[Voice] Recognised: {text}")
                 self._cb(text)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"[Voice] recognition failed: {exc}")

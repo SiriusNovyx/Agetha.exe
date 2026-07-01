@@ -374,7 +374,7 @@ def _write_atomic(filepath: Path, content: str) -> None:
     fd, tmp_path = tempfile.mkstemp(
         dir=parent,
         prefix=".agetha_tmp_",
-        suffix=".json",
+        suffix=filepath.suffix or ".json",
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -540,6 +540,7 @@ def clear_episodic_selective(
     *,
     keep_last: int = 0,
     older_than_hours: int | None = None,
+    newer_than_hours: int | None = None,
 ) -> int:
     """Remove episodic entries by age or keep only the newest N. Returns count removed."""
     with _lock:
@@ -550,6 +551,19 @@ def clear_episodic_selective(
             original = len(entries)
             if keep_last > 0:
                 entries = entries[-keep_last:]
+            elif newer_than_hours is not None and newer_than_hours > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=newer_than_hours)
+                kept = []
+                for entry in entries:
+                    try:
+                        ts = datetime.fromisoformat(entry.get("ts", ""))
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        if ts < cutoff:
+                            kept.append(entry)
+                    except (ValueError, TypeError):
+                        kept.append(entry)
+                entries = kept
             elif older_than_hours is not None and older_than_hours > 0:
                 cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
                 kept = []
@@ -608,24 +622,23 @@ def get_memory_stats() -> dict:
         }
     """
     soul_stat: dict = {"exists": False}
-    try:
-        if SOUL_FILE.exists():
-            st = SOUL_FILE.stat()
-            soul_stat = {
-                "exists": True,
-                "size_bytes": st.st_size,
-                "cached": (
-                    _soul_cache is not None
-                    and _soul_cache[1] == st.st_mtime
-                ),
-                "last_modified": datetime.fromtimestamp(
-                    st.st_mtime, tz=timezone.utc
-                ).isoformat(),
-            }
-    except OSError:
-        pass
-
     with _lock:
+        try:
+            if SOUL_FILE.exists():
+                st = SOUL_FILE.stat()
+                soul_stat = {
+                    "exists": True,
+                    "size_bytes": st.st_size,
+                    "cached": (
+                        _soul_cache is not None
+                        and _soul_cache[1] == st.st_mtime
+                    ),
+                    "last_modified": datetime.fromtimestamp(
+                        st.st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                }
+        except OSError:
+            pass
         entries = _read_episodic_unsafe()
 
     episodic_stat: dict = {
@@ -655,7 +668,9 @@ def _format_timestamp(ts: str) -> str:
     """
     try:
         dt = datetime.fromisoformat(ts)
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     except (ValueError, TypeError):
         return (ts[:16] if ts else "unknown time")
 
