@@ -14,7 +14,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-from utils import IS_WINDOWS, IS_LINUX, IS_MACOS, logger
+from utils import IS_WINDOWS, IS_LINUX, IS_MACOS, BASE_DIR, logger
 
 
 def open_url(url: str) -> str:
@@ -77,9 +77,14 @@ def open_folder(path: str) -> str:
         if IS_WINDOWS:
             os.startfile(str(p if p.is_dir() else p.parent))
         elif IS_MACOS:
-            subprocess.Popen(["open", str(p if p.is_dir() else p.parent)])
+            proc = subprocess.Popen(["open", str(p if p.is_dir() else p.parent)])
+            proc.wait(timeout=30)
         else:
-            subprocess.Popen(["xdg-open", str(p if p.is_dir() else p.parent)])
+            proc = subprocess.Popen(
+                ["xdg-open", str(p if p.is_dir() else p.parent)],
+                start_new_session=True,
+            )
+            proc.wait(timeout=30)
         return f"[opened folder: {path}]"
     except Exception as exc:
         return f"[open_folder error: {exc}]"
@@ -117,7 +122,7 @@ def set_volume(level: int = 50, action: str = "set") -> str:
             if action == "unmute":
                 subprocess.run(
                     ["powershell", "-NoProfile", "-Command",
-                     "(New-Object -ComObject WScript.Shell).SendKeys([char]174)"],
+                     "(New-Object -ComObject WScript.Shell).SendKeys([char]173)"],
                     timeout=5,
                 )
                 return "[unmuted]"
@@ -178,12 +183,18 @@ def set_wallpaper(path: str) -> str:
 def search_files(pattern: str, directory: str, limit: int = 50) -> list[str]:
     if not pattern or not directory:
         return ["[missing pattern or directory]"]
-    base = Path(directory)
+    allowed_roots = [Path.home().resolve(), BASE_DIR.resolve()]
+    try:
+        base = Path(directory).resolve()
+    except OSError as exc:
+        return [f"[invalid directory: {exc}]"]
     if not base.is_dir():
         return [f"[not a directory: {directory}]"]
+    if not any(base == root or base.is_relative_to(root) for root in allowed_roots):
+        return ["[directory not permitted]"]
     try:
         matches = []
-        for p in base.rglob(pattern.replace("*", "**") if "**" not in pattern else pattern):
+        for p in base.rglob(pattern):
             if len(matches) >= limit:
                 break
             matches.append(str(p))
@@ -225,6 +236,39 @@ def lock_screen() -> str:
     return "[lock_screen not supported]"
 
 
+def _schedule_delayed_shutdown(delay: int, *, reboot: bool = False) -> None:
+    """Schedule shutdown/restart with second precision where possible."""
+    flag = "-r" if reboot else "-h"
+    if delay <= 0:
+        subprocess.run(["shutdown", flag, "now"], timeout=5)
+        return
+    if IS_LINUX:
+        if shutil.which("systemd-run"):
+            subprocess.run(
+                [
+                    "systemd-run", f"--on-active={delay}s", "--unit=agetha-shutdown",
+                    "shutdown", flag, "now",
+                ],
+                timeout=5,
+            )
+            return
+        if shutil.which("at"):
+            cmd = "reboot" if reboot else "shutdown -h now"
+            subprocess.run(
+                ["bash", "-c", f"echo '{cmd}' | at now + {delay} seconds"],
+                timeout=5,
+            )
+            return
+    if IS_MACOS and shutil.which("at"):
+        cmd = "sudo reboot" if reboot else "sudo shutdown -h now"
+        subprocess.run(
+            ["bash", "-c", f"echo '{cmd}' | at now + {delay} seconds"],
+            timeout=5,
+        )
+        return
+    subprocess.run(["shutdown", flag, f"+{max(1, (delay + 59) // 60)}"], timeout=5)
+
+
 def shutdown_system(delay: int = 60) -> str:
     delay = max(0, int(delay))
     try:
@@ -232,11 +276,14 @@ def shutdown_system(delay: int = 60) -> str:
             subprocess.run(["shutdown", "/s", "/t", str(delay)], timeout=5)
             return f"[shutdown in {delay}s]"
         if IS_LINUX:
-            subprocess.run(["shutdown", "-h", f"+{max(1, delay // 60)}"], timeout=5)
-            return f"[shutdown scheduled]"
+            _schedule_delayed_shutdown(delay, reboot=False)
+            return f"[shutdown in {delay}s]"
         if IS_MACOS:
-            subprocess.run(["sudo", "shutdown", "-h", f"+{max(1, delay // 60)}"], timeout=5)
-            return f"[shutdown scheduled]"
+            if delay <= 0:
+                subprocess.run(["sudo", "shutdown", "-h", "now"], timeout=5)
+            else:
+                _schedule_delayed_shutdown(delay, reboot=False)
+            return f"[shutdown in {delay}s]"
     except Exception as exc:
         return f"[shutdown error: {exc}]"
     return "[shutdown not supported]"
@@ -249,11 +296,14 @@ def restart_system(delay: int = 60) -> str:
             subprocess.run(["shutdown", "/r", "/t", str(delay)], timeout=5)
             return f"[restart in {delay}s]"
         if IS_LINUX:
-            subprocess.run(["shutdown", "-r", f"+{max(1, delay // 60)}"], timeout=5)
-            return f"[restart scheduled]"
+            _schedule_delayed_shutdown(delay, reboot=True)
+            return f"[restart in {delay}s]"
         if IS_MACOS:
-            subprocess.run(["sudo", "shutdown", "-r", f"+{max(1, delay // 60)}"], timeout=5)
-            return f"[restart scheduled]"
+            if delay <= 0:
+                subprocess.run(["sudo", "shutdown", "-r", "now"], timeout=5)
+            else:
+                _schedule_delayed_shutdown(delay, reboot=True)
+            return f"[restart in {delay}s]"
     except Exception as exc:
         return f"[restart error: {exc}]"
     return "[restart not supported]"
@@ -278,25 +328,33 @@ def show_notification(title: str, message: str) -> str:
         return "[no message]"
     try:
         if IS_WINDOWS:
-            import xml.sax.saxutils as sax
-            import tempfile
-            title_safe = sax.escape(title, {"'": "&apos;", '"': "&quot;"})
-            msg_safe = sax.escape(message, {"'": "&apos;", '"': "&quot;"})
-            ps = f"""try {{
-    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
-    $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
-    $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>{title_safe}</text><text>{msg_safe}</text></binding></visual></toast>')
-    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Agetha").Show($toast)
-}} catch {{ [System.Windows.Forms.MessageBox]::Show("{msg_safe}","{title_safe}") }}"""
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".ps1", delete=False, encoding="utf-8") as tf:
-                tf.write(ps)
-                tmp = tf.name
+            import base64
+            msg_ps = message.replace("'", "''").replace("`", "``")
+            title_ps = title.replace("'", "''").replace("`", "``")
+            # Unregistered toast AppUserModelIDs fail silently on Windows.
+            ps_script = f"""
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$t = '{title_ps}'
+$m = '{msg_ps}'
+try {{
+    $n = New-Object System.Windows.Forms.NotifyIcon
+    $n.Icon = [System.Drawing.SystemIcons]::Information
+    $n.BalloonTipTitle = $t
+    $n.BalloonTipText = $m
+    $n.Visible = $true
+    $n.ShowBalloonTip(8000)
+    Start-Sleep -Milliseconds 8500
+    $n.Dispose()
+}} catch {{
+    [System.Windows.Forms.MessageBox]::Show($m, $t, 'OK', 'Information') | Out-Null
+}}
+"""
+            encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
             subprocess.Popen(
-                ["powershell", "-WindowStyle", "Hidden", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", tmp],
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
                 shell=False,
             )
-            threading.Timer(8.0, lambda p=tmp: os.unlink(p) if os.path.exists(p) else None).start()
             return "[notification sent]"
         if IS_MACOS:
             safe_msg = message.replace('"', '\\"')
