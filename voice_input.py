@@ -349,8 +349,8 @@ class MicPickerDialog:
         self._mics = mics
 
         self._win = tk.Toplevel(parent)
-        self._win.overrideredirect(True)
-        self._win.attributes("-topmost", True)
+        from w95_window import apply_borderless_win95, show_borderless
+        apply_borderless_win95(self._win, parent, topmost=True)
         self._win.configure(bg=W95_BG)
         self._win.resizable(False, False)
         self._drag_x = self._drag_y = 0
@@ -419,6 +419,7 @@ class MicPickerDialog:
         x = max(0, px + (pw - ww) // 2)
         y = max(0, py + (ph - wh) // 2)
         self._win.geometry(f"+{x}+{y}")
+        show_borderless(self._win)
         self._win.bind("<Return>", lambda _: self._ok())
         self._win.bind("<Escape>", lambda _: self._cancel())
 

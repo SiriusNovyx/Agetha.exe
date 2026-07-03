@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v3.5.0)
+  Agetha startup health check and launcher (Overhaul Edition v3.5.5+)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
@@ -433,21 +433,24 @@ function Invoke-StandardChecks {
         Write-Ok 'tkextrafont optional package present.'
     }
 
-    # Optional: voice, local STT, drag-and-drop (driven by config.txt)
-    Write-Step 'Optional features (voice / drag-and-drop)...'
+    # Optional: voice, local STT, drag-and-drop, TTS (driven by config.txt)
+    Write-Step 'Optional features (voice / drag-and-drop / TTS)...'
     $enableVoice = (Get-ConfigValue -Key 'ENABLE_VOICE' -Default 'no') -match '^(?i)yes$'
     $useLocalStt = (Get-ConfigValue -Key 'USE_LOCAL_STT' -Default 'no') -match '^(?i)yes$'
     $enableDnd = (Get-ConfigValue -Key 'ENABLE_FILE_DRAG_DROP' -Default 'yes') -match '^(?i)yes$'
+    $voiceOutputMode = (Get-ConfigValue -Key 'VOICE_OUTPUT_MODE' -Default 'bleeps_only').ToLower()
+    $needsTts = $voiceOutputMode -in @('tts_only', 'both')
     $optionalPkgs = @()
     if ($enableVoice) {
         $optionalPkgs += 'SpeechRecognition', 'PyAudio'
         if ($useLocalStt) { $optionalPkgs += 'faster-whisper' }
     }
     if ($enableDnd) { $optionalPkgs += 'tkinterdnd2' }
+    if ($needsTts) { $optionalPkgs += 'pyttsx3' }
     # @() keeps a single package as a 1-element array (pipeline unwraps scalars; breaks .Count in StrictMode)
     $optionalPkgs = @($optionalPkgs | Select-Object -Unique)
     if ($optionalPkgs.Count -eq 0) {
-        Write-Info 'ENABLE_VOICE=no and/or ENABLE_FILE_DRAG_DROP=no - optional packages skipped.'
+        Write-Info 'ENABLE_VOICE=no, ENABLE_FILE_DRAG_DROP=no, VOICE_OUTPUT_MODE=bleeps_only - optional packages skipped.'
     } else {
         $optMissing = @()
         foreach ($pkg in $optionalPkgs) {
@@ -466,11 +469,25 @@ function Invoke-StandardChecks {
                 Write-Info 'Voice: ENABLE_VOICE=yes needs SpeechRecognition + PyAudio'
                 Write-Info 'Local STT: USE_LOCAL_STT=yes needs faster-whisper (~75 MB model on first run)'
                 Write-Info 'Drag-drop: ENABLE_FILE_DRAG_DROP=yes needs tkinterdnd2 (Windows)'
+                Write-Info 'TTS: VOICE_OUTPUT_MODE=tts_only|both needs pyttsx3'
             }
         } else {
             Write-Warn "Optional missing: $($optMissing -join ', ')"
             Write-Info 'Set AUTO_PIP_INSTALL=yes or: pip install -r requirements.txt'
         }
+    }
+    if ($needsTts) {
+        $ttsStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'tts'
+        if ($ttsStatus -eq 'TTS_OK') {
+            Write-Ok "TTS (pyttsx3) ready for VOICE_OUTPUT_MODE=$voiceOutputMode."
+        } elseif ($ttsStatus -eq 'TTS_MISSING') {
+            Write-Warn "VOICE_OUTPUT_MODE=$voiceOutputMode but pyttsx3 not installed - falls back to bleeps."
+            Write-Info 'Install: pip install "pyttsx3>=2.90,<3.0.0"'
+        } else {
+            Write-Info "VOICE_OUTPUT_MODE=$voiceOutputMode (TTS check: $ttsStatus)"
+        }
+    } else {
+        Write-Ok 'VOICE_OUTPUT_MODE=bleeps_only - TTS optional package skipped.'
     }
     if ($enableVoice) {
         $voiceLines = & $script:VenvPython medic_helper.py voice 2>&1
@@ -569,6 +586,33 @@ function Invoke-StandardChecks {
     } else {
         Write-Info 'memory\soul.md will be auto-generated on first run.'
     }
+    $phase1Files = @(
+        @{ Name = 'episodic_memory.json'; Label = 'episodic memory' }
+        @{ Name = 'longterm_memory.jsonl'; Label = 'long-term searchable memory' }
+        @{ Name = 'companion_stats.json'; Label = 'companion stats (Virus Registry)' }
+        @{ Name = 'notepad.txt'; Label = 'dashboard notepad' }
+    )
+    foreach ($pf in $phase1Files) {
+        $p = Join-Path $memoryDir $pf.Name
+        if (Test-Path -LiteralPath $p) {
+            Write-Ok "memory\$($pf.Name) present ($($pf.Label))."
+        } else {
+            Write-Info "memory\$($pf.Name) will be created on first use ($($pf.Label))."
+        }
+    }
+    $enableLtMem = (Get-ConfigValue -Key 'ENABLE_LONGTERM_MEMORY' -Default 'yes') -match '^(?i)yes$'
+    if ($enableLtMem) {
+        Write-Ok 'ENABLE_LONGTERM_MEMORY=yes - search_memory + JSONL dual-write active.'
+    } else {
+        Write-Info 'ENABLE_LONGTERM_MEMORY=no - long-term search disabled.'
+    }
+    Write-Info "VOICE_OUTPUT_MODE=$(Get-ConfigValue -Key 'VOICE_OUTPUT_MODE' -Default 'bleeps_only')"
+    $enableWebRag = (Get-ConfigValue -Key 'ENABLE_WEB_RAG' -Default 'no') -match '^(?i)yes$'
+    if ($enableWebRag) {
+        Write-Ok 'ENABLE_WEB_RAG=yes - search_web / fetch_webpage active (CAUTION confirmations).'
+    } else {
+        Write-Info 'ENABLE_WEB_RAG=no - web search/fetch disabled (default).'
+    }
     $conv = Join-Path $Script:Root 'conversation.txt'
     if (-not (Test-Path -LiteralPath $conv)) {
         New-Item -ItemType File -Path $conv -Force | Out-Null
@@ -610,7 +654,8 @@ function Invoke-StandardChecks {
     # [7/7] py_compile
     Write-Head '[7 / 7]  Python syntax (py_compile)'
     $modules = @(
-        'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'utils.py',
+        'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'memory_search.py',
+        'companion_stats.py', 'dashboard.py', 'tts_player.py', 'web_rag.py', 'glitch_overlay.py', 'virus_trivia.py', 'w95_window.py', 'utils.py',
         'command_guard.py', 'command_handlers.py', 'system_commands.py', 'medic_helper.py',
         'window_control.py', 'app_config.py', 'voice_input.py'
     )
@@ -627,7 +672,13 @@ function Invoke-StandardChecks {
         Wait-Key
         exit 1
     }
-    Write-Ok 'All 12 modules compile cleanly.'
+    $featStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'features'
+    if ($featStatus -eq 'FEATURE_OK') {
+        Write-Ok 'Phase 1-4 modules import cleanly (memory_search, companion_stats, dashboard, tts_player, web_rag, glitch_overlay, virus_trivia, w95_window).'
+    } elseif ($featStatus -match '^FEATURE_FAIL:') {
+        Write-Warn "Extension module import issue: $($featStatus.Substring(12))"
+    }
+    Write-Ok "All $($modules.Count) modules compile cleanly."
     Write-Host ''
 }
 
@@ -641,7 +692,8 @@ Write-Head '+============================================================+'
 Write-Host ''
 
 $coreFiles = @(
-    'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'utils.py',
+    'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'memory_search.py',
+    'companion_stats.py', 'dashboard.py', 'tts_player.py', 'web_rag.py', 'glitch_overlay.py', 'virus_trivia.py', 'w95_window.py', 'utils.py',
     'command_guard.py', 'command_handlers.py', 'system_commands.py',
     'medic_helper.py', 'window_control.py', 'app_config.py', 'voice_input.py', 'requirements.txt'
 )
@@ -652,7 +704,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (12 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (17 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut

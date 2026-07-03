@@ -91,12 +91,57 @@ def cmd_dnd_deps() -> None:
         print("DND_MISSING")
 
 
+def _read_config_text() -> str:
+    path = _MEDIC_DIR / "config.txt"
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _config_flag(key: str, default: str = "no") -> str:
+    text = _read_config_text()
+    m = re.search(rf"^{re.escape(key)}\s*=\s*(\S+)", text, re.M | re.I)
+    return m.group(1).strip().lower() if m else default.lower()
+
+
+def cmd_tts_deps() -> None:
+    """Print TTS_OK, TTS_SKIP (bleeps_only), or TTS_MISSING for Medic_Checker."""
+    mode = _config_flag("VOICE_OUTPUT_MODE", "bleeps_only")
+    if mode not in ("tts_only", "both"):
+        print("TTS_SKIP")
+        return
+    try:
+        import pyttsx3  # noqa: F401
+        print("TTS_OK")
+    except ImportError:
+        print("TTS_MISSING")
+
+
+def cmd_feature_modules() -> None:
+    """Verify Phase 1+2 extension modules import (no Tk mainloop)."""
+    failures: list[str] = []
+    for mod in ("memory_search", "companion_stats", "dashboard", "tts_player", "web_rag", "glitch_overlay", "virus_trivia", "w95_window"):
+        try:
+            __import__(mod)
+        except Exception as exc:
+            failures.append(f"{mod}:{exc}")
+    if failures:
+        print("FEATURE_FAIL:" + ";".join(failures))
+    else:
+        print("FEATURE_OK")
+
+
 _COMMANDS = {
     "platform": cmd_platform,
     "env": cmd_env_status,
     "config": cmd_config_status,
     "voice": cmd_voice_deps,
     "dnd": cmd_dnd_deps,
+    "tts": cmd_tts_deps,
+    "features": cmd_feature_modules,
 }
 
 

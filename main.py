@@ -59,6 +59,7 @@ from utils import (
 )
 from app_config import get_settings
 from window_control import ease_out_cubic
+from tts_player import VoiceOutputCoordinator
 
 _SETTINGS = get_settings()
 
@@ -537,12 +538,13 @@ class SubtitleRenderer:
     CHAR_DELAY = get_settings().subtitle_char_delay
     _font_cache: dict[int, tkfont.Font] = {}
 
-    def __init__(self, canvas: tk.Canvas, font_size: int = 17, bleep_player=None):
+    def __init__(self, canvas: tk.Canvas, font_size: int = 17, bleep_player=None, voice_out=None):
         self._canvas     = canvas
         self._font_size  = font_size
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._bleep = bleep_player
+        self._voice_out = voice_out
 
         self._canvas_w = WINDOW_W
         self._canvas_h = 130
@@ -648,14 +650,32 @@ class SubtitleRenderer:
                 if at_word_end:
                     self._schedule_draw(full_text)
                 time.sleep(self.CHAR_DELAY)
+            if chunk and not self._stop_event.is_set():
+                if self._voice_out and hasattr(self._voice_out, "speak_segment"):
+                    try:
+                        self._voice_out.speak_segment(chunk)
+                    except Exception:
+                        pass
             if pause > 0 and not self._stop_event.is_set():
-                if self._bleep:
+                if self._voice_out:
+                    try:
+                        self._voice_out.pause()
+                    except Exception:
+                        pass
+                elif self._bleep:
                     self._bleep.pause()
                 time.sleep(pause)
-                if self._bleep:
+                if self._voice_out:
+                    try:
+                        self._voice_out.resume()
+                    except Exception:
+                        pass
+                elif self._bleep:
                     self._bleep.resume()
         try:
-            if self._bleep:
+            if self._voice_out:
+                self._voice_out.stop_bleeps()
+            elif self._bleep:
                 self._bleep.stop()
         except Exception:
             pass
@@ -800,12 +820,10 @@ class AgethaPopup:
     """Windows 95-style dialog popup spawned by Agetha."""
 
     def __init__(self, parent: tk.Tk, messages: list, mood: str = "neutral"):
+        from w95_window import apply_borderless_win95, show_borderless
+
         self._win = tk.Toplevel(parent)
-        self._win.overrideredirect(True)   # we draw our own chrome
-        try:
-            self._win.attributes("-topmost", True)
-        except Exception:
-            pass
+        apply_borderless_win95(self._win, parent, topmost=True)
         self._win.configure(bg=W95_BG)
         self._win.resizable(False, False)
         self._drag_x = self._drag_y = 0
@@ -889,6 +907,7 @@ class AgethaPopup:
         y  = max(0, py - wh - 10)
         self._win.geometry(f"+{x}+{y}")
 
+        show_borderless(self._win)
         self._win.bind("<Return>", lambda _: self._win.destroy())
         self._win.bind("<Escape>", lambda _: self._win.destroy())
         try:
@@ -998,6 +1017,7 @@ class CompanionApp:
 
         # Defer heavy initialization to background thread so the window shows immediately
         self._bleep  = None
+        self._voice_out = None
         self._screen = None
         self._ai     = None
         self._last_screen_text: str = ""
@@ -1112,6 +1132,17 @@ class CompanionApp:
             command=self._minimize,
         )
         min_btn.pack(side="right", padx=(0, 1), pady=1)
+
+        # Dashboard button
+        dash_btn = tk.Button(
+            title_bar, text="📊",
+            bg=W95_BTN_BG, fg=W95_TEXT,
+            font=("MS Sans Serif", 7, "bold"),
+            relief="raised", bd=2, width=2,
+            activebackground=W95_BTN_BG, activeforeground=W95_TEXT,
+            command=self._open_dashboard,
+        )
+        dash_btn.pack(side="right", padx=(0, 1), pady=1)
 
         # Drag bindings on title bar and its non-button children
         for w in (title_bar, title_lbl):
@@ -1350,6 +1381,13 @@ class CompanionApp:
         self._dragging_file = False
         self._set_state(self.STATE_IDLE)
 
+    def _open_dashboard(self) -> None:
+        try:
+            from dashboard import open_dashboard
+            open_dashboard(self.root, get_settings())
+        except Exception as exc:
+            logger.warning(f"Dashboard open failed: {exc}")
+
     def _on_file_drop(self, event=None) -> None:
         self._dragging_file = False
         try:
@@ -1361,11 +1399,25 @@ class CompanionApp:
             file_path = ""
         logger.info(f"[DnD] File dropped: {filename} at {file_path}")
         self._last_dragged_file = file_path if file_path else filename
+        sampled = 0
+        try:
+            from companion_stats import update_stats
+            if file_path and Path(file_path).exists():
+                update_stats("file_drop", path=file_path)
+                try:
+                    from companion_stats import get_stats_summary
+                    sampled = int(get_stats_summary().get("last_feed_bytes", 0))
+                except Exception:
+                    pass
+            else:
+                update_stats("file_drop", file_size=0)
+        except Exception:
+            pass
         self._set_state(self.STATE_IDLE)
         if self._input_box["state"] == "disabled":
             return
         msg = (
-            f'[system] file_dragged: "{filename}" (path: {file_path})'
+            f'[system] file_dragged: "{filename}" (path: {file_path}; bytes_devoured: {sampled})'
             if file_path
             else f'[system] file_dragged: "{filename}"'
         )
@@ -1728,12 +1780,19 @@ class CompanionApp:
                     self._bleep = bleep
                     self._screen = screen
                     self._ai = ai
+                    try:
+                        self._voice_out = VoiceOutputCoordinator(self._bleep, get_settings())
+                    except Exception as exc:
+                        logger.warning(f"VoiceOutputCoordinator init failed: {exc}")
+                        self._voice_out = None
                     if self._subtitle is None and hasattr(self, "_sub_canvas"):
                         self._subtitle = SubtitleRenderer(
-                            self._sub_canvas, font_size=17, bleep_player=self._bleep,
+                            self._sub_canvas, font_size=17,
+                            bleep_player=self._bleep, voice_out=self._voice_out,
                         )
                     elif hasattr(self, "_subtitle") and self._subtitle:
                         self._subtitle._bleep = self._bleep
+                        self._subtitle._voice_out = self._voice_out
                     # Load GIFs and start wake sequence — simple, flat loader
                     try:
                         self.root.after(0, self._load_gifs_simple)
@@ -1907,8 +1966,7 @@ class CompanionApp:
                     self._play_gif(mood_gif)
             else:
                 self._start_talking_rotation()
-            if self._bleep:
-                self._bleep.start_talking(tone=mood)
+            # Speech bleeps/TTS are started from _speak_and_continue / _try_short_mood_speak
 
     def _enter_loaf(self):
         # Only enter loaf if still idle
@@ -1944,6 +2002,11 @@ class CompanionApp:
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
         self._poll_job = self.root.after(SCREEN_POLL_INTERVAL_MS, self._schedule_screen_poll)
+        try:
+            from companion_stats import update_stats
+            update_stats("tick")
+        except Exception:
+            pass
 
     def _on_cancel_ai(self, event=None):
         """Escape — cancel an in-flight AI request."""
@@ -1976,6 +2039,18 @@ class CompanionApp:
 
         if is_user:
             self.root.after(0, lambda: self._input_box.config(state="disabled"))
+            if (
+                user_message
+                and user_message != "__touch__"
+                and not str(user_message).strip().lower().startswith("[system]")
+            ):
+                try:
+                    from companion_stats import classify_user_tone, update_stats
+                    tone = classify_user_tone(user_message)
+                    if tone:
+                        update_stats(tone)
+                except Exception:
+                    pass
 
         screen_text = ""
         if not is_user and self._screen:
@@ -2162,11 +2237,34 @@ class CompanionApp:
     def _speak_and_continue(self, segments, mood, shutdown_requested: bool = False):
         if segments:
             self._speech_active = True
-            self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
-            self.root.after(0, lambda: self._subtitle.speak(
-                segments,
-                on_done=lambda: self._on_speech_done(shutdown_requested),
-            ))
+
+            def _begin_speech() -> None:
+                self._set_state(self.STATE_TALKING, mood)
+                try:
+                    from glitch_overlay import maybe_mood_glitch
+                    maybe_mood_glitch(self.root, mood)
+                except Exception:
+                    pass
+                if self._voice_out:
+                    try:
+                        self._voice_out.start_speech(segments, mood)
+                    except Exception:
+                        if self._bleep:
+                            try:
+                                self._bleep.start_talking(tone=mood)
+                            except Exception:
+                                pass
+                elif self._bleep:
+                    try:
+                        self._bleep.start_talking(tone=mood)
+                    except Exception:
+                        pass
+                self._subtitle.speak(
+                    segments,
+                    on_done=lambda: self._on_speech_done(shutdown_requested),
+                )
+
+            self.root.after(0, _begin_speech)
         else:
             self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
             self._reschedule_screen_poll()
@@ -2199,18 +2297,46 @@ class CompanionApp:
         return result[0]
 
     def _show_window_picker_dialog(self, matches: list[tuple[int, str]]) -> int | None:
+        from w95_window import apply_borderless_win95, show_borderless
+
         dlg = tk.Toplevel(self.root)
-        dlg.title("Agetha — Pick window")
+        apply_borderless_win95(dlg, self.root, topmost=True)
         dlg.configure(bg=W95_BG)
-        dlg.attributes("-topmost", True)
         dlg.resizable(False, False)
+
+        outer = tk.Frame(dlg, bg=W95_BG, relief="raised", bd=2)
+        outer.pack(fill="both", expand=True)
+
+        title_bar = tk.Frame(outer, bg=W95_TITLE_BG, height=18)
+        title_bar.pack(fill="x", padx=2, pady=(2, 0))
+        title_bar.pack_propagate(False)
         tk.Label(
-            dlg, text="Multiple windows match. Which one?",
-            bg=W95_BG, fg="#000000", font=("Tahoma", 9),
-        ).pack(padx=10, pady=(10, 4))
-        frame = tk.Frame(dlg, bg=W95_BG)
-        frame.pack(padx=10, pady=4, fill="both", expand=True)
-        listbox = tk.Listbox(frame, width=58, height=min(8, len(matches)), font=("Tahoma", 9))
+            title_bar, text="⚠  Pick window",
+            bg=W95_TITLE_BG, fg=W95_TITLE_FG,
+            font=W95_FONT_BOLD, anchor="w", padx=4,
+        ).pack(side="left", fill="y")
+
+        chosen: list[int | None] = [None]
+
+        def _cancel():
+            chosen[0] = None
+            dlg.destroy()
+
+        tk.Button(
+            title_bar, text="✕",
+            bg=W95_BTN_BG, fg=W95_TEXT, font=("MS Sans Serif", 7, "bold"),
+            relief="raised", bd=2, width=2, command=_cancel,
+        ).pack(side="right", padx=(0, 2), pady=1)
+
+        body = tk.Frame(outer, bg=W95_BG, padx=10, pady=10)
+        body.pack(fill="both", expand=True)
+        tk.Label(
+            body, text="Multiple windows match. Which one?",
+            bg=W95_BG, fg=W95_TEXT, font=W95_FONT,
+        ).pack(anchor="w", pady=(0, 4))
+        frame = tk.Frame(body, bg=W95_BG)
+        frame.pack(fill="both", expand=True)
+        listbox = tk.Listbox(frame, width=58, height=min(8, len(matches)), font=W95_FONT)
         scroll = tk.Scrollbar(frame, orient="vertical", command=listbox.yview)
         listbox.configure(yscrollcommand=scroll.set)
         listbox.pack(side="left", fill="both", expand=True)
@@ -2218,7 +2344,6 @@ class CompanionApp:
         for _hwnd, title in matches:
             listbox.insert("end", title[:72])
         listbox.selection_set(0)
-        chosen: list[int | None] = [None]
 
         def _ok(_event=None):
             sel = listbox.curselection()
@@ -2226,21 +2351,32 @@ class CompanionApp:
             chosen[0] = matches[idx][0]
             dlg.destroy()
 
-        def _cancel():
-            chosen[0] = None
-            dlg.destroy()
-
-        btn_row = tk.Frame(dlg, bg=W95_BG)
-        btn_row.pack(pady=(4, 10))
-        tk.Button(btn_row, text="OK", width=8, command=_ok).pack(side="left", padx=4)
-        tk.Button(btn_row, text="Cancel", width=8, command=_cancel).pack(side="left", padx=4)
+        btn_row = tk.Frame(outer, bg=W95_BG, pady=6)
+        btn_row.pack(fill="x")
+        tk.Button(
+            btn_row, text="OK", font=W95_FONT_BOLD, bg=W95_BTN_BG, fg=W95_TEXT,
+            relief="raised", bd=2, width=8, command=_ok,
+        ).pack(side="left", padx=(16, 4))
+        tk.Button(
+            btn_row, text="Cancel", font=W95_FONT_BOLD, bg=W95_BTN_BG, fg=W95_TEXT,
+            relief="raised", bd=2, width=8, command=_cancel,
+        ).pack(side="left", padx=4)
         listbox.bind("<Double-Button-1>", _ok)
         dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        dlg.update_idletasks()
+        show_borderless(dlg)
         dlg.grab_set()
         dlg.wait_window()
         return chosen[0]
 
-    def _ai_query(self, user_message: str, screen_context=None, doc_content: str = ""):
+    def _ai_query(
+        self,
+        user_message: str,
+        screen_context=None,
+        doc_content: str = "",
+        memory_search_context: str = "",
+        suppress_search_memory: bool = False,
+    ):
         if self._cancel_event.is_set() or not self._ai:
             return None
         with self._ai_tick_lock:
@@ -2259,12 +2395,16 @@ class CompanionApp:
                     screen_context=self._last_screen_text if screen_context is None else screen_context,
                     user_message=user_message,
                     doc_content=doc_content,
+                    memory_search_context=memory_search_context,
+                    suppress_search_memory=suppress_search_memory,
                     on_token=_on_token,
                 )
             return self._ai.query(
                 screen_context=self._last_screen_text if screen_context is None else screen_context,
                 user_message=user_message,
                 doc_content=doc_content,
+                memory_search_context=memory_search_context,
+                suppress_search_memory=suppress_search_memory,
             )
         except Exception as exc:
             logger.error(f"_ai_query failed: {exc}")
@@ -2290,13 +2430,31 @@ class CompanionApp:
                 static_name = self.EXTRA_STATIC_GIFS.get("happy")
             if not static_name or static_name not in self._gif_cache:
                 return False
-            self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
+
+            def _begin_short_speech() -> None:
+                self._set_state(self.STATE_TALKING, mood)
+                if self._voice_out:
+                    try:
+                        self._voice_out.start_speech(segments, mood)
+                    except Exception:
+                        if self._bleep:
+                            try:
+                                self._bleep.start_talking(tone=mood)
+                            except Exception:
+                                pass
+                elif self._bleep:
+                    try:
+                        self._bleep.start_talking(tone=mood)
+                    except Exception:
+                        pass
+                self._subtitle.speak(
+                    segments,
+                    on_done=lambda: self._on_speech_done(ctx.shutdown_requested),
+                )
+
             self._speech_active = True
             self.root.after(12, lambda: self._play_gif(static_name))
-            self.root.after(0, lambda: self._subtitle.speak(
-                segments,
-                on_done=lambda: self._on_speech_done(ctx.shutdown_requested),
-            ))
+            self.root.after(0, _begin_short_speech)
             return True
         except Exception:
             return False
@@ -2316,6 +2474,11 @@ class CompanionApp:
 
     def _shutdown(self):
         self._stop_talking_rotation()
+        if self._voice_out:
+            try:
+                self._voice_out.stop()
+            except Exception:
+                pass
         if self._bleep:
             try:
                 self._bleep.stop()
@@ -2332,6 +2495,11 @@ class CompanionApp:
         try:
             self.root.mainloop()
         finally:
+            if self._voice_out:
+                try:
+                    self._voice_out.stop()
+                except Exception:
+                    pass
             if self._bleep:
                 try:
                     self._bleep.stop()
