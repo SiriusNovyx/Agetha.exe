@@ -12,8 +12,8 @@ import string
 import tkinter as tk
 from typing import TYPE_CHECKING
 
-from app_config import get_settings
-from utils import IS_WINDOWS, logger
+from agetha.app_config import get_settings
+from agetha.utils import IS_WINDOWS, logger
 
 if TYPE_CHECKING:
     from tkinter import Misc

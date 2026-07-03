@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any
 
-from utils import logger
+from agetha.utils import logger
 
 try:
     import pyttsx3  # type: ignore[import-untyped]

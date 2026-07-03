@@ -49,7 +49,7 @@ def _setup_dpi_awareness() -> None:
 
 _setup_dpi_awareness()
 
-from utils import logger
+from agetha.utils import logger
 ctypes = None
 if IS_WINDOWS:
     import ctypes

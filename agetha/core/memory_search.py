@@ -12,10 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from utils import logger
+from agetha.utils import logger
 
-_HERE = Path(__file__).parent
-MEMORY_DIR = _HERE / "memory"
+from agetha.app_config import BASE_DIR
+
+MEMORY_DIR = BASE_DIR / "memory"
 LONGTERM_FILE = MEMORY_DIR / "longterm_memory.jsonl"
 
 _lock = threading.Lock()

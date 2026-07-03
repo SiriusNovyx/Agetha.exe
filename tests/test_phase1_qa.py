@@ -1,6 +1,13 @@
-"""Phase 1.1 QA smoke tests — run: python test_phase1_qa.py"""
+"""Phase 1.1 QA smoke tests — run: python tests/test_phase1_qa.py"""
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import json
 import tempfile
@@ -11,10 +18,10 @@ from unittest.mock import MagicMock, patch
 
 import tkinter as tk
 
-import companion_stats
-import dashboard
-import memory_search
-from ai_engine import AIEngine
+from agetha.core import companion_stats
+from agetha.ui import dashboard
+from agetha.core import memory_search
+from agetha.core.ai_engine import AIEngine
 
 
 class TestDashboardAfterCancel(unittest.TestCase):
@@ -136,10 +143,10 @@ class TestSearchMemoryRecursion(unittest.TestCase):
 
 class TestLongtermAppendSource(unittest.TestCase):
     def test_log_longterm_only_in_summary_block(self) -> None:
-        repo = Path(__file__).parent
+        repo = Path(__file__).resolve().parent.parent
         callers: list[str] = []
-        for path in sorted(repo.glob("*.py")):
-            if path.name.startswith("test_"):
+        for path in sorted(repo.rglob("*.py")):
+            if "tests" in path.parts or path.name.startswith("test_"):
                 continue
             text = path.read_text(encoding="utf-8")
             if path.name == "memory_search.py":
@@ -152,7 +159,7 @@ class TestLongtermAppendSource(unittest.TestCase):
 
 class TestLongtermDisabled(unittest.TestCase):
     def test_handler_skips_search_when_disabled(self) -> None:
-        from command_handlers import handle_search_memory
+        from agetha.commands.command_handlers import handle_search_memory
 
         app = MagicMock()
         app._speak_and_continue = MagicMock()
@@ -165,9 +172,9 @@ class TestLongtermDisabled(unittest.TestCase):
         ctx.shutdown_requested = False
         response = {"query": "cat", "command": "search_memory"}
 
-        with patch("command_handlers.get_settings") as mock_settings:
+        with patch("agetha.commands.command_handlers.get_settings") as mock_settings:
             mock_settings.return_value.enable_longterm_memory = False
-            with patch("memory_search.search_memories") as mock_search:
+            with patch("agetha.core.memory_search.search_memories") as mock_search:
                 ok = handle_search_memory(app, response, ctx)
                 self.assertTrue(ok)
                 mock_search.assert_not_called()

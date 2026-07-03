@@ -8,7 +8,7 @@ import random
 import tkinter as tk
 from tkinter import messagebox
 
-from utils import logger
+from agetha.utils import logger
 
 # Duplicated Win95 palette (no main.py import)
 W95_BG = "#c0c0c0"
@@ -85,7 +85,7 @@ def open_virus_trivia(parent: tk.Misc) -> None:
 
 class _TriviaGame:
     def __init__(self, parent: tk.Misc) -> None:
-        from w95_window import apply_borderless_win95, show_borderless
+        from agetha.ui.w95_window import apply_borderless_win95, show_borderless
 
         self._win = tk.Toplevel(parent)
         apply_borderless_win95(self._win, parent, topmost=True)
@@ -155,7 +155,7 @@ class _TriviaGame:
         if choice_idx == correct:
             self._score += 1
             try:
-                from companion_stats import update_stats
+                from agetha.core.companion_stats import update_stats
                 update_stats("user_polite")
             except Exception:
                 pass

@@ -15,9 +15,9 @@ from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
 
-from utils import IS_WINDOWS, IS_LINUX, native_error_popup, logger
-from app_config import get_settings, parse_config_file, DEFAULT_CONFIG, ensure_config_file
-from window_control import is_self_window_target, is_self_process_target
+from agetha.utils import IS_WINDOWS, IS_LINUX, native_error_popup, logger
+from agetha.app_config import get_settings, parse_config_file, DEFAULT_CONFIG, ensure_config_file, BASE_DIR
+from agetha.platform.window_control import is_self_window_target, is_self_process_target
 
 try:
     from groq import Groq
@@ -30,7 +30,7 @@ except ImportError:
 # Provides soul.md (static identity) + episodic_memory.json (dynamic context).
 # Falls back gracefully if the module is missing so ai_engine.py still boots.
 try:
-    from memory_system import (
+    from agetha.core.memory_system import (
         build_system_prompt as _ms_build_system_prompt,
         log_memory          as _ms_log_memory,
         get_recent_memories as _ms_get_recent_memories,
@@ -793,8 +793,7 @@ class AIEngine:
 
     @staticmethod
     def _resolve_config_path() -> Path:
-        base = Path(sys.argv[0]).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).parent
-        return base / CONFIG_FILE_NAME
+        return BASE_DIR / CONFIG_FILE_NAME
 
     def _create_default_config(self) -> None:
         self._config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
@@ -1315,7 +1314,7 @@ class AIEngine:
             parts.append(notepad_context)
         try:
             if getattr(self._app_settings, "enable_companion_stats_context", True):
-                from companion_stats import format_stats_for_prompt, suggest_mood_from_heat
+                from agetha.core.companion_stats import format_stats_for_prompt, suggest_mood_from_heat
                 stats_block = format_stats_for_prompt()
                 if stats_block:
                     parts.append(stats_block)
@@ -1812,7 +1811,7 @@ class AIEngine:
 
                     if self._app_settings.enable_longterm_memory:
                         try:
-                            from memory_search import log_longterm_memory
+                            from agetha.core.memory_search import log_longterm_memory
                             log_longterm_memory(clean_mem, source="ai", mood=mood)
                         except Exception:
                             pass

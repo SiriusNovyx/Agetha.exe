@@ -8,7 +8,8 @@ import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
 
-from utils import logger
+from agetha.app_config import BASE_DIR
+from agetha.utils import logger
 
 # Duplicated Win95 palette (must not import main.py)
 W95_BG = "#c0c0c0"
@@ -20,8 +21,7 @@ W95_BTN_BG = "#c0c0c0"
 W95_FONT = ("MS Sans Serif", 8)
 W95_FONT_BOLD = ("MS Sans Serif", 8, "bold")
 
-_HERE = Path(__file__).parent
-NOTEPAD_FILE = _HERE / "memory" / "notepad.txt"
+NOTEPAD_FILE = BASE_DIR / "memory" / "notepad.txt"
 
 _POLL_MS = 2000
 _SAFE_CONFIG_KEYS = (
@@ -135,7 +135,7 @@ def _system_snapshot() -> dict[str, str | float]:
 def open_dashboard(parent: tk.Misc, app_settings) -> None:
     """Open a Toplevel dashboard with System / Virus / Notepad / Settings tabs."""
     import sys
-    from w95_window import apply_borderless_win95, refresh_borderless, show_borderless
+    from agetha.ui.w95_window import apply_borderless_win95, refresh_borderless, show_borderless
 
     win = tk.Toplevel(parent)
     apply_borderless_win95(win, parent, topmost=True)
@@ -300,7 +300,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
             except (TypeError, ValueError):
                 pass
         try:
-            from companion_stats import get_stats_summary
+            from agetha.core.companion_stats import get_stats_summary
             heat = float(get_stats_summary().get("core_heat", 0))
             bar_vars["heat"].set(heat)
             heat_lbl.set(f"{heat:.0f}% (host CPU)")
@@ -338,7 +338,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
             return
         lines: list[str] = []
         try:
-            from companion_stats import get_stats_summary
+            from agetha.core.companion_stats import get_stats_summary
             stats = get_stats_summary()
             for key in virus_bars:
                 try:
@@ -355,7 +355,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
 
         lines.append("")
         try:
-            from memory_system import get_memory_stats
+            from agetha.core.memory_system import get_memory_stats
             ms = get_memory_stats()
             lines.append("Memory system:")
             soul = ms.get("soul", {})
@@ -366,7 +366,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
             lines.append(f"Memory stats unavailable: {exc}")
 
         try:
-            from memory_search import LONGTERM_FILE
+            from agetha.core.memory_search import LONGTERM_FILE
             if LONGTERM_FILE.exists():
                 count = sum(1 for ln in LONGTERM_FILE.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip())
                 lines.append(f"  longterm entries: {count}")
@@ -428,7 +428,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
 
         def _on_toggle() -> None:
             try:
-                from app_config import patch_config_key
+                from agetha.app_config import patch_config_key
                 val = "yes" if var.get() else "no"
                 if patch_config_key(key, val):
                     raw_cfg[key] = val

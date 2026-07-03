@@ -12,7 +12,7 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from utils import logger
+from agetha.utils import logger
 
 _USER_AGENT = "Agetha/1.0 (Safe Web RAG; desktop companion)"
 _DDG_HTML_URL = "https://html.duckduckgo.com/html/"
@@ -26,7 +26,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 def is_web_rag_enabled() -> bool:
     """Return True when ENABLE_WEB_RAG=yes in config."""
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         return get_settings().enable_web_rag
     except Exception:
         return False
@@ -34,7 +34,7 @@ def is_web_rag_enabled() -> bool:
 
 def _timeout_sec() -> int:
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         return get_settings().web_timeout_sec
     except Exception:
         return 10
@@ -42,7 +42,7 @@ def _timeout_sec() -> int:
 
 def _fetch_max_chars() -> int:
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         return get_settings().web_fetch_max_chars
     except Exception:
         return 8000
@@ -50,7 +50,7 @@ def _fetch_max_chars() -> int:
 
 def _search_max_results() -> int:
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         return get_settings().web_search_max_results
     except Exception:
         return 5
@@ -292,7 +292,7 @@ def fetch_webpage(url: str, max_chars: int | None = None) -> dict[str, Any]:
 def format_search_results_for_prompt(results: list[dict[str, Any]]) -> str:
     """Format web search hits for LLM injection with untrusted-data warning."""
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         max_chars = get_settings().web_fetch_max_chars
     except Exception:
         max_chars = 8000
@@ -328,7 +328,7 @@ def format_search_results_for_prompt(results: list[dict[str, Any]]) -> str:
 def format_fetched_page_for_prompt(page: dict[str, Any]) -> str:
     """Format fetched page text for LLM injection with injection warning."""
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         max_chars = get_settings().web_fetch_max_chars
     except Exception:
         max_chars = 8000

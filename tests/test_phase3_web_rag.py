@@ -1,19 +1,26 @@
-"""Phase 3A web RAG tests — run: python test_phase3_web_rag.py"""
+"""Phase 3A web RAG tests — run: python tests/test_phase3_web_rag.py"""
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import json
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from ai_engine import AIEngine
-import web_rag
+from agetha.core.ai_engine import AIEngine
+from agetha.features import web_rag
 
 
 class TestWebRagImports(unittest.TestCase):
     def test_module_imports_without_network(self) -> None:
-        with patch("app_config.get_settings") as mock_settings:
+        with patch("agetha.app_config.get_settings") as mock_settings:
             mock_settings.return_value.enable_web_rag = False
             self.assertFalse(web_rag.is_web_rag_enabled())
         self.assertEqual(web_rag.search_web(""), [])
@@ -39,7 +46,7 @@ class TestFormatUntrustedWarnings(unittest.TestCase):
 
 class TestDisabledPath(unittest.TestCase):
     def test_handler_skips_search_when_disabled(self) -> None:
-        from command_handlers import handle_search_web
+        from agetha.commands.command_handlers import handle_search_web
 
         app = MagicMock()
         app._ai = MagicMock()
@@ -53,9 +60,9 @@ class TestDisabledPath(unittest.TestCase):
         ctx.shutdown_requested = False
         response = {"query": "news", "command": "search_web"}
 
-        with patch("command_handlers.get_settings") as mock_settings:
+        with patch("agetha.commands.command_handlers.get_settings") as mock_settings:
             mock_settings.return_value.enable_web_rag = False
-            with patch("web_rag.search_web") as mock_search:
+            with patch("agetha.features.web_rag.search_web") as mock_search:
                 ok = handle_search_web(app, response, ctx)
                 self.assertTrue(ok)
                 mock_search.assert_not_called()
@@ -92,7 +99,7 @@ class TestMockedNetwork(unittest.TestCase):
         mock_resp.text = html
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("web_rag._requests_post", return_value=mock_resp):
+        with patch("agetha.features.web_rag._requests_post", return_value=mock_resp):
             hits = web_rag.search_web("example", limit=3)
         self.assertTrue(hits)
         self.assertEqual(hits[0]["url"], "https://example.com")
@@ -105,7 +112,7 @@ class TestMockedNetwork(unittest.TestCase):
         mock_resp.raise_for_status = MagicMock()
         mock_resp.iter_content = lambda **kw: [html.encode("utf-8")]
 
-        with patch("web_rag._requests_get", return_value=mock_resp):
+        with patch("agetha.features.web_rag._requests_get", return_value=mock_resp):
             page = web_rag.fetch_webpage("https://example.com")
         self.assertNotIn("error", page)
         self.assertIn("Hello world", page["text"])

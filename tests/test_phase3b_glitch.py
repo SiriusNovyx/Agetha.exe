@@ -1,18 +1,24 @@
-"""Phase 3B glitch overlay tests — run: python test_phase3b_glitch.py"""
+"""Phase 3B glitch overlay tests — run: python tests/test_phase3b_glitch.py"""
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import json
 import py_compile
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from ai_engine import AIEngine
-import glitch_overlay
-from app_config import AppSettings
+from agetha.core.ai_engine import AIEngine
+from agetha.ui import glitch_overlay
+from agetha.app_config import AppSettings
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestGlitchImports(unittest.TestCase):
@@ -25,20 +31,20 @@ class TestGlitchImports(unittest.TestCase):
         self.assertEqual(glitch_overlay.normalize_glitch_style("bogus"), "scanlines")
 
     def test_py_compile(self) -> None:
-        for name in (
-            "glitch_overlay.py",
-            "ai_engine.py",
-            "command_handlers.py",
-            "app_config.py",
-            "command_guard.py",
-            "test_phase3b_glitch.py",
+        for rel in (
+            "agetha/ui/glitch_overlay.py",
+            "agetha/core/ai_engine.py",
+            "agetha/commands/command_handlers.py",
+            "agetha/app_config.py",
+            "agetha/commands/command_guard.py",
+            "tests/test_phase3b_glitch.py",
         ):
-            py_compile.compile(str(ROOT / name), doraise=True)
+            py_compile.compile(str(ROOT / rel), doraise=True)
 
 
 class TestDurationClamp(unittest.TestCase):
     def test_clamp_respects_bounds(self) -> None:
-        with patch("glitch_overlay.get_settings") as mock_settings:
+        with patch("agetha.ui.glitch_overlay.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(glitch_max_duration_ms=2000)
             self.assertEqual(glitch_overlay.clamp_glitch_duration(5000), 2000)
             self.assertEqual(glitch_overlay.clamp_glitch_duration(50), 200)
@@ -56,7 +62,7 @@ class TestDurationClamp(unittest.TestCase):
 
 class TestDisabledHandler(unittest.TestCase):
     def test_handler_skips_overlay_when_disabled(self) -> None:
-        from command_handlers import handle_glitch_overlay
+        from agetha.commands.command_handlers import handle_glitch_overlay
 
         app = MagicMock()
         app._speak_and_continue = MagicMock()
@@ -66,9 +72,9 @@ class TestDisabledHandler(unittest.TestCase):
         ctx.shutdown_requested = False
         response = {"command": "glitch_overlay", "style": "static"}
 
-        with patch("command_handlers.get_settings") as mock_settings:
+        with patch("agetha.commands.command_handlers.get_settings") as mock_settings:
             mock_settings.return_value.enable_glitch_effects = False
-            with patch("glitch_overlay.show_glitch_overlay") as mock_show:
+            with patch("agetha.ui.glitch_overlay.show_glitch_overlay") as mock_show:
                 ok = handle_glitch_overlay(app, response, ctx)
                 self.assertTrue(ok)
                 mock_show.assert_not_called()
@@ -97,17 +103,17 @@ class TestParseGate(unittest.TestCase):
 class TestShowOverlayMockParent(unittest.TestCase):
     def test_show_skips_when_disabled(self) -> None:
         parent = MagicMock()
-        with patch("glitch_overlay.get_settings") as mock_settings:
+        with patch("agetha.ui.glitch_overlay.get_settings") as mock_settings:
             mock_settings.return_value.enable_glitch_effects = False
             glitch_overlay.show_glitch_overlay(parent, style="static", duration_ms=500)
             parent.after.assert_not_called()
 
     def test_show_schedules_on_parent_when_enabled(self) -> None:
         parent = MagicMock()
-        with patch("glitch_overlay.get_settings") as mock_settings:
+        with patch("agetha.ui.glitch_overlay.get_settings") as mock_settings:
             mock_settings.return_value.enable_glitch_effects = True
             mock_settings.return_value.glitch_default_style = "scanlines"
-            with patch("glitch_overlay._GlitchOverlay") as mock_overlay:
+            with patch("agetha.ui.glitch_overlay._GlitchOverlay") as mock_overlay:
                 glitch_overlay.show_glitch_overlay(parent, style="scanlines", duration_ms=800)
                 parent.after.assert_called_once()
                 parent.after.call_args[0][1]()

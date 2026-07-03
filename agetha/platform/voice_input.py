@@ -18,8 +18,8 @@ from typing import Callable
 import tkinter as tk
 from tkinter import font as tkfont
 
-from app_config import BASE_DIR, get_settings
-from utils import logger, native_error_popup
+from agetha.app_config import BASE_DIR, get_settings
+from agetha.utils import logger, native_error_popup
 
 W95_BG = "#c0c0c0"
 W95_TITLE_BG = "#000080"
@@ -349,7 +349,7 @@ class MicPickerDialog:
         self._mics = mics
 
         self._win = tk.Toplevel(parent)
-        from w95_window import apply_borderless_win95, show_borderless
+        from agetha.ui.w95_window import apply_borderless_win95, show_borderless
         apply_borderless_win95(self._win, parent, topmost=True)
         self._win.configure(bg=W95_BG)
         self._win.resizable(False, False)

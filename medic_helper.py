@@ -123,7 +123,16 @@ def cmd_tts_deps() -> None:
 def cmd_feature_modules() -> None:
     """Verify Phase 1+2 extension modules import (no Tk mainloop)."""
     failures: list[str] = []
-    for mod in ("memory_search", "companion_stats", "dashboard", "tts_player", "web_rag", "glitch_overlay", "virus_trivia", "w95_window"):
+    for mod in (
+        "agetha.core.memory_search",
+        "agetha.core.companion_stats",
+        "agetha.ui.dashboard",
+        "agetha.features.tts_player",
+        "agetha.features.web_rag",
+        "agetha.ui.glitch_overlay",
+        "agetha.ui.virus_trivia",
+        "agetha.ui.w95_window",
+    ):
         try:
             __import__(mod)
         except Exception as exc:

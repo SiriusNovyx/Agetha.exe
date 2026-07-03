@@ -654,10 +654,13 @@ function Invoke-StandardChecks {
     # [7/7] py_compile
     Write-Head '[7 / 7]  Python syntax (py_compile)'
     $modules = @(
-        'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'memory_search.py',
-        'companion_stats.py', 'dashboard.py', 'tts_player.py', 'web_rag.py', 'glitch_overlay.py', 'virus_trivia.py', 'w95_window.py', 'utils.py',
-        'command_guard.py', 'command_handlers.py', 'system_commands.py', 'medic_helper.py',
-        'window_control.py', 'app_config.py', 'voice_input.py'
+        'main.py', 'medic_helper.py',
+        'agetha\app_config.py', 'agetha\utils.py',
+        'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
+        'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
+        'agetha\platform\screen_reader.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
+        'agetha\features\tts_player.py', 'agetha\features\web_rag.py',
+        'agetha\ui\dashboard.py', 'agetha\ui\w95_window.py', 'agetha\ui\glitch_overlay.py', 'agetha\ui\virus_trivia.py'
     )
     $compileFail = $false
     foreach ($mod in $modules) {
@@ -692,10 +695,13 @@ Write-Head '+============================================================+'
 Write-Host ''
 
 $coreFiles = @(
-    'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'memory_search.py',
-    'companion_stats.py', 'dashboard.py', 'tts_player.py', 'web_rag.py', 'glitch_overlay.py', 'virus_trivia.py', 'w95_window.py', 'utils.py',
-    'command_guard.py', 'command_handlers.py', 'system_commands.py',
-    'medic_helper.py', 'window_control.py', 'app_config.py', 'voice_input.py', 'requirements.txt'
+    'main.py', 'medic_helper.py', 'requirements.txt',
+    'agetha\app_config.py', 'agetha\utils.py',
+    'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
+    'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
+    'agetha\platform\screen_reader.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
+    'agetha\features\tts_player.py', 'agetha\features\web_rag.py',
+    'agetha\ui\dashboard.py', 'agetha\ui\w95_window.py', 'agetha\ui\glitch_overlay.py', 'agetha\ui\virus_trivia.py'
 )
 $missingCore = $coreFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Script:Root $_)) }
 if ($missingCore) {

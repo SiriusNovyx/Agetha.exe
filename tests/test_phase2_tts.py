@@ -1,18 +1,28 @@
-"""Phase 2 TTS / voice output tests — run: python test_phase2_tts.py"""
+"""Phase 2 TTS / voice output tests — run: python tests/test_phase2_tts.py"""
 
 from __future__ import annotations
 
-import py_compile
 import sys
-import unittest
 from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import py_compile
+import unittest
 from unittest.mock import MagicMock, patch
 
-from app_config import AppSettings
-from tts_player import PYTTSX3_OK, TTSPlayer, VoiceOutputCoordinator
+from agetha.app_config import AppSettings
+from agetha.features.tts_player import PYTTSX3_OK, TTSPlayer, VoiceOutputCoordinator
 
-ROOT = Path(__file__).parent
-MODULES = ("tts_player.py", "main.py", "app_config.py", "test_phase2_tts.py")
+ROOT = Path(__file__).resolve().parent.parent
+MODULES = (
+    "agetha/features/tts_player.py",
+    "main.py",
+    "agetha/app_config.py",
+    "tests/test_phase2_tts.py",
+)
 
 
 class TestPyCompile(unittest.TestCase):
@@ -66,7 +76,7 @@ class TestVoiceOutputCoordinator(unittest.TestCase):
     def test_tts_only_without_pyttsx3_falls_back_to_bleeps(self) -> None:
         bleep = MagicMock()
         settings = AppSettings({"VOICE_OUTPUT_MODE": "tts_only"})
-        with patch("tts_player.PYTTSX3_OK", False):
+        with patch("agetha.features.tts_player.PYTTSX3_OK", False):
             coord = VoiceOutputCoordinator(bleep, settings)
             coord.start_speech([{"text": "hi"}], "neutral")
         bleep.start_talking.assert_called_once_with(tone="neutral")
@@ -74,24 +84,24 @@ class TestVoiceOutputCoordinator(unittest.TestCase):
 
 class TestTTSPlayerGraceful(unittest.TestCase):
     def test_speak_text_without_pyttsx3(self) -> None:
-        with patch("tts_player.PYTTSX3_OK", False):
+        with patch("agetha.features.tts_player.PYTTSX3_OK", False):
             player = TTSPlayer()
         player.speak_text("hello")  # must not raise
 
     def test_speak_segments_without_pyttsx3(self) -> None:
-        with patch("tts_player.PYTTSX3_OK", False):
+        with patch("agetha.features.tts_player.PYTTSX3_OK", False):
             player = TTSPlayer()
         player.speak_segments([{"text": "a"}, {"text": "b"}])  # must not raise
 
     def test_stop_pause_resume_never_raise(self) -> None:
-        with patch("tts_player.PYTTSX3_OK", False):
+        with patch("agetha.features.tts_player.PYTTSX3_OK", False):
             player = TTSPlayer()
         player.pause()
         player.resume()
         player.stop()
 
     def test_segments_to_text_joins(self) -> None:
-        with patch("tts_player.PYTTSX3_OK", False):
+        with patch("agetha.features.tts_player.PYTTSX3_OK", False):
             player = TTSPlayer()
         with patch.object(player, "speak_text") as mock_speak:
             player.speak_segments([{"text": "one"}, {"text": "two"}])

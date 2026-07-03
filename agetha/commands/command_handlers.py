@@ -18,15 +18,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
-from command_guard import CommandGuard
-from system_commands import (
+from agetha.commands.command_guard import CommandGuard
+from agetha.commands.system_commands import (
     copy_to_clipboard, get_clipboard, lock_screen, open_folder, open_url,
     restart_system, screenshot_path, search_files, set_reminder, set_volume,
     set_wallpaper, show_notification, shutdown_system, system_info, type_text,
 )
-from window_control import kill_process_by_name, operate_on_target, is_self_window_target, is_self_process_target
-from utils import IS_LINUX, IS_WINDOWS, WINDOW_W, WINDOW_H, logger
-from app_config import get_settings
+from agetha.platform.window_control import kill_process_by_name, operate_on_target, is_self_window_target, is_self_process_target
+from agetha.utils import IS_LINUX, IS_WINDOWS, WINDOW_W, WINDOW_H, logger
+from agetha.app_config import get_settings
 
 _WINDOW_COMMANDS = frozenset({
     "target_window_move", "target_window_resize", "target_window_close", "force_close",
@@ -105,7 +105,7 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
 
     if command not in ("idle", "speak", "wake_user"):
         try:
-            from companion_stats import update_stats
+            from agetha.core.companion_stats import update_stats
             update_stats("command")
         except Exception:
             pass
@@ -760,7 +760,7 @@ def handle_change_mood(app, response, ctx):
 def handle_clear_memory(app, response, ctx):
     scope = (response.get("memory_scope") or response.get("scope") or "all").strip().lower()
     try:
-        from memory_system import clear_episodic, clear_episodic_selective
+        from agetha.core.memory_system import clear_episodic, clear_episodic_selective
         if scope in ("recent", "last_hour"):
             removed = clear_episodic_selective(newer_than_hours=1)
             msg = f"Cleared {removed} recent memories."
@@ -784,7 +784,7 @@ def handle_clear_memory(app, response, ctx):
 def handle_view_memory(app, response, ctx):
     from main import AgethaPopup
     try:
-        from memory_system import get_recent_memories, format_memories_for_display
+        from agetha.core.memory_system import get_recent_memories, format_memories_for_display
         limit = int(response.get("limit", 15) or 15)
         lines = format_memories_for_display(get_recent_memories(limit=limit))
     except Exception as exc:
@@ -821,7 +821,7 @@ def handle_search_memory(app, response, ctx):
         limit = get_settings().longterm_memory_max_results
 
     try:
-        from memory_search import search_memories, format_search_results_for_prompt
+        from agetha.core.memory_search import search_memories, format_search_results_for_prompt
         results = search_memories(query, limit=limit)
         memory_context = format_search_results_for_prompt(results)
     except Exception as exc:
@@ -884,7 +884,7 @@ def handle_search_web(app, response, ctx):
         limit = get_settings().web_search_max_results
 
     try:
-        from web_rag import search_web, format_search_results_for_prompt
+        from agetha.features.web_rag import search_web, format_search_results_for_prompt
         results = search_web(query, limit=limit)
         web_context = format_search_results_for_prompt(results)
     except Exception as exc:
@@ -913,7 +913,7 @@ def handle_glitch_overlay(app, response, ctx):
         return True
 
     try:
-        from glitch_overlay import show_glitch_overlay, normalize_glitch_style, clamp_glitch_duration
+        from agetha.ui.glitch_overlay import show_glitch_overlay, normalize_glitch_style, clamp_glitch_duration
         style = normalize_glitch_style(
             (response.get("style") or "").strip() or settings.glitch_default_style
         )
@@ -926,7 +926,7 @@ def handle_glitch_overlay(app, response, ctx):
             fullscreen=settings.glitch_fullscreen,
         )
         try:
-            from companion_stats import infection_perk_active
+            from agetha.core.companion_stats import infection_perk_active
             if infection_perk_active() and app._bleep:
                 app._bleep.start_talking(tone="manic")
                 threading.Timer(min(duration / 1000.0, 2.0), app._bleep.stop).start()
@@ -973,7 +973,7 @@ def handle_read_notepad(app, response, ctx):
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
 
     try:
-        from dashboard import read_notepad_text
+        from agetha.ui.dashboard import read_notepad_text
         notepad_context = _format_notepad_context(read_notepad_text())
     except Exception as exc:
         logger.warning(f"read_notepad failed: {exc}")
@@ -999,7 +999,7 @@ def handle_read_notepad(app, response, ctx):
 @register("play_virus_trivia")
 def handle_play_virus_trivia(app, response, ctx):
     try:
-        from virus_trivia import open_virus_trivia
+        from agetha.ui.virus_trivia import open_virus_trivia
         open_virus_trivia(app.root)
     except Exception as exc:
         logger.warning(f"play_virus_trivia failed: {exc}")
@@ -1037,7 +1037,7 @@ def handle_fetch_webpage(app, response, ctx):
         return True
 
     try:
-        from web_rag import fetch_webpage, format_fetched_page_for_prompt
+        from agetha.features.web_rag import fetch_webpage, format_fetched_page_for_prompt
         page = fetch_webpage(url)
         web_context = format_fetched_page_for_prompt(page)
     except Exception as exc:

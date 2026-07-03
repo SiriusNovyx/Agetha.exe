@@ -15,9 +15,9 @@ import logging
 import threading
 from typing import Callable
 
-from utils import IS_WINDOWS, logger
-from app_config import get_settings
-from window_control import is_self_process_target
+from agetha.utils import IS_WINDOWS, logger
+from agetha.app_config import get_settings
+from agetha.platform.window_control import is_self_process_target
 
 # Windows MessageBox flags
 _MB_OKCANCEL = 0x00000001

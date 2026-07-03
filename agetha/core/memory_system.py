@@ -86,8 +86,9 @@ from typing import Optional
 #           regardless of the process working directory at runtime.
 # ══════════════════════════════════════════════════════════════════════
 
-_HERE         = Path(__file__).parent   # Same directory as ai_engine.py
-MEMORY_DIR    = _HERE / "memory"        # memory/
+from agetha.app_config import BASE_DIR
+
+MEMORY_DIR    = BASE_DIR / "memory"
 SOUL_FILE     = MEMORY_DIR / "soul.md"  # memory/soul.md
 EPISODIC_FILE = MEMORY_DIR / "episodic_memory.json"  # memory/episodic_memory.json
 

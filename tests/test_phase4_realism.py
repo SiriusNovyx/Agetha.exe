@@ -1,18 +1,23 @@
-"""Phase 4 realism integration tests — run: python test_phase4_realism.py"""
+"""Phase 4 realism integration tests — run: python tests/test_phase4_realism.py"""
 
 from __future__ import annotations
 
-import json
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import py_compile
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from ai_engine import AIEngine, VALID_COMMANDS
-import companion_stats
-import dashboard
+from agetha.core.ai_engine import AIEngine, VALID_COMMANDS
+from agetha.core import companion_stats
+from agetha.ui import dashboard
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestCommandsRegistered(unittest.TestCase):
@@ -25,7 +30,7 @@ class TestCommandsRegistered(unittest.TestCase):
         self.assertIn("COMPANION STATS", block)
 
     def test_notepad_context_formatter(self) -> None:
-        from command_handlers import _format_notepad_context
+        from agetha.commands.command_handlers import _format_notepad_context
         empty = _format_notepad_context("")
         self.assertIn("empty", empty.lower())
         filled = _format_notepad_context("hello notes")
@@ -35,7 +40,7 @@ class TestCommandsRegistered(unittest.TestCase):
 
 class TestReadNotepadHandler(unittest.TestCase):
     def test_handler_requeries_with_pending_notepad(self) -> None:
-        from command_handlers import handle_read_notepad
+        from agetha.commands.command_handlers import handle_read_notepad
 
         app = MagicMock()
         app._ai = MagicMock()
@@ -46,8 +51,8 @@ class TestReadNotepadHandler(unittest.TestCase):
         ctx.user_message = "what is in my notepad"
         response = {"command": "read_notepad"}
 
-        with patch("dashboard.read_notepad_text", return_value="buy milk"):
-            with patch("command_handlers.threading.Thread") as mock_thread:
+        with patch("agetha.ui.dashboard.read_notepad_text", return_value="buy milk"):
+            with patch("agetha.commands.command_handlers.threading.Thread") as mock_thread:
                 ok = handle_read_notepad(app, response, ctx)
                 self.assertTrue(ok)
                 self.assertIn("buy milk", app._ai._pending_notepad_context)
@@ -56,7 +61,7 @@ class TestReadNotepadHandler(unittest.TestCase):
 
 class TestPlayTriviaHandler(unittest.TestCase):
     def test_handler_opens_trivia(self) -> None:
-        from command_handlers import handle_play_virus_trivia
+        from agetha.commands.command_handlers import handle_play_virus_trivia
 
         app = MagicMock()
         app.root = MagicMock()
@@ -66,7 +71,7 @@ class TestPlayTriviaHandler(unittest.TestCase):
         ctx.mood = "happy"
         ctx.shutdown_requested = False
 
-        with patch("virus_trivia.open_virus_trivia") as mock_open:
+        with patch("agetha.ui.virus_trivia.open_virus_trivia") as mock_open:
             ok = handle_play_virus_trivia(app, {}, ctx)
             self.assertTrue(ok)
             mock_open.assert_called_once_with(app.root)
@@ -97,16 +102,16 @@ class TestNotepadPromptInjection(unittest.TestCase):
 
 class TestPyCompile(unittest.TestCase):
     def test_modules_compile(self) -> None:
-        for name in (
-            "companion_stats.py",
-            "dashboard.py",
-            "virus_trivia.py",
-            "command_handlers.py",
-            "ai_engine.py",
-            "glitch_overlay.py",
-            "test_phase4_realism.py",
+        for rel in (
+            "agetha/core/companion_stats.py",
+            "agetha/ui/dashboard.py",
+            "agetha/ui/virus_trivia.py",
+            "agetha/commands/command_handlers.py",
+            "agetha/core/ai_engine.py",
+            "agetha/ui/glitch_overlay.py",
+            "tests/test_phase4_realism.py",
         ):
-            py_compile.compile(str(ROOT / name), doraise=True)
+            py_compile.compile(str(ROOT / rel), doraise=True)
 
 
 if __name__ == "__main__":

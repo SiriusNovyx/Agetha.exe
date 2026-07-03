@@ -10,7 +10,7 @@ import sys
 import tkinter as tk
 from typing import TYPE_CHECKING
 
-from utils import logger
+from agetha.utils import logger
 
 if TYPE_CHECKING:
     from tkinter import Misc

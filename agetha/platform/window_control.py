@@ -11,7 +11,7 @@ from ctypes import wintypes
 from difflib import SequenceMatcher
 from typing import Callable
 
-from utils import IS_WINDOWS, logger
+from agetha.utils import IS_WINDOWS, logger
 
 if IS_WINDOWS:
     _user32 = ctypes.windll.user32

@@ -82,25 +82,46 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
 
 ```
 Agetha_Mod/
-├── main.py              # Tkinter UI, GIF player, app lifecycle
-├── ai_engine.py         # Groq/Ollama brain, JSON command parsing
-├── screen_reader.py     # OCR, pattern matching, window capture
-├── memory_system.py     # soul.md + episodic memory
-├── command_guard.py     # 3-tier native confirmation dialogs
-├── command_handlers.py  # Command pattern dispatch (43 handlers)
-├── system_commands.py   # OS utilities (volume, wallpaper, shutdown…)
-├── window_control.py    # Win32 window find/move/resize/close
-├── app_config.py        # Central config.txt loader & typed settings
-├── voice_input.py       # Microphone STT (Google / faster-whisper)
-├── utils.py             # Shared helpers, logging, .env loader
-├── config.txt           # User settings only — no API keys
-├── .env.example         # API key template
-├── requirements.txt     # Pinned Python dependencies
-├── Medic_Checker.ps1    # Startup health check & launcher (v3.6)
-├── Medic_Checker.bat    # Thin launcher → runs Medic_Checker.ps1
-├── Run_Agetha_Admin.ps1 # Optional elevated launch for protected windows
-├── assets/              # GIFs, fonts, icons
-└── memory/              # soul.md, episodic_memory.json
+├── main.py                 # Tkinter entry point (launch via Medic_Checker)
+├── medic_helper.py         # Medic_Checker CLI helpers
+├── config.txt              # User settings only — no API keys
+├── .env.example            # API key template
+├── requirements.txt
+├── Medic_Checker.ps1       # Startup health check & launcher (v3.6)
+├── Medic_Checker.bat
+├── Run_Agetha_Admin.ps1
+├── assets/                 # GIFs, fonts, icons
+├── memory/                 # soul.md, episodic, stats, notepad
+├── tests/                  # Phase QA test suites
+│   ├── test_phase1_qa.py
+│   ├── test_phase2_tts.py
+│   ├── test_phase3_web_rag.py
+│   ├── test_phase3b_glitch.py
+│   └── test_phase4_realism.py
+└── agetha/                 # Python package
+    ├── app_config.py       # config.txt loader & typed settings
+    ├── utils.py            # logging, paths, .env loader
+    ├── core/               # AI brain, memory, companion stats
+    │   ├── ai_engine.py
+    │   ├── memory_system.py
+    │   ├── memory_search.py
+    │   └── companion_stats.py
+    ├── commands/           # command guard, handlers, OS utilities
+    │   ├── command_guard.py
+    │   ├── command_handlers.py
+    │   └── system_commands.py
+    ├── platform/           # OCR, Win32 window control, voice input
+    │   ├── screen_reader.py
+    │   ├── window_control.py
+    │   └── voice_input.py
+    ├── features/           # optional TTS & web RAG
+    │   ├── tts_player.py
+    │   └── web_rag.py
+    └── ui/                 # Win95 dashboards, overlays, minigames
+        ├── dashboard.py
+        ├── w95_window.py
+        ├── glitch_overlay.py
+        └── virus_trivia.py
 ```
 
 ---

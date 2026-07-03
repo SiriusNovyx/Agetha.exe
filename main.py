@@ -45,21 +45,21 @@ try:
 except ImportError:
     PYGAME_OK = False
 
-from ai_engine import AIEngine
-from screen_reader import ScreenReader
-from command_guard import CommandGuard
-from voice_input import (
+from agetha.core.ai_engine import AIEngine
+from agetha.platform.screen_reader import ScreenReader
+from agetha.commands.command_guard import CommandGuard
+from agetha.platform.voice_input import (
     VoiceInput, MicPickerDialog, list_microphones,
     load_mic_settings, save_mic_settings, coerce_device_index,
 )
-from utils import (
+from agetha.utils import (
     native_error_popup, logger, BASE_DIR, WINDOW_W, WINDOW_H,
     TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS,
     refresh_config_constants,
 )
-from app_config import get_settings
-from window_control import ease_out_cubic
-from tts_player import VoiceOutputCoordinator
+from agetha.app_config import get_settings
+from agetha.platform.window_control import ease_out_cubic
+from agetha.features.tts_player import VoiceOutputCoordinator
 
 _SETTINGS = get_settings()
 
@@ -820,7 +820,7 @@ class AgethaPopup:
     """Windows 95-style dialog popup spawned by Agetha."""
 
     def __init__(self, parent: tk.Tk, messages: list, mood: str = "neutral"):
-        from w95_window import apply_borderless_win95, show_borderless
+        from agetha.ui.w95_window import apply_borderless_win95, show_borderless
 
         self._win = tk.Toplevel(parent)
         apply_borderless_win95(self._win, parent, topmost=True)
@@ -1383,7 +1383,7 @@ class CompanionApp:
 
     def _open_dashboard(self) -> None:
         try:
-            from dashboard import open_dashboard
+            from agetha.ui.dashboard import open_dashboard
             open_dashboard(self.root, get_settings())
         except Exception as exc:
             logger.warning(f"Dashboard open failed: {exc}")
@@ -1401,11 +1401,11 @@ class CompanionApp:
         self._last_dragged_file = file_path if file_path else filename
         sampled = 0
         try:
-            from companion_stats import update_stats
+            from agetha.core.companion_stats import update_stats
             if file_path and Path(file_path).exists():
                 update_stats("file_drop", path=file_path)
                 try:
-                    from companion_stats import get_stats_summary
+                    from agetha.core.companion_stats import get_stats_summary
                     sampled = int(get_stats_summary().get("last_feed_bytes", 0))
                 except Exception:
                     pass
@@ -2003,7 +2003,7 @@ class CompanionApp:
             self.root.after_cancel(self._poll_job)
         self._poll_job = self.root.after(SCREEN_POLL_INTERVAL_MS, self._schedule_screen_poll)
         try:
-            from companion_stats import update_stats
+            from agetha.core.companion_stats import update_stats
             update_stats("tick")
         except Exception:
             pass
@@ -2045,7 +2045,7 @@ class CompanionApp:
                 and not str(user_message).strip().lower().startswith("[system]")
             ):
                 try:
-                    from companion_stats import classify_user_tone, update_stats
+                    from agetha.core.companion_stats import classify_user_tone, update_stats
                     tone = classify_user_tone(user_message)
                     if tone:
                         update_stats(tone)
@@ -2241,7 +2241,7 @@ class CompanionApp:
             def _begin_speech() -> None:
                 self._set_state(self.STATE_TALKING, mood)
                 try:
-                    from glitch_overlay import maybe_mood_glitch
+                    from agetha.ui.glitch_overlay import maybe_mood_glitch
                     maybe_mood_glitch(self.root, mood)
                 except Exception:
                     pass
@@ -2297,7 +2297,7 @@ class CompanionApp:
         return result[0]
 
     def _show_window_picker_dialog(self, matches: list[tuple[int, str]]) -> int | None:
-        from w95_window import apply_borderless_win95, show_borderless
+        from agetha.ui.w95_window import apply_borderless_win95, show_borderless
 
         dlg = tk.Toplevel(self.root)
         apply_borderless_win95(dlg, self.root, topmost=True)
@@ -2460,7 +2460,7 @@ class CompanionApp:
             return False
 
     def _dispatch_response(self, response: dict, user_message: str | None = None):
-        from command_handlers import dispatch
+        from agetha.commands.command_handlers import dispatch
         dispatch(self, response, user_message)
 
     def _on_speech_done(self, shutdown: bool = False):
@@ -2511,7 +2511,7 @@ class CompanionApp:
 
 def _warn_if_no_api_key():
     """First-run hint when config exists but no AI backend is configured."""
-    from app_config import get_settings, CONFIG_PATH, ENV_PATH
+    from agetha.app_config import get_settings, CONFIG_PATH, ENV_PATH
     s = get_settings()
     if s.bool("USE_LOCAL_AI"):
         if s.get("LOCAL_AI_MODEL", "").strip():
@@ -2553,7 +2553,7 @@ def _early_config_check():
     """
     Ensure config.txt exists; always continue with defaults if missing or invalid.
     """
-    from app_config import ensure_config_file, get_last_config_load, get_settings, CONFIG_PATH
+    from agetha.app_config import ensure_config_file, get_last_config_load, get_settings, CONFIG_PATH
 
     ensure_config_file(CONFIG_PATH, write_if_missing=True)
     get_settings(reload=True)
