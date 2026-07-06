@@ -156,7 +156,7 @@ def search_memories(query: str, limit: int = 5) -> list[dict[str, Any]]:
 def format_search_results_for_prompt(results: list[dict[str, Any]]) -> str:
     """Format BM25 hits for LLM injection, respecting LONGTERM_MEMORY_MAX_CHARS."""
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         max_chars = get_settings().longterm_memory_max_chars
     except Exception:
         max_chars = 2500

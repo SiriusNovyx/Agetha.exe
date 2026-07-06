@@ -80,7 +80,7 @@ _MOOD_SNAP_THRESHOLDS: dict[str, int] = _SETTINGS.mood_snap_thresholds()
 # ── Phase 2: ctypes external window helper ────────────────────────────────────
 def _find_window_hwnd(partial_name: str) -> int | None:
     """Find the first visible window whose title contains partial_name (case-insensitive)."""
-    from window_control import find_window_hwnd
+    from agetha.platform.window_control import find_window_hwnd
     return find_window_hwnd(partial_name)
 
 
@@ -896,15 +896,19 @@ class AgethaPopup:
             command=self._win.destroy,
         ).pack()
 
-        # ── Position just above the parent window ─────────────────────────
+        # ── Position just above the parent window, clamped to screen ──────
         self._win.update_idletasks()
         px = parent.winfo_x()
         py = parent.winfo_y()
         pw = parent.winfo_width()
-        ww = self._win.winfo_width()
-        wh = self._win.winfo_height()
+        ww = self._win.winfo_width() or 300
+        wh = self._win.winfo_height() or 200
+        sw = self._win.winfo_screenwidth()
+        sh = self._win.winfo_screenheight()
         x  = px + (pw - ww) // 2
-        y  = max(0, py - wh - 10)
+        y  = py - wh - 10
+        x  = max(0, min(x, sw - ww))
+        y  = max(0, min(y, sh - wh))
         self._win.geometry(f"+{x}+{y}")
 
         show_borderless(self._win)
@@ -1031,6 +1035,7 @@ class CompanionApp:
         self._ai_busy = False
         self._ai_tick_lock = threading.Lock()
         self._pending_user_message: str | None = None
+        self._post_ai_tick_callbacks: list[Callable[[], None]] = []
         self._speech_active = False
         self._state_lock = threading.Lock()
         self._voice: VoiceInput | None = None
@@ -2053,7 +2058,7 @@ class CompanionApp:
                     pass
 
         screen_text = ""
-        if not is_user and self._screen:
+        if self._screen:
             own_hwnd = None
             try:
                 own_hwnd = self._screen._get_own_hwnd()
@@ -2065,8 +2070,10 @@ class CompanionApp:
                 active_title = self._screen.get_active_window_title(skip_hwnd=own_hwnd)
 
             typing_pause = _SETTINGS.ocr_pause_while_typing_sec
+            # User messages bypass typing pause — they just typed and expect fresh screen context.
             recently_active = (
-                typing_pause > 0
+                not is_user
+                and typing_pause > 0
                 and (time.time() - self._last_direct_interaction_time) < typing_pause
             )
 
@@ -2100,6 +2107,8 @@ class CompanionApp:
                 screen_text = f"[Active: {active_title}]"
                 self._last_screen_text = screen_text
 
+        ai_screen_context = screen_text or self._last_screen_text
+
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
         def _on_token(raw_so_far: str):
@@ -2109,13 +2118,13 @@ class CompanionApp:
         try:
             if _SETTINGS.enable_streaming:
                 response = self._ai.query_streaming(
-                    screen_context=screen_text if not is_user else self._last_screen_text,
+                    screen_context=ai_screen_context,
                     user_message=user_message or "",
                     on_token=_on_token,
                 )
             else:
                 response = self._ai.query(
-                    screen_context=screen_text if not is_user else self._last_screen_text,
+                    screen_context=ai_screen_context,
                     user_message=user_message or "",
                 )
         except Exception as exc:
@@ -2150,7 +2159,21 @@ class CompanionApp:
             self._dispatch_response(response, user_message)
         finally:
             self._ai_busy = False
+            self._run_deferred_ai_tick_callbacks()
             self._drain_pending_user_message()
+
+    def _defer_after_ai_tick(self, callback: Callable[[], None]) -> None:
+        """Run callback after the current _ai_tick releases _ai_busy (avoids _ai_query races)."""
+        self._post_ai_tick_callbacks.append(callback)
+
+    def _run_deferred_ai_tick_callbacks(self) -> None:
+        callbacks = self._post_ai_tick_callbacks[:]
+        self._post_ai_tick_callbacks.clear()
+        for cb in callbacks:
+            try:
+                cb()
+            except Exception as exc:
+                logger.debug(f"deferred ai tick callback failed: {exc}")
 
     def _drain_pending_user_message(self) -> None:
         pending: str | None
@@ -2364,6 +2387,20 @@ class CompanionApp:
         listbox.bind("<Double-Button-1>", _ok)
         dlg.protocol("WM_DELETE_WINDOW", _cancel)
         dlg.update_idletasks()
+        try:
+            px, py = self.root.winfo_x(), self.root.winfo_y()
+            pw = self.root.winfo_width()
+            ww = dlg.winfo_width() or 400
+            wh = dlg.winfo_height() or 300
+            sw = dlg.winfo_screenwidth()
+            sh = dlg.winfo_screenheight()
+            x = px + (pw - ww) // 2
+            y = py - wh - 10
+            x = max(0, min(x, sw - ww))
+            y = max(0, min(y, sh - wh))
+            dlg.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
         show_borderless(dlg)
         dlg.grab_set()
         dlg.wait_window()

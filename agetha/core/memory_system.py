@@ -109,7 +109,7 @@ def _apply_memory_config() -> None:
     """Load episodic limits from config.txt."""
     global EPISODIC_HARD_CAP, EPISODIC_PROMPT_LIMIT, EPISODIC_ENTRY_MAX_CHARS
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         s = get_settings()
         EPISODIC_HARD_CAP = s.episodic_max_entries
         EPISODIC_PROMPT_LIMIT = s.episodic_prompt_limit

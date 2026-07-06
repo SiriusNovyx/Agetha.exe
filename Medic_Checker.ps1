@@ -44,7 +44,7 @@ function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
 function Write-Ok([string]$Text)   { Write-Line "  [ OK ]  $Text" 'Green' }
 function Write-Warn([string]$Text) { Write-Line "  [WARN]  $Text" 'Yellow' }
 function Write-Fail([string]$Text) { Write-Line "  [FAIL]  $Text" 'Red' }
-function Write-Info([string]$Text) { Write-Line "  [    ]  $Text" 'DarkGray' }
+function Write-Info([string]$Text) { Write-Line "  [NOTICE]  $Text" 'DarkGray' }
 function Write-Step([string]$Text) { Write-Line "  $Text" 'Cyan' }
 function Write-Head([string]$Text) { Write-Line $Text 'White' }
 

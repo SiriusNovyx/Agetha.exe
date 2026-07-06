@@ -139,6 +139,11 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
 
     win = tk.Toplevel(parent)
     apply_borderless_win95(win, parent, topmost=True)
+    if sys.platform == "win32":
+        try:
+            win.tk.call("wm", "transient", win._w, "")
+        except Exception:
+            pass
     win.configure(bg=W95_BG)
     win.geometry("520x420")
     win.minsize(420, 320)
@@ -465,14 +470,21 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     settings_text.insert("1.0", "\n".join(cfg_lines))
     settings_text.configure(state="disabled")
 
-    # Position near parent and show without native title bar
+    # Position near parent, clamped to screen bounds
     win.update_idletasks()
     try:
         px, py = parent.winfo_x(), parent.winfo_y()
         pw = parent.winfo_width()
-        ww = win.winfo_width()
-        x = max(0, px + pw + 12)
-        y = max(0, py)
+        ww = win.winfo_width() or 520
+        wh = win.winfo_height() or 420
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+
+        x = px + pw + 12
+        if x + ww > sw:
+            x = px - ww - 12
+        x = max(0, min(x, sw - ww))
+        y = max(0, min(py, sh - wh))
         win.geometry(f"+{x}+{y}")
     except Exception:
         pass

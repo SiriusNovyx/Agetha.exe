@@ -64,7 +64,7 @@ def cmd_config_status() -> None:
 def cmd_voice_deps() -> None:
     """Print VOICE_OK, VOICE_MISSING, STT_OK, or STT_MISSING for Medic_Checker."""
     try:
-        from voice_input import check_voice_dependencies, check_local_stt_dependencies
+        from agetha.platform.voice_input import check_voice_dependencies, check_local_stt_dependencies
     except ImportError:
         print("VOICE_MISSING:voice_input.py")
         return

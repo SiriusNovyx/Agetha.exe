@@ -99,15 +99,35 @@ class _TriviaGame:
         header = tk.Frame(outer, bg=W95_TITLE_BG, height=18)
         header.pack(fill="x", padx=2, pady=(2, 0))
         header.pack_propagate(False)
-        tk.Label(
+        title_lbl = tk.Label(
             header, text="⚠  Virus Trivia.exe", bg=W95_TITLE_BG, fg=W95_TITLE_FG,
             font=W95_FONT_BOLD, anchor="w", padx=4,
-        ).pack(side="left", fill="y")
+        )
+        title_lbl.pack(side="left", fill="y")
         tk.Button(
             header, text="✕", font=("MS Sans Serif", 7, "bold"),
             bg=W95_BTN_BG, relief="raised", bd=2, width=2,
             command=self._win.destroy,
         ).pack(side="right", padx=(0, 2), pady=1)
+
+        self._drag_x = self._drag_y = 0
+        self._win_x = self._win_y = 0
+
+        def _drag_start(e: tk.Event) -> None:
+            self._drag_x, self._drag_y = e.x_root, e.y_root
+            self._win_x, self._win_y = self._win.winfo_x(), self._win.winfo_y()
+
+        def _drag_motion(e: tk.Event) -> None:
+            dx = e.x_root - self._drag_x
+            dy = e.y_root - self._drag_y
+            self._win_x += dx
+            self._win_y += dy
+            self._win.geometry(f"+{self._win_x}+{self._win_y}")
+            self._drag_x, self._drag_y = e.x_root, e.y_root
+
+        for w in (header, title_lbl):
+            w.bind("<ButtonPress-1>", _drag_start)
+            w.bind("<B1-Motion>", _drag_motion)
 
         body = tk.Frame(outer, bg=W95_BG)
         body.pack(fill="both", expand=True, padx=2, pady=2)
@@ -129,6 +149,20 @@ class _TriviaGame:
         self._status.pack(pady=(0, 8))
 
         self._win.update_idletasks()
+        try:
+            px, py = parent.winfo_x(), parent.winfo_y()
+            pw = parent.winfo_width()
+            ww = self._win.winfo_width() or 420
+            wh = self._win.winfo_height() or 300
+            sw = self._win.winfo_screenwidth()
+            sh = self._win.winfo_screenheight()
+            x = px + (pw - ww) // 2
+            y = py - wh - 10
+            x = max(0, min(x, sw - ww))
+            y = max(0, min(y, sh - wh))
+            self._win.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
         show_borderless(self._win)
         self._show_question()
 

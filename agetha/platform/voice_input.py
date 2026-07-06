@@ -415,9 +415,12 @@ class MicPickerDialog:
         self._win.update_idletasks()
         px, py = parent.winfo_x(), parent.winfo_y()
         pw, ph = parent.winfo_width(), parent.winfo_height()
-        ww, wh = self._win.winfo_width(), self._win.winfo_height()
-        x = max(0, px + (pw - ww) // 2)
-        y = max(0, py + (ph - wh) // 2)
+        ww = self._win.winfo_width() or 260
+        wh = self._win.winfo_height() or 200
+        sw = self._win.winfo_screenwidth()
+        sh = self._win.winfo_screenheight()
+        x = max(0, min(px + (pw - ww) // 2, sw - ww))
+        y = max(0, min(py + (ph - wh) // 2, sh - wh))
         self._win.geometry(f"+{x}+{y}")
         show_borderless(self._win)
         self._win.bind("<Return>", lambda _: self._ok())

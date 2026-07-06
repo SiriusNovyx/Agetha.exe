@@ -1065,7 +1065,9 @@ def handle_request_screen_read(app, response, ctx):
         if follow:
             app._dispatch_response(follow, ctx.user_message)
 
-    threading.Thread(target=_requery, daemon=True).start()
+    app._defer_after_ai_tick(
+        lambda: threading.Thread(target=_requery, daemon=True).start()
+    )
     return True
 
 
