@@ -251,7 +251,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 3.5.1
+APP_VERSION = 3.5.5
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
