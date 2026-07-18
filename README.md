@@ -2,7 +2,7 @@
 
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
-**Version:** Overhaul v3.5.5 · **Medic_Checker:** v3.5 · **Original author:** @tomiszivacs
+**Version:** Overhaul v3.6.0 · **Medic_Checker:** v3.6 · **Original author:** @tomiszivacs
 
 ---
 
@@ -82,25 +82,46 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
 
 ```
 Agetha_Mod/
-├── main.py              # Tkinter UI, GIF player, app lifecycle
-├── ai_engine.py         # Groq/Ollama brain, JSON command parsing
-├── screen_reader.py     # OCR, pattern matching, window capture
-├── memory_system.py     # soul.md + episodic memory
-├── command_guard.py     # 3-tier native confirmation dialogs
-├── command_handlers.py  # Command pattern dispatch (43 handlers)
-├── system_commands.py   # OS utilities (volume, wallpaper, shutdown…)
-├── window_control.py    # Win32 window find/move/resize/close
-├── app_config.py        # Central config.txt loader & typed settings
-├── voice_input.py       # Microphone STT (Google / faster-whisper)
-├── utils.py             # Shared helpers, logging, .env loader
-├── config.txt           # User settings only — no API keys
-├── .env.example         # API key template
-├── requirements.txt     # Pinned Python dependencies
-├── Medic_Checker.ps1    # Startup health check & launcher (v3.5)
-├── Medic_Checker.bat    # Thin launcher → runs Medic_Checker.ps1
-├── Run_Agetha_Admin.ps1 # Optional elevated launch for protected windows
-├── assets/              # GIFs, fonts, icons
-└── memory/              # soul.md, episodic_memory.json
+├── main.py                 # Tkinter entry point (launch via Medic_Checker)
+├── medic_helper.py         # Medic_Checker CLI helpers
+├── config.txt              # User settings only — no API keys
+├── .env.example            # API key template
+├── requirements.txt
+├── Medic_Checker.ps1       # Startup health check & launcher (v3.6)
+├── Medic_Checker.bat
+├── Run_Agetha_Admin.ps1
+├── assets/                 # GIFs, fonts, icons
+├── memory/                 # soul.md, episodic, stats, notepad
+├── tests/                  # Phase QA test suites
+│   ├── test_phase1_qa.py
+│   ├── test_phase2_tts.py
+│   ├── test_phase3_web_rag.py
+│   ├── test_phase3b_glitch.py
+│   └── test_phase4_realism.py
+└── agetha/                 # Python package
+    ├── app_config.py       # config.txt loader & typed settings
+    ├── utils.py            # logging, paths, .env loader
+    ├── core/               # AI brain, memory, companion stats
+    │   ├── ai_engine.py
+    │   ├── memory_system.py
+    │   ├── memory_search.py
+    │   └── companion_stats.py
+    ├── commands/           # command guard, handlers, OS utilities
+    │   ├── command_guard.py
+    │   ├── command_handlers.py
+    │   └── system_commands.py
+    ├── platform/           # OCR, Win32 window control, voice input
+    │   ├── screen_reader.py
+    │   ├── window_control.py
+    │   └── voice_input.py
+    ├── features/           # optional TTS & web RAG
+    │   ├── tts_player.py
+    │   └── web_rag.py
+    └── ui/                 # Win95 dashboards, overlays, minigames
+        ├── dashboard.py
+        ├── w95_window.py
+        ├── glitch_overlay.py
+        └── virus_trivia.py
 ```
 
 ---
@@ -174,6 +195,12 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 | `play_sound` / `play_emotion_sound` | Play sound or OS emotion sound |
 | `show_error_gif` | Show error animation |
 | `request_screen_read` | Force immediate OCR capture |
+| `search_memory` | BM25 search of long-term memory archive (`query`, optional `limit`) |
+| `search_web` | DuckDuckGo web search (`query`, optional `limit`) — requires `ENABLE_WEB_RAG=yes` ⚠ |
+| `fetch_webpage` | Fetch visible text from a URL (`url`) — requires `ENABLE_WEB_RAG=yes` ⚠ |
+| `glitch_overlay` | Brief harmless CRT glitch overlay (`style`, `duration_ms`) — requires `ENABLE_GLITCH_EFFECTS=yes` |
+| `read_notepad` | Read dashboard notepad (`memory/notepad.txt`) into AI context |
+| `play_virus_trivia` | Open Win95 virus trivia minigame popup |
 | `clear_memory` | Erase episodic memory (soul.md kept); `memory_scope`: all/recent/old/keep_5 |
 | `view_memory` | Show recent episodic entries in popup |
 
@@ -277,6 +304,39 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `conf
 | `EPISODIC_PROMPT_LIMIT` | `10` | Episodic memories injected per prompt |
 | `EPISODIC_ENTRY_MAX_CHARS` | `300` | Max chars per episodic entry |
 | `EPISODIC_MAX_ENTRIES` | `50` | Max episodic entries stored |
+| `ENABLE_LONGTERM_MEMORY` | `yes` | Dual-write `summary_memory` to `memory/longterm_memory.jsonl` |
+| `LONGTERM_MEMORY_MAX_RESULTS` | `5` | Max BM25 hits for `search_memory` |
+| `LONGTERM_MEMORY_MAX_CHARS` | `2500` | Max chars of search results injected into prompt |
+| `ENABLE_WEB_RAG` | `no` | Enable `search_web` / `fetch_webpage` (network access) |
+| `WEB_FETCH_MAX_CHARS` | `8000` | Max chars of fetched page text injected into prompt |
+| `WEB_TIMEOUT_SEC` | `10` | HTTP timeout for web search/fetch (seconds) |
+| `WEB_SEARCH_MAX_RESULTS` | `5` | Max DuckDuckGo hits for `search_web` |
+| `ENABLE_GLITCH_EFFECTS` | `no` | Enable harmless `glitch_overlay` visual effect |
+| `GLITCH_MAX_DURATION_MS` | `2000` | Max overlay lifetime in ms (200–5000) |
+| `GLITCH_DEFAULT_STYLE` | `scanlines` | Default style: `scanlines` \| `static` \| `rgb_split` \| `flicker` \| `bsod` \| `matrix` \| `tear` |
+| `GLITCH_MOOD_AUTO` | `no` | Auto brief glitch on deep moods (`manic`, `angry`, `dominant`, `paranoid`) when glitches enabled |
+| `GLITCH_FULLSCREEN` | `no` | Use fullscreen overlay instead of corner window |
+| `ENABLE_COMPANION_STATS_CONTEXT` | `yes` | Inject virus-registry stats + CPU heat hints into AI prompt |
+
+#### Web RAG security
+
+Web search and page fetch are **disabled by default** (`ENABLE_WEB_RAG = no`). When enabled:
+
+- Results are treated as **untrusted external data** and wrapped with prompt-injection warnings before the AI sees them.
+- No JavaScript execution — only static HTML text extraction.
+- Network errors degrade gracefully (empty results / error dicts); the app never crashes on fetch failure.
+- `search_web` and `fetch_webpage` require user confirmation (Caution tier) when `ENABLE_COMMAND_CONFIRMATIONS=yes`.
+- Anti-recursion: after one search/fetch per user request, the AI is told not to call `search_web` or `fetch_webpage` again.
+
+#### Glitch overlay safety
+
+The glitch effect is **disabled by default** (`ENABLE_GLITCH_EFFECTS = no`). When enabled:
+
+- **Visual only** — a small borderless Tkinter overlay in the screen corner; no desktop, wallpaper, registry, file, or display-setting changes.
+- Auto-closes within `GLITCH_MAX_DURATION_MS` (default 2000 ms, clamped 200–5000).
+- Does not trap input for long; uses a corner overlay rather than fullscreen blocking.
+- Failures are logged and never crash the app.
+- `glitch_overlay` is Safe tier (no confirmation dialog when confirmations are enabled).
 
 #### Behavior & timing
 
@@ -313,6 +373,8 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `conf
 | `SUBTITLE_CHAR_DELAY` | `0.035` | Typewriter subtitle speed (seconds) |
 | `ANIMATION_SPEED` | `0.6` | GIF speed multiplier |
 
+Click the **📊** button in the title bar (beside minimize) to open the **Dashboard** — retro progress bars for CPU/RAM/disk/core heat, virus registry stats, notepad, and limited config toggles (safe yes/no keys).
+
 #### Medic_Checker (launcher)
 
 | Setting | Default | Description |
@@ -322,7 +384,7 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `conf
 | `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
 | `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
 | `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
-| `APP_VERSION` | `3.5.5` | Shown in window title |
+| `APP_VERSION` | `3.6.0` | Shown in window title |
 | `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
 | `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
 | `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |
@@ -337,6 +399,23 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `conf
 | `ENABLE_VOICE` | `no` | Show 🎤 microphone button |
 | `USE_LOCAL_STT` | `no` | `yes` = faster-whisper offline; `no` = Google STT online |
 | `ENABLE_FILE_DRAG_DROP` | `yes` | Drop files onto Agetha's GIF |
+
+#### Voice output (retro bleeps + optional TTS)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `VOICE_OUTPUT_MODE` | `bleeps_only` | `bleeps_only` (Undertale-style bleeps), `tts_only`, or `both` |
+| `TTS_RATE` | `165` | pyttsx3 speech rate (80–300) |
+| `TTS_VOLUME` | `0.8` | TTS volume (0.0–1.0) |
+| `TTS_VOICE_NAME` | *(empty)* | Partial match on installed voice id/name; empty = system default |
+
+TTS is **optional**. The app runs without `pyttsx3`; install only when using `tts_only` or `both`:
+
+```bash
+pip install "pyttsx3>=2.90,<3.0.0"
+```
+
+Subtitles and TTS are not perfectly synced in v1 — bleeps follow mood; TTS runs on a background worker thread.
 
 ### Local AI (Ollama)
 
@@ -364,25 +443,38 @@ USE_LOCAL_STT = no          # no = Google STT; yes = faster-whisper
 ENABLE_FILE_DRAG_DROP = yes
 ```
 
+### Voice output / TTS (optional)
+
+```ini
+VOICE_OUTPUT_MODE = bleeps_only   # bleeps_only | tts_only | both
+TTS_RATE = 165
+TTS_VOLUME = 0.8
+TTS_VOICE_NAME =                  # partial match, e.g. Zira or David
+```
+
+```bash
+pip install "pyttsx3>=2.90,<3.0.0"   # only needed for tts_only / both
+```
+
 Run **Medic_Checker** after enabling — it installs optional packages when `AUTO_PIP_INSTALL = yes`.
 
 ---
 
-## Medic_Checker v3.5 (PowerShell)
+## Medic_Checker v3.6 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
 | Step | Check |
 |------|-------|
-| Pre-flight | All 12 core modules + `requirements.txt` present |
+| Pre-flight | All 16 core modules + `requirements.txt` present |
 | [A–D] | ARM64/Snapdragon x64 Python detection & auto-install |
 | [1/7] | Python installed |
 | [2/7] | Virtual environment create/activate |
-| [3/7] | Packages from `requirements.txt`; optional voice/STT/DnD when enabled in `config.txt` |
+| [3/7] | Packages from `requirements.txt`; optional voice/STT/DnD/**TTS** when enabled in `config.txt` |
 | [4/7] | Tesseract OCR (optional — enables screen reading) |
 | [5/7] | All 20 assets in `assets\` |
-| [6/7] | Config, `.env`, `memory\`, `soul.md` |
-| [7/7] | `py_compile` all 12 Python modules |
+| [6/7] | Config, `.env`, `memory\` (`soul.md`, episodic, long-term JSONL, stats, notepad); reports `ENABLE_LONGTERM_MEMORY` and `VOICE_OUTPUT_MODE` |
+| [7/7] | `py_compile` all 16 Python modules; import check for Phase 1+2 extensions |
 
 **Color codes:** `[ OK ]` green · `[WARN]` yellow · `[FAIL]` red
 
@@ -411,6 +503,7 @@ pillow, numpy, requests, groq, pyautogui, pytesseract, mss, pygame, psutil
 SpeechRecognition, PyAudio          # ENABLE_VOICE = yes
 faster-whisper                    # USE_LOCAL_STT = yes
 tkinterdnd2                       # ENABLE_FILE_DRAG_DROP = yes (Windows)
+pyttsx3                           # VOICE_OUTPUT_MODE = tts_only | both
 ```
 
 ---
@@ -455,7 +548,7 @@ command_handlers.py → Execute action + update UI
 - **Token % UI** — Groq daily budget estimate in input placeholder + status bar
 - **`FASTER_MODE`** — shorter prompts for lower token cost
 - **Secrets** — API keys documented as `.env` only; `config.txt` has no key lines
-- **Medic_Checker** — optional package install for voice/STT/DnD; 12-module compile check
+- **Medic_Checker** — optional package install for voice/STT/DnD/TTS; 16-module compile check + Phase 1+2 import verify
 
 ### v3.0 — Quality & Safety Overhaul
 
@@ -466,7 +559,7 @@ command_handlers.py → Execute action + update UI
 - **New commands:** `open_url`, `system_info`, `set_volume`, `set_wallpaper`, `search_files`, `type_text`, `lock_screen`, `shutdown`, `restart`, `set_reminder`, `get_clipboard`, `open_folder`, `target_window_close`, `change_mood`, `clear_memory`
 - **UX:** Escape to abort AI; input stays enabled during ambient polls; subtitle errors on failed file ops
 - **Reliability:** null guards, retry limits, config validation, OCR resolution cap
-- **Medic_Checker.ps1 v3.5** — PowerShell health check; `.bat` is a thin launcher
+- **Medic_Checker.ps1 v3.6** — Phase 1+2 modules, TTS optional install, memory file status
 
 ### Phase 3 — Spatial OCR
 

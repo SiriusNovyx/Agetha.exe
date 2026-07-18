@@ -15,9 +15,9 @@ import logging
 import threading
 from typing import Callable
 
-from utils import IS_WINDOWS, logger
-from app_config import get_settings
-from window_control import is_self_process_target
+from agetha.utils import IS_WINDOWS, logger
+from agetha.app_config import get_settings
+from agetha.platform.window_control import is_self_process_target
 
 # Windows MessageBox flags
 _MB_OKCANCEL = 0x00000001
@@ -54,7 +54,10 @@ class CommandGuard:
         "show_notification": SAFE, "snap_to_center": SAFE, "move_window": SAFE,
         "request_screen_read": SAFE, "request_path": SAFE, "show_error_gif": SAFE,
         "wake_user": SAFE, "play_emotion_sound": SAFE, "monitor_process": SAFE,
-        "view_memory": SAFE,
+        "view_memory": SAFE, "search_memory": SAFE,
+        "glitch_overlay": SAFE,
+        "read_notepad": SAFE, "play_virus_trivia": SAFE,
+        "search_web": CAUTION, "fetch_webpage": CAUTION,
         "read_document": SAFE, "get_clipboard": SAFE, "open_folder": SAFE,
         "clear_memory": CAUTION,
         "read_file": CAUTION, "open_file": CAUTION, "open_app": CAUTION,
@@ -325,6 +328,12 @@ class CommandGuard:
                 f"Clear episodic memory"
                 f" (scope: {r.get('memory_scope', 'all') or 'all'})."
                 f" Soul.md is kept."
+            ),
+            "search_web": lambda r: (
+                f"Search the web for:\n\n  {(r.get('query', '???'))[:200]}"
+            ),
+            "fetch_webpage": lambda r: (
+                f"Fetch webpage content from:\n\n  {(r.get('url', '???'))[:500]}"
             ),
             "open_app": lambda r: f"Launch: {r.get('app', '') or r.get('app_name', '???')}",
             "open_file": lambda r: f"Open file: {r.get('path', '???')}",

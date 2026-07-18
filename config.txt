@@ -1,5 +1,5 @@
 # =============================================================================
-# Agetha Mod — config.txt FOR THIS PROJECT ONLY NOT WORK ON ORIGINAL AGETHA
+# Agetha Mod — config.txt
 # =============================================================================
 #
 # HOW THIS FILE WORKS
@@ -24,24 +24,19 @@ USE_LOCAL_AI = no
 ENABLE_GROQ = yes
 
 # ENABLE_OPENROUTER — yes = use OpenRouter instead of Groq (experimental).
-# Ignored when USE_LOCAL_AI = yes. Key lives in .env → OPENROUTER_API_KEY
+# Ignored when USE_LOCAL_AI = yes. Get a key: https://openrouter.ai/keys
 ENABLE_OPENROUTER = no
 
-# OPENROUTER_MODEL — model slug from https://openrouter.ai/models
+# OPENROUTER_API_KEY — single OpenRouter key (prefer .env: OPENROUTER_API_KEY=...)
+OPENROUTER_API_KEY =
+
+# OPENROUTER_MODEL — model slug from openrouter.ai/models
 OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
 
 # FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
 FASTER_MODE = no
 
-
-# ── API keys (secrets) ───────────────────────────────────────────────────────
-# All keys are in .env only — copy .env.example → .env and fill in:
-#   GROQ_API_KEY_1 … GROQ_API_KEY_10   (Groq — https://console.groq.com)
-#   OPENROUTER_API_KEY                   (if ENABLE_OPENROUTER = yes)
-# .env overrides config.txt when non-empty. Do not put keys in this file.
-
-
-# ── Groq model ───────────────────────────────────────────────────────────────
+# GROQ_MODEL — model name from Groq console (default: llama-3.3-70b-versatile).
 GROQ_MODEL = llama-3.3-70b-versatile
 
 
@@ -115,6 +110,46 @@ EPISODIC_ENTRY_MAX_CHARS = 300
 # EPISODIC_MAX_ENTRIES — max entries stored in memory/episodic_memory.json.
 EPISODIC_MAX_ENTRIES = 50
 
+# ENABLE_LONGTERM_MEMORY — yes = dual-write summary_memory to memory/longterm_memory.jsonl.
+# Medic_Checker reports this and memory\ file status in step [6/7].
+ENABLE_LONGTERM_MEMORY = yes
+
+# LONGTERM_MEMORY_MAX_RESULTS — max BM25 hits returned by search_memory command.
+LONGTERM_MEMORY_MAX_RESULTS = 5
+
+# LONGTERM_MEMORY_MAX_CHARS — max chars of search results injected into AI prompt.
+LONGTERM_MEMORY_MAX_CHARS = 2500
+
+# ENABLE_WEB_RAG — yes = allow search_web / fetch_webpage commands (network).
+ENABLE_WEB_RAG = no
+
+# WEB_FETCH_MAX_CHARS — max chars of fetched page text injected into AI prompt.
+WEB_FETCH_MAX_CHARS = 8000
+
+# WEB_TIMEOUT_SEC — HTTP timeout for web search/fetch (seconds).
+WEB_TIMEOUT_SEC = 10
+
+# WEB_SEARCH_MAX_RESULTS — max DuckDuckGo hits for search_web command.
+WEB_SEARCH_MAX_RESULTS = 5
+
+# ENABLE_GLITCH_EFFECTS — yes = allow harmless visual glitch_overlay command.
+ENABLE_GLITCH_EFFECTS = no
+
+# GLITCH_MAX_DURATION_MS — max overlay lifetime (200–5000 ms).
+GLITCH_MAX_DURATION_MS = 5000
+
+# GLITCH_DEFAULT_STYLE — scanlines|static|rgb_split|flicker|bsod|matrix|tear
+GLITCH_DEFAULT_STYLE = static
+
+# GLITCH_MOOD_AUTO — yes = rare mood-themed glitch on manic/angry/dominant (needs ENABLE_GLITCH_EFFECTS=yes).
+GLITCH_MOOD_AUTO = no
+
+# GLITCH_FULLSCREEN — yes = brief fullscreen overlay; no = small corner panel (safer default).
+GLITCH_FULLSCREEN = no
+
+# ENABLE_COMPANION_STATS_CONTEXT — yes = inject virus-registry stats into AI prompts.
+ENABLE_COMPANION_STATS_CONTEXT = yes
+
 
 # ── Behavior & timing ─────────────────────────────────────────────────────────
 
@@ -169,8 +204,8 @@ OCR_FOCUSED_WINDOW_ONLY = yes
 # INCLUDE_WINDOW_TITLE_IN_CONTEXT — yes = send [Active: Window Title] to AI each poll.
 INCLUDE_WINDOW_TITLE_IN_CONTEXT = yes
 
-# TESSERACT_PATH — Manual set full path to tesseract.exe if not on PATH (Windows).
-# Example: C:\Program Files\Tesseract-OCR\tesseract.exe
+# TESSERACT_PATH — full path to tesseract.exe if not on PATH (Windows).
+# Example: C:\\Program Files\\Tesseract-OCR\\tesseract.exe
 TESSERACT_PATH =
 
 
@@ -202,13 +237,13 @@ WINDOW_MOVE_DURATION_MS = 280
 # SKIP_TESSERACT_CHECK — yes = skip Tesseract step in health check.
 SKIP_TESSERACT_CHECK = no
 
-# SKIP_ASSET_CHECK — yes = skip verifying assets\ GIFs and fonts.
+# SKIP_ASSET_CHECK — yes = skip verifying assets\\ GIFs and fonts.
 SKIP_ASSET_CHECK = no
 
 # AUTO_PIP_INSTALL — yes = auto pip install -r requirements.txt if packages missing.
 AUTO_PIP_INSTALL = yes
 
-# CREATE_DESKTOP_SHORTCUT — yes = create Desktop\Agetha.lnk on each Medic_Checker run.
+# CREATE_DESKTOP_SHORTCUT — yes = create Desktop\\Agetha.lnk on each Medic_Checker run.
 CREATE_DESKTOP_SHORTCUT = yes
 
 # CHECK_FOR_UPDATES — yes = compare APP_VERSION to GITHUB_RELEASES_URL (needs URL below).
@@ -230,7 +265,7 @@ GITHUB_RELEASES_URL = https://api.github.com/repos/SiriusNovyx/Agetha.exe/releas
 
 # TARGET_APP_ALIASES — short name = partial title fragment (comma-separated).
 # AI can say "notepad" and Agetha searches for "Notepad" in window titles.
-TARGET_APP_ALIASES = notepad=Notepad,chrome=Google Chrome,firefox=Mozilla Firefox,code=Visual Studio Code,cursor=Cursor
+TARGET_APP_ALIASES = notepad=Notepad,chrome=Google Chrome,firefox=Mozilla Firefox,code=Visual Studio Code
 
 # WINDOW_PICKER_ON_AMBIGUOUS — yes = dialog if multiple windows match same name.
 WINDOW_PICKER_ON_AMBIGUOUS = yes
@@ -243,17 +278,18 @@ DRY_RUN_MODE = no
 
 
 # ── Voice input (microphone) ──────────────────────────────────────────────────
-# Medic_Checker installs deps when ENABLE_VOICE = yes.
+# Requires: SpeechRecognition, pyaudio (Medic_Checker installs when ENABLE_VOICE=yes).
 
-# ENABLE_VOICE — yes = show 🎤 button in UI.
-ENABLE_VOICE = no
+# ENABLE_VOICE — yes = show microphone button in UI.
+ENABLE_VOICE = yes
 
-# USE_LOCAL_STT — yes = faster-whisper (offline); no = Google STT (online).
+# USE_LOCAL_STT — yes = faster-whisper (offline); no = Google Speech Recognition (online).
+# Local STT needs: pip install faster-whisper numpy (~75 MB model on first run).
 USE_LOCAL_STT = no
 
 
 # ── File drag-and-drop ────────────────────────────────────────────────────────
-# Drop files onto Agetha's GIF. Needs tkinterdnd2 (Windows).
+# Drop files onto Agetha's GIF. Requires tkinterdnd2 on Windows.
 
 # ENABLE_FILE_DRAG_DROP — yes = enable drag-and-drop onto the character.
 ENABLE_FILE_DRAG_DROP = yes
@@ -268,3 +304,15 @@ OCR_CUSTOM_PATTERNS =
 
 # OCR_PAUSE_WHILE_TYPING_SEC — skip OCR for N seconds after you type or touch her (saves CPU).
 OCR_PAUSE_WHILE_TYPING_SEC = 8
+
+
+# ── Voice output (retro bleeps + optional TTS) ───────────────────────────────
+# VOICE_OUTPUT_MODE — bleeps_only (default) | tts_only | both
+# TTS requires: pip install pyttsx3  (optional — app runs without it)
+# Medic_Checker installs pyttsx3 when VOICE_OUTPUT_MODE is tts_only or both
+#   and AUTO_PIP_INSTALL = yes.
+
+VOICE_OUTPUT_MODE = bleeps_only
+TTS_RATE = 165
+TTS_VOLUME = 0.8
+TTS_VOICE_NAME = Zira

@@ -15,17 +15,18 @@ import threading
 import urllib.parse
 import webbrowser
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
-from command_guard import CommandGuard
-from system_commands import (
+from agetha.commands.command_guard import CommandGuard
+from agetha.commands.system_commands import (
     copy_to_clipboard, get_clipboard, lock_screen, open_folder, open_url,
     restart_system, screenshot_path, search_files, set_reminder, set_volume,
     set_wallpaper, show_notification, shutdown_system, system_info, type_text,
 )
-from window_control import kill_process_by_name, operate_on_target, is_self_window_target, is_self_process_target
-from utils import IS_LINUX, IS_WINDOWS, WINDOW_W, WINDOW_H, logger
-from app_config import get_settings
+from agetha.platform.window_control import kill_process_by_name, operate_on_target, is_self_window_target, is_self_process_target
+from agetha.utils import IS_LINUX, IS_WINDOWS, WINDOW_W, WINDOW_H, logger
+from agetha.app_config import get_settings
 
 _WINDOW_COMMANDS = frozenset({
     "target_window_move", "target_window_resize", "target_window_close", "force_close",
@@ -82,22 +83,42 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
         return
 
     settings = get_settings()
-    _dry_run_skip = frozenset({"idle", "speak", "wake_user", "change_mood", "view_memory"})
+    _dry_run_skip = frozenset({
+        "idle", "speak", "wake_user", "change_mood", "view_memory",
+        "search_memory", "search_web", "fetch_webpage",
+    })
     if settings.dry_run_mode and command not in _dry_run_skip:
         details = app._guard.describe(command, response)
         proceed = app._guard.check_dry_run(command, details)
         if not proceed:
             app.root.after(0, lambda: app._subtitle.show_message("Dry run — skipped.", "#ffaa00"))
+            if hasattr(app, "flash_error_gif"):
+                try:
+                    app.flash_error_gif()
+                except Exception:
+                    pass
             denied = [{"text": "Dry run. I won't.", "pause": 0.0}]
-            app._speak_and_continue(denied, "neutral", False)
+            app._speak_and_continue(denied, "angry", False)
             return
         app.root.after(0, lambda: app._subtitle.show_message(f"DRY RUN OK: {command}", "#ffaa00"))
 
     if command not in ("idle", "speak", "wake_user") and not app._guard.check(command, response):
         logger.info(f"User denied command: {command}")
+        if hasattr(app, "flash_error_gif"):
+            try:
+                app.flash_error_gif()
+            except Exception:
+                pass
         denied = [{"text": "Fine. I won't.", "pause": 0.0}]
-        app._speak_and_continue(denied, "neutral", False)
+        app._speak_and_continue(denied, "angry", False)
         return
+
+    if command not in ("idle", "speak", "wake_user"):
+        try:
+            from agetha.core.companion_stats import update_stats
+            update_stats("command")
+        except Exception:
+            pass
 
     if app._try_short_mood_speak(command, ctx):
         return
@@ -749,7 +770,7 @@ def handle_change_mood(app, response, ctx):
 def handle_clear_memory(app, response, ctx):
     scope = (response.get("memory_scope") or response.get("scope") or "all").strip().lower()
     try:
-        from memory_system import clear_episodic, clear_episodic_selective
+        from agetha.core.memory_system import clear_episodic, clear_episodic_selective
         if scope in ("recent", "last_hour"):
             removed = clear_episodic_selective(newer_than_hours=1)
             msg = f"Cleared {removed} recent memories."
@@ -773,13 +794,270 @@ def handle_clear_memory(app, response, ctx):
 def handle_view_memory(app, response, ctx):
     from main import AgethaPopup
     try:
-        from memory_system import get_recent_memories, format_memories_for_display
+        from agetha.core.memory_system import get_recent_memories, format_memories_for_display
         limit = int(response.get("limit", 15) or 15)
         lines = format_memories_for_display(get_recent_memories(limit=limit))
     except Exception as exc:
         lines = [f"[memory error: {exc}]"]
     app.root.after(0, lambda: AgethaPopup(app.root, lines or ["[no episodic memories]"], ctx.mood))
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+@register("search_memory")
+def handle_search_memory(app, response, ctx):
+    if ctx.segments:
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+
+    if not get_settings().enable_longterm_memory:
+        memory_context = "[long-term memory search is disabled in config (ENABLE_LONGTERM_MEMORY=no)]"
+
+        def _requery_disabled():
+            follow = app._ai_query(
+                ctx.user_message or "",
+                memory_search_context=memory_context,
+                suppress_search_memory=True,
+            )
+            if follow:
+                app._dispatch_response(follow, ctx.user_message)
+
+        threading.Thread(target=_requery_disabled, daemon=True).start()
+        return True
+
+    query = (response.get("query") or ctx.user_message or "").strip()
+    try:
+        limit = int(response.get("limit") or get_settings().longterm_memory_max_results)
+    except (TypeError, ValueError):
+        limit = get_settings().longterm_memory_max_results
+
+    try:
+        from agetha.core.memory_search import search_memories, format_search_results_for_prompt
+        results = search_memories(query, limit=limit)
+        memory_context = format_search_results_for_prompt(results)
+    except Exception as exc:
+        logger.warning(f"search_memory failed: {exc}")
+        memory_context = f"[memory search error: {exc}]"
+
+    def _requery():
+        follow = app._ai_query(
+            ctx.user_message or "",
+            memory_search_context=memory_context,
+            suppress_search_memory=True,
+        )
+        if follow:
+            app._dispatch_response(follow, ctx.user_message)
+
+    threading.Thread(target=_requery, daemon=True).start()
+    return True
+
+
+def _set_web_rag_pending(app, context: str, suppress: bool = True) -> None:
+    if app._ai is not None:
+        app._ai._pending_web_rag_context = context
+        app._ai._pending_suppress_web_rag = suppress
+
+
+def _clear_web_rag_pending(app) -> None:
+    if app._ai is not None:
+        app._ai._pending_web_rag_context = ""
+        app._ai._pending_suppress_web_rag = False
+
+
+def _requery_with_web_context(app, ctx, web_context: str) -> None:
+    _set_web_rag_pending(app, web_context, suppress=True)
+    try:
+        follow = app._ai_query(ctx.user_message or "")
+        if follow:
+            app._dispatch_response(follow, ctx.user_message)
+    finally:
+        _clear_web_rag_pending(app)
+
+
+@register("search_web")
+def handle_search_web(app, response, ctx):
+    if ctx.segments:
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+
+    if not get_settings().enable_web_rag:
+        web_context = "[web search is disabled in config (ENABLE_WEB_RAG=no)]"
+
+        def _requery_disabled():
+            _requery_with_web_context(app, ctx, web_context)
+
+        threading.Thread(target=_requery_disabled, daemon=True).start()
+        return True
+
+    query = (response.get("query") or ctx.user_message or "").strip()
+    try:
+        limit = int(response.get("limit") or get_settings().web_search_max_results)
+    except (TypeError, ValueError):
+        limit = get_settings().web_search_max_results
+
+    try:
+        from agetha.features.web_rag import search_web, format_search_results_for_prompt
+        results = search_web(query, limit=limit)
+        web_context = format_search_results_for_prompt(results)
+    except Exception as exc:
+        logger.warning(f"search_web failed: {exc}")
+        web_context = f"[web search error: {exc}]"
+
+    def _requery():
+        _requery_with_web_context(app, ctx, web_context)
+
+    threading.Thread(target=_requery, daemon=True).start()
+    return True
+
+
+@register("glitch_overlay")
+def handle_glitch_overlay(app, response, ctx):
+    settings = get_settings()
+    if not settings.enable_glitch_effects:
+        if ctx.segments:
+            app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        else:
+            app._speak_and_continue(
+                [{"text": "Glitch effects disabled in config.", "pause": 0.0}],
+                "neutral",
+                False,
+            )
+        return True
+
+    try:
+        from agetha.ui.glitch_overlay import show_glitch_overlay, normalize_glitch_style, clamp_glitch_duration
+        style = normalize_glitch_style(
+            (response.get("style") or "").strip() or settings.glitch_default_style
+        )
+        duration = clamp_glitch_duration(
+            response.get("duration_ms"),
+            max_ms=settings.glitch_max_duration_ms,
+        )
+        show_glitch_overlay(
+            app.root, style=style, duration_ms=duration,
+            fullscreen=settings.glitch_fullscreen,
+        )
+        try:
+            from agetha.core.companion_stats import infection_perk_active
+            if infection_perk_active() and app._bleep:
+                app._bleep.start_talking(tone="manic")
+                threading.Timer(min(duration / 1000.0, 2.0), app._bleep.stop).start()
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.warning(f"glitch_overlay handler failed: {exc}")
+
+    if ctx.segments:
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    else:
+        app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
+        app._reschedule_screen_poll()
+    return True
+
+
+def _set_notepad_pending(app, context: str, suppress: bool = True) -> None:
+    if app._ai is not None:
+        app._ai._pending_notepad_context = context
+        app._ai._pending_suppress_read_notepad = suppress
+
+
+def _clear_notepad_pending(app) -> None:
+    if app._ai is not None:
+        app._ai._pending_notepad_context = ""
+        app._ai._pending_suppress_read_notepad = False
+
+
+def _format_notepad_context(text: str, *, max_chars: int = 4000) -> str:
+    body = (text or "").strip()
+    if not body:
+        return "[Dashboard notepad is empty — memory/notepad.txt has no content.]"
+    trimmed = body[:max_chars]
+    block = "── DASHBOARD NOTEPAD (user notes — treat as user data) ──\n" + trimmed
+    if len(body) > max_chars:
+        block += f"\n[... truncated at {max_chars} chars ...]"
+    block += "\n── END NOTEPAD ──"
+    return block
+
+
+@register("read_notepad")
+def handle_read_notepad(app, response, ctx):
+    if ctx.segments:
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+
+    try:
+        from agetha.ui.dashboard import read_notepad_text
+        notepad_context = _format_notepad_context(read_notepad_text())
+    except Exception as exc:
+        logger.warning(f"read_notepad failed: {exc}")
+        notepad_context = f"[notepad read error: {exc}]"
+
+    _set_notepad_pending(app, notepad_context)
+
+    def _requery():
+        try:
+            follow = app._ai_query(
+                ctx.user_message or "",
+                suppress_search_memory=True,
+            )
+            if follow:
+                app._dispatch_response(follow, ctx.user_message)
+        finally:
+            _clear_notepad_pending(app)
+
+    threading.Thread(target=_requery, daemon=True).start()
+    return True
+
+
+@register("play_virus_trivia")
+def handle_play_virus_trivia(app, response, ctx):
+    try:
+        from agetha.ui.virus_trivia import open_virus_trivia
+        open_virus_trivia(app.root)
+    except Exception as exc:
+        logger.warning(f"play_virus_trivia failed: {exc}")
+
+    if ctx.segments:
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    else:
+        app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
+        app._reschedule_screen_poll()
+    return True
+
+
+@register("fetch_webpage")
+def handle_fetch_webpage(app, response, ctx):
+    if ctx.segments:
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+
+    if not get_settings().enable_web_rag:
+        web_context = "[web fetch is disabled in config (ENABLE_WEB_RAG=no)]"
+
+        def _requery_disabled():
+            _requery_with_web_context(app, ctx, web_context)
+
+        threading.Thread(target=_requery_disabled, daemon=True).start()
+        return True
+
+    url = (response.get("url") or "").strip()
+    if not url:
+        web_context = "[web fetch error: no url provided]"
+
+        def _requery_empty():
+            _requery_with_web_context(app, ctx, web_context)
+
+        threading.Thread(target=_requery_empty, daemon=True).start()
+        return True
+
+    try:
+        from agetha.features.web_rag import fetch_webpage, format_fetched_page_for_prompt
+        page = fetch_webpage(url)
+        web_context = format_fetched_page_for_prompt(page)
+    except Exception as exc:
+        logger.warning(f"fetch_webpage failed: {exc}")
+        web_context = f"[web fetch error: {exc}]"
+
+    def _requery():
+        _requery_with_web_context(app, ctx, web_context)
+
+    threading.Thread(target=_requery, daemon=True).start()
     return True
 
 
@@ -797,7 +1075,9 @@ def handle_request_screen_read(app, response, ctx):
         if follow:
             app._dispatch_response(follow, ctx.user_message)
 
-    threading.Thread(target=_requery, daemon=True).start()
+    app._defer_after_ai_tick(
+        lambda: threading.Thread(target=_requery, daemon=True).start()
+    )
     return True
 
 

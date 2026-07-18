@@ -64,7 +64,7 @@ def cmd_config_status() -> None:
 def cmd_voice_deps() -> None:
     """Print VOICE_OK, VOICE_MISSING, STT_OK, or STT_MISSING for Medic_Checker."""
     try:
-        from voice_input import check_voice_dependencies, check_local_stt_dependencies
+        from agetha.platform.voice_input import check_voice_dependencies, check_local_stt_dependencies
     except ImportError:
         print("VOICE_MISSING:voice_input.py")
         return
@@ -91,12 +91,103 @@ def cmd_dnd_deps() -> None:
         print("DND_MISSING")
 
 
+def _read_config_text() -> str:
+    path = _MEDIC_DIR / "config.txt"
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _config_flag(key: str, default: str = "no") -> str:
+    text = _read_config_text()
+    m = re.search(rf"^{re.escape(key)}\s*=\s*(\S+)", text, re.M | re.I)
+    return m.group(1).strip().lower() if m else default.lower()
+
+
+def cmd_tts_deps() -> None:
+    """Print TTS_OK, TTS_SKIP (bleeps_only), or TTS_MISSING for Medic_Checker."""
+    mode = _config_flag("VOICE_OUTPUT_MODE", "bleeps_only")
+    if mode not in ("tts_only", "both"):
+        print("TTS_SKIP")
+        return
+    try:
+        import pyttsx3  # noqa: F401
+        print("TTS_OK")
+    except ImportError:
+        print("TTS_MISSING")
+
+
+def cmd_feature_modules() -> None:
+    """Verify Phase 1–4 extension modules import (no Tk mainloop)."""
+    failures: list[str] = []
+    for mod in (
+        "agetha.core.memory_search",
+        "agetha.core.companion_stats",
+        "agetha.ui.dashboard",
+        "agetha.features.tts_player",
+        "agetha.features.web_rag",
+        "agetha.ui.glitch_overlay",
+        "agetha.ui.virus_trivia",
+        "agetha.ui.w95_window",
+    ):
+        try:
+            __import__(mod)
+        except Exception as exc:
+            failures.append(f"{mod}:{exc}")
+    if failures:
+        print("FEATURE_FAIL:" + ";".join(failures))
+    else:
+        print("FEATURE_OK")
+
+
+def cmd_realism_apis() -> None:
+    """Verify realism/presence APIs exist (session recap, host mood, coding assist)."""
+    failures: list[str] = []
+    try:
+        from agetha.core import companion_stats as cs
+        if not callable(getattr(cs, "suggest_mood_from_host", None)):
+            failures.append("companion_stats.suggest_mood_from_host")
+        if not callable(getattr(cs, "suggest_mood_from_heat", None)):
+            failures.append("companion_stats.suggest_mood_from_heat")
+        if not callable(getattr(cs, "format_stats_for_prompt", None)):
+            failures.append("companion_stats.format_stats_for_prompt")
+    except Exception as exc:
+        failures.append(f"companion_stats:{exc}")
+
+    try:
+        from agetha.core import memory_search as ms
+        if not callable(getattr(ms, "format_session_recap_for_prompt", None)):
+            failures.append("memory_search.format_session_recap_for_prompt")
+        if not callable(getattr(ms, "search_memories", None)):
+            failures.append("memory_search.search_memories")
+    except Exception as exc:
+        failures.append(f"memory_search:{exc}")
+
+    try:
+        from agetha.core import ai_engine as ae
+        if not callable(getattr(ae, "_screen_has_error_pattern", None)):
+            failures.append("ai_engine._screen_has_error_pattern")
+    except Exception as exc:
+        failures.append(f"ai_engine:{exc}")
+
+    if failures:
+        print("REALISM_FAIL:" + ";".join(failures))
+    else:
+        print("REALISM_OK")
+
+
 _COMMANDS = {
     "platform": cmd_platform,
     "env": cmd_env_status,
     "config": cmd_config_status,
     "voice": cmd_voice_deps,
     "dnd": cmd_dnd_deps,
+    "tts": cmd_tts_deps,
+    "features": cmd_feature_modules,
+    "realism": cmd_realism_apis,
 }
 
 
