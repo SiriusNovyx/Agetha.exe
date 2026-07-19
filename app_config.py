@@ -7,7 +7,6 @@ Missing, unreadable, or invalid config.txt always falls back to DEFAULT_CONFIG.
 
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +14,7 @@ from pathlib import Path
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
 else:
-    BASE_DIR = Path(__file__).resolve().parent.parent
+    BASE_DIR = Path(__file__).parent
 
 CONFIG_PATH = BASE_DIR / "config.txt"
 ENV_PATH = BASE_DIR / ".env"
@@ -149,46 +148,6 @@ EPISODIC_ENTRY_MAX_CHARS = 300
 # EPISODIC_MAX_ENTRIES — max entries stored in memory/episodic_memory.json.
 EPISODIC_MAX_ENTRIES = 50
 
-# ENABLE_LONGTERM_MEMORY — yes = dual-write summary_memory to memory/longterm_memory.jsonl.
-# Medic_Checker reports this and memory/ file status in step [6/7].
-ENABLE_LONGTERM_MEMORY = yes
-
-# LONGTERM_MEMORY_MAX_RESULTS — max BM25 hits returned by search_memory command.
-LONGTERM_MEMORY_MAX_RESULTS = 5
-
-# LONGTERM_MEMORY_MAX_CHARS — max chars of search results injected into AI prompt.
-LONGTERM_MEMORY_MAX_CHARS = 2500
-
-# ENABLE_WEB_RAG — yes = allow search_web / fetch_webpage commands (network).
-ENABLE_WEB_RAG = no
-
-# WEB_FETCH_MAX_CHARS — max chars of fetched page text injected into AI prompt.
-WEB_FETCH_MAX_CHARS = 8000
-
-# WEB_TIMEOUT_SEC — HTTP timeout for web search/fetch (seconds).
-WEB_TIMEOUT_SEC = 10
-
-# WEB_SEARCH_MAX_RESULTS — max DuckDuckGo hits for search_web command.
-WEB_SEARCH_MAX_RESULTS = 5
-
-# ENABLE_GLITCH_EFFECTS — yes = allow harmless visual glitch_overlay command.
-ENABLE_GLITCH_EFFECTS = no
-
-# GLITCH_MAX_DURATION_MS — max overlay lifetime (200–5000 ms).
-GLITCH_MAX_DURATION_MS = 2000
-
-# GLITCH_DEFAULT_STYLE — scanlines|static|rgb_split|flicker|bsod|matrix|tear
-GLITCH_DEFAULT_STYLE = scanlines
-
-# GLITCH_MOOD_AUTO — yes = rare mood-themed glitch on manic/angry/dominant (needs ENABLE_GLITCH_EFFECTS=yes).
-GLITCH_MOOD_AUTO = no
-
-# GLITCH_FULLSCREEN — yes = brief fullscreen overlay; no = small corner panel (safer default).
-GLITCH_FULLSCREEN = no
-
-# ENABLE_COMPANION_STATS_CONTEXT — yes = inject virus-registry stats into AI prompts.
-ENABLE_COMPANION_STATS_CONTEXT = yes
-
 
 # ── Behavior & timing ─────────────────────────────────────────────────────────
 
@@ -292,7 +251,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 3.6.0
+APP_VERSION = 3.5.5
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
@@ -343,18 +302,6 @@ OCR_CUSTOM_PATTERNS =
 
 # OCR_PAUSE_WHILE_TYPING_SEC — skip OCR for N seconds after you type or touch her (saves CPU).
 OCR_PAUSE_WHILE_TYPING_SEC = 8
-
-
-# ── Voice output (retro bleeps + optional TTS) ───────────────────────────────
-# VOICE_OUTPUT_MODE — bleeps_only (default) | tts_only | both
-# TTS requires: pip install pyttsx3  (optional — app runs without it)
-# Medic_Checker installs pyttsx3 when VOICE_OUTPUT_MODE is tts_only or both
-#   and AUTO_PIP_INSTALL = yes.
-
-VOICE_OUTPUT_MODE = bleeps_only
-TTS_RATE = 165
-TTS_VOLUME = 0.8
-TTS_VOICE_NAME =
 """
 
 _BOOL_KEYS = frozenset({
@@ -366,10 +313,7 @@ _BOOL_KEYS = frozenset({
     "OCR_FOCUSED_WINDOW_ONLY", "INCLUDE_WINDOW_TITLE_IN_CONTEXT", "WINDOW_TOPMOST",
     "SKIP_TESSERACT_CHECK", "SKIP_ASSET_CHECK", "AUTO_PIP_INSTALL",
     "CREATE_DESKTOP_SHORTCUT", "CHECK_FOR_UPDATES", "WINDOW_PICKER_ON_AMBIGUOUS",
-    "DRY_RUN_MODE", "WINDOW_MOVE_SMOOTH", "ENABLE_LONGTERM_MEMORY",
-    "ENABLE_WEB_RAG",
-    "ENABLE_GLITCH_EFFECTS", "GLITCH_MOOD_AUTO", "GLITCH_FULLSCREEN",
-    "ENABLE_COMPANION_STATS_CONTEXT",
+    "DRY_RUN_MODE", "WINDOW_MOVE_SMOOTH",
 })
 
 _INT_KEYS = frozenset({
@@ -383,21 +327,11 @@ _INT_KEYS = frozenset({
     "MOOD_SNAP_VULNERABLE_SEC", "MOOD_SNAP_MELANCHOLIC_SEC", "MOOD_SNAP_SAD_SEC",
     "MOOD_SNAP_WHISPER_SEC",
     "WINDOW_MOVE_DURATION_MS",
-    "LONGTERM_MEMORY_MAX_RESULTS", "LONGTERM_MEMORY_MAX_CHARS",
-    "WEB_FETCH_MAX_CHARS", "WEB_TIMEOUT_SEC", "WEB_SEARCH_MAX_RESULTS",
-    "GLITCH_MAX_DURATION_MS",
-    "TTS_RATE",
 })
 
 _FLOAT_KEYS = frozenset({
     "AI_TEMPERATURE", "AI_TOP_P", "TOUCH_COOLDOWN_SEC", "SUBTITLE_CHAR_DELAY",
     "ANIMATION_SPEED", "OCR_PAUSE_WHILE_TYPING_SEC",
-    "TTS_VOLUME",
-})
-
-_VOICE_OUTPUT_MODES = frozenset({"bleeps_only", "tts_only", "both"})
-_GLITCH_STYLES = frozenset({
-    "scanlines", "static", "rgb_split", "flicker", "bsod", "matrix", "tear",
 })
 
 _VALID_BOOLS = frozenset({"1", "yes", "true", "on", "0", "no", "false", "off"})
@@ -660,24 +594,6 @@ class AppSettings:
     def enable_voice(self) -> bool:
         return self.bool("ENABLE_VOICE", False)
 
-    # ── Voice output ────────────────────────────────────────────────────────
-    @property
-    def voice_output_mode(self) -> str:
-        raw = self.get("VOICE_OUTPUT_MODE", "bleeps_only").strip().lower()
-        return raw if raw in _VOICE_OUTPUT_MODES else "bleeps_only"
-
-    @property
-    def tts_rate(self) -> int:
-        return self.int("TTS_RATE", 165, 80, 300)
-
-    @property
-    def tts_volume(self) -> float:
-        return self.float("TTS_VOLUME", 0.8, 0.0, 1.0)
-
-    @property
-    def tts_voice_name(self) -> str:
-        return self.get("TTS_VOICE_NAME", "").strip()
-
     @property
     def use_local_stt(self) -> bool:
         return self.bool("USE_LOCAL_STT", False)
@@ -732,59 +648,6 @@ class AppSettings:
     @property
     def episodic_max_entries(self) -> int:
         return self.int("EPISODIC_MAX_ENTRIES", 50, 5, 500)
-
-    @property
-    def enable_longterm_memory(self) -> bool:
-        return self.bool("ENABLE_LONGTERM_MEMORY", True)
-
-    @property
-    def longterm_memory_max_results(self) -> int:
-        return self.int("LONGTERM_MEMORY_MAX_RESULTS", 5, 1, 20)
-
-    @property
-    def longterm_memory_max_chars(self) -> int:
-        return self.int("LONGTERM_MEMORY_MAX_CHARS", 2500, 200, 10000)
-
-    @property
-    def enable_web_rag(self) -> bool:
-        return self.bool("ENABLE_WEB_RAG", False)
-
-    @property
-    def web_fetch_max_chars(self) -> int:
-        return self.int("WEB_FETCH_MAX_CHARS", 8000, 500, 50000)
-
-    @property
-    def web_timeout_sec(self) -> int:
-        return self.int("WEB_TIMEOUT_SEC", 10, 3, 60)
-
-    @property
-    def web_search_max_results(self) -> int:
-        return self.int("WEB_SEARCH_MAX_RESULTS", 5, 1, 20)
-
-    @property
-    def enable_glitch_effects(self) -> bool:
-        return self.bool("ENABLE_GLITCH_EFFECTS", False)
-
-    @property
-    def glitch_max_duration_ms(self) -> int:
-        return self.int("GLITCH_MAX_DURATION_MS", 2000, 200, 5000)
-
-    @property
-    def glitch_default_style(self) -> str:
-        raw = self.get("GLITCH_DEFAULT_STYLE", "scanlines").strip().lower()
-        return raw if raw in _GLITCH_STYLES else "scanlines"
-
-    @property
-    def glitch_mood_auto(self) -> bool:
-        return self.bool("GLITCH_MOOD_AUTO", False)
-
-    @property
-    def glitch_fullscreen(self) -> bool:
-        return self.bool("GLITCH_FULLSCREEN", False)
-
-    @property
-    def enable_companion_stats_context(self) -> bool:
-        return self.bool("ENABLE_COMPANION_STATS_CONTEXT", True)
 
     # ── Timing ────────────────────────────────────────────────────────────────
     @property
@@ -890,7 +753,7 @@ class AppSettings:
 
     @property
     def app_version(self) -> str:
-        return self.get("APP_VERSION", "3.6.0").strip() or "3.6.0"
+        return self.get("APP_VERSION", "3.5.1").strip() or "3.5.1"
 
     @property
     def github_releases_url(self) -> str:
@@ -949,34 +812,6 @@ class AppSettings:
             if label and pattern:
                 items.append((label, mood or "thinking", pattern))
         return items
-
-
-def patch_config_key(key: str, value: str) -> bool:
-    """Update one KEY = value line in config.txt. Returns True on success. Never raises."""
-    key = key.strip().upper()
-    if not key:
-        return False
-    path = CONFIG_PATH
-    try:
-        ensure_config_file(write_if_missing=True)
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-        pattern = re.compile(rf"^(\s*{re.escape(key)}\s*=).*", re.IGNORECASE)
-        replaced = False
-        out: list[str] = []
-        for line in lines:
-            if pattern.match(line):
-                out.append(f"{key} = {value}\n")
-                replaced = True
-            else:
-                out.append(line if line.endswith("\n") else line + "\n")
-        if not replaced:
-            out.append(f"{key} = {value}\n")
-        path.write_text("".join(out), encoding="utf-8")
-        get_settings(reload=True)
-        return True
-    except Exception as exc:
-        _log_config(f"patch_config_key failed for {key}: {exc}")
-        return False
 
 
 _settings: AppSettings | None = None

@@ -86,9 +86,8 @@ from typing import Optional
 #           regardless of the process working directory at runtime.
 # ══════════════════════════════════════════════════════════════════════
 
-from agetha.app_config import BASE_DIR
-
-MEMORY_DIR    = BASE_DIR / "memory"
+_HERE         = Path(__file__).parent   # Same directory as ai_engine.py
+MEMORY_DIR    = _HERE / "memory"        # memory/
 SOUL_FILE     = MEMORY_DIR / "soul.md"  # memory/soul.md
 EPISODIC_FILE = MEMORY_DIR / "episodic_memory.json"  # memory/episodic_memory.json
 
@@ -109,7 +108,7 @@ def _apply_memory_config() -> None:
     """Load episodic limits from config.txt."""
     global EPISODIC_HARD_CAP, EPISODIC_PROMPT_LIMIT, EPISODIC_ENTRY_MAX_CHARS
     try:
-        from agetha.app_config import get_settings
+        from app_config import get_settings
         s = get_settings()
         EPISODIC_HARD_CAP = s.episodic_max_entries
         EPISODIC_PROMPT_LIMIT = s.episodic_prompt_limit

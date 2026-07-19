@@ -14,7 +14,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-from agetha.utils import IS_WINDOWS, IS_LINUX, IS_MACOS, BASE_DIR, logger
+from utils import IS_WINDOWS, IS_LINUX, IS_MACOS, BASE_DIR, logger
 
 
 def open_url(url: str) -> str:

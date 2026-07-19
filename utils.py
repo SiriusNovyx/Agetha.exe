@@ -27,10 +27,15 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
 logger = setup_logging()
 
 # ── Base Paths ─────────────────────────────────────────────────────────────────
-from agetha.app_config import BASE_DIR, CONFIG_PATH, ENV_PATH
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent
 
 ASSETS = BASE_DIR / "assets"
 FONT_PATH = ASSETS / "barrio.ttf"
+CONFIG_PATH = BASE_DIR / "config.txt"
+ENV_PATH = BASE_DIR / ".env"
 
 # ── Native Error Popup ─────────────────────────────────────────────────────────
 def native_error_popup(title: str, message: str) -> None:
@@ -84,7 +89,7 @@ def load_env_file(env_path: Path = None) -> dict:
     return env_vars
 
 # ── Default Config Template ────────────────────────────────────────────────────
-from agetha.app_config import DEFAULT_CONFIG, create_default_config as _create_default_config
+from app_config import DEFAULT_CONFIG, create_default_config as _create_default_config
 
 def create_default_config(config_path: Path = None) -> None:
     """Write the default config template."""
@@ -92,7 +97,7 @@ def create_default_config(config_path: Path = None) -> None:
     logger.info(f"Created config.txt at {config_path or CONFIG_PATH}")
 
 # ── Named Constants (from config.txt) ─────────────────────────────────────────
-from agetha.app_config import get_settings
+from app_config import get_settings
 
 _cfg = get_settings()
 TOUCH_COOLDOWN_SEC = _cfg.touch_cooldown_sec

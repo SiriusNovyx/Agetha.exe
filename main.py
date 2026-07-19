@@ -1,9 +1,11 @@
 """
 Desktop AI Companion - Main Application
 Requires: pip install pillow pyautogui pytesseract numpy pygame requests
-Assets folder must contain mood GIFs (idle/talking/happy/sad/angry/thinking/
-  surprised/want/loaf/sleeping/error + *-static variants). Every GIF is mapped
-  to a mood or presence path. Font: barrio.ttf must be in assets/ folder.
+Assets folder must contain: idle-1.gif, idle-2.gif, idle-3.gif,
+  talking-1.gif, talking-2.gif, talking-3.gif,
+  thinking.gif, sleeping.gif, happy.gif, surprised.gif, sad.gif, angry.gif
+  (excited mood reuses happy.gif — no separate excited.gif needed)
+Font: barrio.ttf must be in assets/ folder
 """
 
 import sys
@@ -43,21 +45,20 @@ try:
 except ImportError:
     PYGAME_OK = False
 
-from agetha.core.ai_engine import AIEngine
-from agetha.platform.screen_reader import ScreenReader
-from agetha.commands.command_guard import CommandGuard
-from agetha.platform.voice_input import (
+from ai_engine import AIEngine
+from screen_reader import ScreenReader
+from command_guard import CommandGuard
+from voice_input import (
     VoiceInput, MicPickerDialog, list_microphones,
     load_mic_settings, save_mic_settings, coerce_device_index,
 )
-from agetha.utils import (
+from utils import (
     native_error_popup, logger, BASE_DIR, WINDOW_W, WINDOW_H,
     TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS,
     refresh_config_constants,
 )
-from agetha.app_config import get_settings
-from agetha.platform.window_control import ease_out_cubic
-from agetha.features.tts_player import VoiceOutputCoordinator
+from app_config import get_settings
+from window_control import ease_out_cubic
 
 _SETTINGS = get_settings()
 
@@ -78,7 +79,7 @@ _MOOD_SNAP_THRESHOLDS: dict[str, int] = _SETTINGS.mood_snap_thresholds()
 # ── Phase 2: ctypes external window helper ────────────────────────────────────
 def _find_window_hwnd(partial_name: str) -> int | None:
     """Find the first visible window whose title contains partial_name (case-insensitive)."""
-    from agetha.platform.window_control import find_window_hwnd
+    from window_control import find_window_hwnd
     return find_window_hwnd(partial_name)
 
 
@@ -536,13 +537,12 @@ class SubtitleRenderer:
     CHAR_DELAY = get_settings().subtitle_char_delay
     _font_cache: dict[int, tkfont.Font] = {}
 
-    def __init__(self, canvas: tk.Canvas, font_size: int = 17, bleep_player=None, voice_out=None):
+    def __init__(self, canvas: tk.Canvas, font_size: int = 17, bleep_player=None):
         self._canvas     = canvas
         self._font_size  = font_size
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._bleep = bleep_player
-        self._voice_out = voice_out
 
         self._canvas_w = WINDOW_W
         self._canvas_h = 130
@@ -648,32 +648,14 @@ class SubtitleRenderer:
                 if at_word_end:
                     self._schedule_draw(full_text)
                 time.sleep(self.CHAR_DELAY)
-            if chunk and not self._stop_event.is_set():
-                if self._voice_out and hasattr(self._voice_out, "speak_segment"):
-                    try:
-                        self._voice_out.speak_segment(chunk)
-                    except Exception:
-                        pass
             if pause > 0 and not self._stop_event.is_set():
-                if self._voice_out:
-                    try:
-                        self._voice_out.pause()
-                    except Exception:
-                        pass
-                elif self._bleep:
+                if self._bleep:
                     self._bleep.pause()
                 time.sleep(pause)
-                if self._voice_out:
-                    try:
-                        self._voice_out.resume()
-                    except Exception:
-                        pass
-                elif self._bleep:
+                if self._bleep:
                     self._bleep.resume()
         try:
-            if self._voice_out:
-                self._voice_out.stop_bleeps()
-            elif self._bleep:
+            if self._bleep:
                 self._bleep.stop()
         except Exception:
             pass
@@ -818,10 +800,12 @@ class AgethaPopup:
     """Windows 95-style dialog popup spawned by Agetha."""
 
     def __init__(self, parent: tk.Tk, messages: list, mood: str = "neutral"):
-        from agetha.ui.w95_window import apply_borderless_win95, show_borderless
-
         self._win = tk.Toplevel(parent)
-        apply_borderless_win95(self._win, parent, topmost=True)
+        self._win.overrideredirect(True)   # we draw our own chrome
+        try:
+            self._win.attributes("-topmost", True)
+        except Exception:
+            pass
         self._win.configure(bg=W95_BG)
         self._win.resizable(False, False)
         self._drag_x = self._drag_y = 0
@@ -894,22 +878,17 @@ class AgethaPopup:
             command=self._win.destroy,
         ).pack()
 
-        # ── Position just above the parent window, clamped to screen ──────
+        # ── Position just above the parent window ─────────────────────────
         self._win.update_idletasks()
         px = parent.winfo_x()
         py = parent.winfo_y()
         pw = parent.winfo_width()
-        ww = self._win.winfo_width() or 300
-        wh = self._win.winfo_height() or 200
-        sw = self._win.winfo_screenwidth()
-        sh = self._win.winfo_screenheight()
+        ww = self._win.winfo_width()
+        wh = self._win.winfo_height()
         x  = px + (pw - ww) // 2
-        y  = py - wh - 10
-        x  = max(0, min(x, sw - ww))
-        y  = max(0, min(y, sh - wh))
+        y  = max(0, py - wh - 10)
         self._win.geometry(f"+{x}+{y}")
 
-        show_borderless(self._win)
         self._win.bind("<Return>", lambda _: self._win.destroy())
         self._win.bind("<Escape>", lambda _: self._win.destroy())
         try:
@@ -940,22 +919,21 @@ class CompanionApp:
 
     IDLE_GIFS    = ["idle-1.gif", "idle-2.gif", "idle-3.gif"]
     TALKING_GIFS = ["talking-1.gif", "talking-2.gif", "talking-3.gif"]
-    # Every mood maps to a distinct visual where the asset pack allows it.
     EXTRA_GIFS   = {
-        "happy":       "happy.gif",
-        "surprised":   "surprised.gif",
-        "sad":         "sad.gif",
-        "excited":     "want.gif",          # craving / hype — dedicated want clip
-        "angry":       "angry.gif",
-        "thinking":    "thinking.gif",
-        "whisper":     "thinking-static.gif",  # quiet still presence
-        "sleeping":    "sleeping.gif",
-        "loaf":        "loaf.gif",
-        "manic":       "want.gif",          # chaotic hunger energy
-        "melancholic": "sad.gif",
-        "paranoid":    "surprised.gif",     # jumpier than thinking
-        "vulnerable":  "sad-static.gif",    # soft held expression
-        "dominant":    "angry.gif",
+        "happy":      "happy.gif",
+        "surprised":  "surprised.gif",
+        "sad":        "sad.gif",
+        "excited":    "happy.gif",    # excited shares happy.gif
+        "angry":      "angry.gif",
+        "thinking":   "thinking.gif",
+        "sleeping":   "sleeping.gif",
+        "loaf":       "loaf.gif",
+        # Phase 2 — map new moods to nearest existing asset
+        "manic":       "angry.gif",      # fast, intense → angry
+        "melancholic": "sad.gif",        # deep sadness → sad
+        "paranoid":    "thinking.gif",   # anxious scanning → thinking
+        "vulnerable":  "sad.gif",        # exposed, soft → sad
+        "dominant":    "angry.gif",      # powerful, threatening → angry
     }
 
     # Static images to show after animated emotion gifs finish
@@ -964,46 +942,6 @@ class CompanionApp:
         "sad":   "sad-static.gif",
         "angry": "angry-static.gif",
         "thinking": "thinking-static.gif",
-        "excited": "want.gif",
-        "manic": "want.gif",
-        "melancholic": "sad-static.gif",
-        "vulnerable": "sad-static.gif",
-        "paranoid": "surprised.gif",
-        "dominant": "angry-static.gif",
-        "whisper": "thinking-static.gif",
-    }
-
-    # Always load (error is rare-path; want also listed via EXTRA_GIFS)
-    EXTRA_LOAD_GIFS = ["error.gif", "want.gif"]
-
-    # Talking-neutral variants by mood band (uses talking-1/2/3 uniquely)
-    TALKING_BY_MOOD = {
-        "whisper": "talking-2.gif",
-        "vulnerable": "talking-2.gif",
-        "melancholic": "talking-2.gif",
-        "excited": "talking-3.gif",
-        "manic": "talking-3.gif",
-        "happy": "talking-3.gif",
-        "dominant": "talking-3.gif",
-        "angry": "talking-1.gif",
-        "surprised": "talking-1.gif",
-        "paranoid": "talking-1.gif",
-    }
-
-    # Animated clips while speaking (prefer these over idle statics)
-    TALKING_MOOD_GIFS = {
-        "happy": "happy.gif",
-        "excited": "want.gif",
-        "manic": "want.gif",
-        "sad": "sad.gif",
-        "melancholic": "sad.gif",
-        "vulnerable": "sad.gif",
-        "angry": "angry.gif",
-        "dominant": "angry.gif",
-        "thinking": "thinking.gif",
-        "surprised": "surprised.gif",
-        "paranoid": "surprised.gif",
-        "whisper": "talking-2.gif",
     }
 
     def __init__(self):
@@ -1060,12 +998,10 @@ class CompanionApp:
 
         # Defer heavy initialization to background thread so the window shows immediately
         self._bleep  = None
-        self._voice_out = None
         self._screen = None
         self._ai     = None
         self._last_screen_text: str = ""
         self._loaf_job = None
-        self._sleep_job = None
         self._is_loafing = False
         self._pending_shutdown = False
         self._last_touch_time: float = 0.0           # epoch time of last gif-click touch event
@@ -1075,7 +1011,6 @@ class CompanionApp:
         self._ai_busy = False
         self._ai_tick_lock = threading.Lock()
         self._pending_user_message: str | None = None
-        self._post_ai_tick_callbacks: list[Callable[[], None]] = []
         self._speech_active = False
         self._state_lock = threading.Lock()
         self._voice: VoiceInput | None = None
@@ -1177,17 +1112,6 @@ class CompanionApp:
             command=self._minimize,
         )
         min_btn.pack(side="right", padx=(0, 1), pady=1)
-
-        # Dashboard button
-        dash_btn = tk.Button(
-            title_bar, text="📊",
-            bg=W95_BTN_BG, fg=W95_TEXT,
-            font=("MS Sans Serif", 7, "bold"),
-            relief="raised", bd=2, width=2,
-            activebackground=W95_BTN_BG, activeforeground=W95_TEXT,
-            command=self._open_dashboard,
-        )
-        dash_btn.pack(side="right", padx=(0, 1), pady=1)
 
         # Drag bindings on title bar and its non-button children
         for w in (title_bar, title_lbl):
@@ -1413,7 +1337,7 @@ class CompanionApp:
         if self._dragging_file:
             return
         self._dragging_file = True
-        want_player = self._gif_cache.get("want.gif") or self._gif_cache.get("surprised.gif")
+        want_player = self._gif_cache.get("surprised.gif")
         if want_player:
             if self._current_gif_player:
                 self._current_gif_player.stop()
@@ -1426,13 +1350,6 @@ class CompanionApp:
         self._dragging_file = False
         self._set_state(self.STATE_IDLE)
 
-    def _open_dashboard(self) -> None:
-        try:
-            from agetha.ui.dashboard import open_dashboard
-            open_dashboard(self.root, get_settings())
-        except Exception as exc:
-            logger.warning(f"Dashboard open failed: {exc}")
-
     def _on_file_drop(self, event=None) -> None:
         self._dragging_file = False
         try:
@@ -1444,25 +1361,11 @@ class CompanionApp:
             file_path = ""
         logger.info(f"[DnD] File dropped: {filename} at {file_path}")
         self._last_dragged_file = file_path if file_path else filename
-        sampled = 0
-        try:
-            from agetha.core.companion_stats import update_stats
-            if file_path and Path(file_path).exists():
-                update_stats("file_drop", path=file_path)
-                try:
-                    from agetha.core.companion_stats import get_stats_summary
-                    sampled = int(get_stats_summary().get("last_feed_bytes", 0))
-                except Exception:
-                    pass
-            else:
-                update_stats("file_drop", file_size=0)
-        except Exception:
-            pass
         self._set_state(self.STATE_IDLE)
         if self._input_box["state"] == "disabled":
             return
         msg = (
-            f'[system] file_dragged: "{filename}" (path: {file_path}; bytes_devoured: {sampled})'
+            f'[system] file_dragged: "{filename}" (path: {file_path})'
             if file_path
             else f'[system] file_dragged: "{filename}"'
         )
@@ -1626,7 +1529,6 @@ class CompanionApp:
         A 10-second cooldown prevents spamming."""
         now = time.time()
         self._last_direct_interaction_time = now  # Phase 2: stamp interaction clock
-        self._wake_from_presence_rest()
         if now - self._last_touch_time < TOUCH_COOLDOWN_SEC:
             return   # still in cooldown, silently ignore
         self._last_touch_time = now
@@ -1642,7 +1544,6 @@ class CompanionApp:
 
     def _on_user_input(self, event=None):
         self._last_direct_interaction_time = time.time()  # Phase 2: any key = direct interaction
-        self._wake_from_presence_rest()
         text = self._input_var.get().strip()
         if not text:
             return
@@ -1679,7 +1580,6 @@ class CompanionApp:
         try:
             def _on_any_key(event=None):
                 self._last_direct_interaction_time = time.time()
-                self._wake_from_presence_rest()
             self._input_box.bind("<Key>", _on_any_key, add=True)
         except Exception as e:
             print(f"[InteractionClock] Could not bind keystroke tracking: {e}")
@@ -1735,13 +1635,8 @@ class CompanionApp:
     def _load_gifs_simple(self):
         """Decode GIF frames off-thread; build ImageTk on main thread."""
         static_vals = list(self.EXTRA_STATIC_GIFS.values()) if getattr(self, "EXTRA_STATIC_GIFS", None) else []
-        extra_load = list(getattr(self, "EXTRA_LOAD_GIFS", []) or [])
         all_names = list(dict.fromkeys(
-            self.IDLE_GIFS
-            + self.TALKING_GIFS
-            + list(self.EXTRA_GIFS.values())
-            + static_vals
-            + extra_load
+            self.IDLE_GIFS + self.TALKING_GIFS + list(self.EXTRA_GIFS.values()) + static_vals
         ))
 
         def _worker():
@@ -1833,19 +1728,12 @@ class CompanionApp:
                     self._bleep = bleep
                     self._screen = screen
                     self._ai = ai
-                    try:
-                        self._voice_out = VoiceOutputCoordinator(self._bleep, get_settings())
-                    except Exception as exc:
-                        logger.warning(f"VoiceOutputCoordinator init failed: {exc}")
-                        self._voice_out = None
                     if self._subtitle is None and hasattr(self, "_sub_canvas"):
                         self._subtitle = SubtitleRenderer(
-                            self._sub_canvas, font_size=17,
-                            bleep_player=self._bleep, voice_out=self._voice_out,
+                            self._sub_canvas, font_size=17, bleep_player=self._bleep,
                         )
                     elif hasattr(self, "_subtitle") and self._subtitle:
                         self._subtitle._bleep = self._bleep
-                        self._subtitle._voice_out = self._voice_out
                     # Load GIFs and start wake sequence — simple, flat loader
                     try:
                         self.root.after(0, self._load_gifs_simple)
@@ -1865,61 +1753,6 @@ class CompanionApp:
         except Exception as e:
             print(f"[BackgroundInit] Unexpected error: {e}")
             native_error_popup("Agetha — Unexpected Error", f"Unexpected startup error:\n{e}")
-
-    def _pick_idle_gif(self) -> str:
-        """Pick idle-1/2/3 from host affection/heat so all three idle clips matter."""
-        available = [g for g in self.IDLE_GIFS if g in self._gif_cache]
-        if not available:
-            return "idle-1.gif"
-        try:
-            from agetha.core.companion_stats import get_stats_summary
-            stats = get_stats_summary()
-            affection = float(stats.get("affection", 50))
-            heat = float(stats.get("core_heat", 0))
-            if affection >= 70 and "idle-1.gif" in self._gif_cache:
-                return "idle-1.gif"
-            if (affection < 35 or heat >= 70) and "idle-3.gif" in self._gif_cache:
-                return "idle-3.gif"
-            if "idle-2.gif" in self._gif_cache:
-                return "idle-2.gif"
-        except Exception:
-            pass
-        return random.choice(available)
-
-    def _pick_talking_gif(self, mood: str = "neutral") -> str:
-        """Pick talking-1/2/3 by mood band so all three talking clips matter."""
-        preferred = self.TALKING_BY_MOOD.get(mood or "neutral")
-        if preferred and preferred in self._gif_cache:
-            return preferred
-        if "talking-1.gif" in self._gif_cache:
-            return "talking-1.gif"
-        available = [g for g in self.TALKING_GIFS if g in self._gif_cache]
-        return random.choice(available) if available else "talking-1.gif"
-
-    def flash_error_gif(self, hold_ms: int = 2200) -> None:
-        """Show error.gif briefly (denied actions / faults). Cosmetic only."""
-        def _run() -> None:
-            player = self._gif_cache.get("error.gif")
-            if not player:
-                return
-            if self._current_gif_player:
-                try:
-                    self._current_gif_player.stop()
-                except Exception:
-                    pass
-            self._current_gif_player = player
-            player.play()
-            self.root.after(
-                max(400, int(hold_ms)),
-                lambda: self._set_state(self.STATE_IDLE, "angry"),
-            )
-        try:
-            if threading.current_thread() is not threading.main_thread():
-                self.root.after(0, _run)
-            else:
-                _run()
-        except Exception as exc:
-            logger.debug(f"flash_error_gif skipped: {exc}")
 
     def _play_gif(self, name: str):
         if self._current_gif_player:
@@ -1966,9 +1799,7 @@ class CompanionApp:
                 player.play()
         player.play_once(lambda: self.root.after(0, _done))
 
-    def _start_talking_rotation(self, mood: str = "neutral"):
-        self._talking_rotate_mood = mood or "neutral"
-        self._talking_rotate_idx = 0
+    def _start_talking_rotation(self):
         self._rotate_talking()
 
     def _rotate_talking(self):
@@ -1976,16 +1807,7 @@ class CompanionApp:
             return
         available = [g for g in self.TALKING_GIFS if g in self._gif_cache]
         if available:
-            idx = int(getattr(self, "_talking_rotate_idx", 0) or 0)
-            mood = getattr(self, "_talking_rotate_mood", "neutral")
-            if idx == 0:
-                name = self._pick_talking_gif(mood)
-                if name not in available:
-                    name = available[0]
-            else:
-                name = available[idx % len(available)]
-            self._play_gif(name)
-            self._talking_rotate_idx = idx + 1
+            self._play_gif(random.choice(available))
         delay = random.randint(1800, 3200)
         self._talking_rotate_job = self.root.after(delay, self._rotate_talking)
 
@@ -2002,19 +1824,13 @@ class CompanionApp:
             self._apply_state(state, mood)
 
     def _apply_state(self, state: str, mood: str = "neutral"):
-        # Cancel any pending loaf/sleep timers when changing state
+        # Cancel any pending loaf timer when changing state
         try:
             if getattr(self, "_loaf_job", None):
                 self.root.after_cancel(self._loaf_job)
                 self._loaf_job = None
         except Exception:
             self._loaf_job = None
-        try:
-            if getattr(self, "_sleep_job", None):
-                self.root.after_cancel(self._sleep_job)
-                self._sleep_job = None
-        except Exception:
-            self._sleep_job = None
         # If we were loafing, stop loaf state
         try:
             if getattr(self, "_is_loafing", False):
@@ -2039,10 +1855,8 @@ class CompanionApp:
                 pass
 
         # Moods that should linger after speech ends (until next response or explicit idle)
-        _STICKY_MOODS = {
-            "sad", "angry", "happy", "thinking", "excited", "manic",
-            "melancholic", "vulnerable", "paranoid", "dominant", "whisper", "surprised",
-        }
+        # Make 'happy' and 'thinking' sticky as well per user preference
+        _STICKY_MOODS = {"sad", "angry", "happy", "thinking"}
 
         if state == self.STATE_SLEEPING:
             self._persistent_mood = None
@@ -2068,8 +1882,10 @@ class CompanionApp:
                 if mood_gif and mood_gif in self._gif_cache:
                     self._play_gif(mood_gif)
                 else:
-                    self._play_gif(self._pick_idle_gif())
-            # Schedule loaf.gif after idle; sleep follows another idle period
+                    available = [g for g in self.IDLE_GIFS if g in self._gif_cache]
+                    if available:
+                        self._play_gif(random.choice(available))
+            # Schedule loaf.gif after 15 minutes of idle
             try:
                 self._loaf_job = self.root.after(LOAF_TIMER_MS, self._enter_loaf)
             except Exception:
@@ -2079,24 +1895,20 @@ class CompanionApp:
                 self._persistent_mood = mood
             else:
                 self._persistent_mood = None
-            talk_gif = self.TALKING_MOOD_GIFS.get(mood) or self.EXTRA_GIFS.get(mood)
-            if talk_gif and str(talk_gif).endswith("-static.gif"):
-                talk_gif = self.TALKING_MOOD_GIFS.get(mood)
+            mood_gif = self.EXTRA_GIFS.get(mood)
             static_name = self.EXTRA_STATIC_GIFS.get(mood)
-            if mood != "neutral" and talk_gif and talk_gif in self._gif_cache:
-                if (
-                    static_name
-                    and static_name in self._gif_cache
-                    and static_name != talk_gif
-                    and not str(talk_gif).startswith("talking-")
-                ):
+            if mood != "neutral" and mood_gif and mood_gif in self._gif_cache:
+                if static_name and static_name in self._gif_cache:
+                    # Play emotion gif once, then loop it until speech ends
                     self._talking_emotion_looping = False
-                    self._play_gif_once_then_loop(talk_gif, mood)
+                    self._play_gif_once_then_loop(mood_gif, mood)
                 else:
-                    self._play_gif(talk_gif)
+                    # No static — just loop the emotion gif
+                    self._play_gif(mood_gif)
             else:
-                self._start_talking_rotation(mood)
-            # Speech bleeps/TTS are started from _speak_and_continue / _try_short_mood_speak
+                self._start_talking_rotation()
+            if self._bleep:
+                self._bleep.start_talking(tone=mood)
 
     def _enter_loaf(self):
         # Only enter loaf if still idle
@@ -2104,37 +1916,6 @@ class CompanionApp:
             if self._state == self.STATE_IDLE and "loaf.gif" in self._gif_cache:
                 self._play_gif("loaf.gif")
                 self._is_loafing = True
-                try:
-                    self._sleep_job = self.root.after(LOAF_TIMER_MS, self._enter_deep_sleep)
-                except Exception:
-                    self._sleep_job = None
-        except Exception:
-            pass
-
-    def _enter_deep_sleep(self):
-        """After prolonged loafing, sleep — cosmetic presence only, no OS side effects."""
-        try:
-            if self._state == self.STATE_IDLE and (
-                getattr(self, "_is_loafing", False) or "sleeping.gif" in self._gif_cache
-            ):
-                self._is_loafing = False
-                self._set_state(self.STATE_SLEEPING)
-        except Exception:
-            pass
-
-    def _wake_from_presence_rest(self) -> None:
-        """Leave loaf/sleep when the user interacts (chat, touch, keystroke)."""
-        try:
-            if getattr(self, "_sleep_job", None):
-                self.root.after_cancel(self._sleep_job)
-                self._sleep_job = None
-        except Exception:
-            self._sleep_job = None
-        try:
-            if self._state == self.STATE_SLEEPING or getattr(self, "_is_loafing", False):
-                self._is_loafing = False
-                if self._state == self.STATE_SLEEPING:
-                    self._set_state(self.STATE_IDLE, "surprised")
         except Exception:
             pass
 
@@ -2147,7 +1928,7 @@ class CompanionApp:
         self.root.after(1000, self._schedule_screen_poll)
 
     def _schedule_screen_poll(self):
-        if not get_settings().enable_ambient_polls:
+        if not _SETTINGS.enable_ambient_polls:
             return
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
@@ -2155,7 +1936,7 @@ class CompanionApp:
         threading.Thread(target=self._ai_tick, daemon=True).start()
 
     def _reschedule_screen_poll(self):
-        if not get_settings().enable_ambient_polls:
+        if not _SETTINGS.enable_ambient_polls:
             if self._poll_job:
                 self.root.after_cancel(self._poll_job)
                 self._poll_job = None
@@ -2163,11 +1944,6 @@ class CompanionApp:
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
         self._poll_job = self.root.after(SCREEN_POLL_INTERVAL_MS, self._schedule_screen_poll)
-        try:
-            from agetha.core.companion_stats import update_stats
-            update_stats("tick")
-        except Exception:
-            pass
 
     def _on_cancel_ai(self, event=None):
         """Escape — cancel an in-flight AI request."""
@@ -2178,11 +1954,6 @@ class CompanionApp:
 
     def _ai_tick(self, user_message: str | None = None):
         is_user = user_message is not None
-
-        # Deep sleep: skip ambient polls (presence rest). User interaction still wakes her.
-        if not is_user and self._state == self.STATE_SLEEPING:
-            self._reschedule_screen_poll()
-            return
 
         with self._ai_tick_lock:
             if self._ai_busy or self._speech_active:
@@ -2205,23 +1976,9 @@ class CompanionApp:
 
         if is_user:
             self.root.after(0, lambda: self._input_box.config(state="disabled"))
-            if (
-                user_message
-                and user_message != "__touch__"
-                and not str(user_message).strip().lower().startswith("[system]")
-            ):
-                try:
-                    from agetha.core.companion_stats import classify_user_tone, update_stats
-                    update_stats("user_chat")
-                    tone = classify_user_tone(user_message)
-                    if tone:
-                        update_stats(tone)
-                except Exception:
-                    pass
-            self.root.after(0, self._wake_from_presence_rest)
 
         screen_text = ""
-        if self._screen:
+        if not is_user and self._screen:
             own_hwnd = None
             try:
                 own_hwnd = self._screen._get_own_hwnd()
@@ -2233,14 +1990,12 @@ class CompanionApp:
                 active_title = self._screen.get_active_window_title(skip_hwnd=own_hwnd)
 
             typing_pause = _SETTINGS.ocr_pause_while_typing_sec
-            # User messages bypass typing pause — they just typed and expect fresh screen context.
             recently_active = (
-                not is_user
-                and typing_pause > 0
+                typing_pause > 0
                 and (time.time() - self._last_direct_interaction_time) < typing_pause
             )
 
-            if get_settings().enable_screen_reader and not recently_active:
+            if _SETTINGS.enable_screen_reader and not recently_active:
                 screen_text = self._screen.capture_text(
                     focused_only=_SETTINGS.ocr_focused_window_only,
                 )
@@ -2270,8 +2025,6 @@ class CompanionApp:
                 screen_text = f"[Active: {active_title}]"
                 self._last_screen_text = screen_text
 
-        ai_screen_context = screen_text or self._last_screen_text
-
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
         def _on_token(raw_so_far: str):
@@ -2281,13 +2034,13 @@ class CompanionApp:
         try:
             if _SETTINGS.enable_streaming:
                 response = self._ai.query_streaming(
-                    screen_context=ai_screen_context,
+                    screen_context=screen_text if not is_user else self._last_screen_text,
                     user_message=user_message or "",
                     on_token=_on_token,
                 )
             else:
                 response = self._ai.query(
-                    screen_context=ai_screen_context,
+                    screen_context=screen_text if not is_user else self._last_screen_text,
                     user_message=user_message or "",
                 )
         except Exception as exc:
@@ -2322,21 +2075,7 @@ class CompanionApp:
             self._dispatch_response(response, user_message)
         finally:
             self._ai_busy = False
-            self._run_deferred_ai_tick_callbacks()
             self._drain_pending_user_message()
-
-    def _defer_after_ai_tick(self, callback: Callable[[], None]) -> None:
-        """Run callback after the current _ai_tick releases _ai_busy (avoids _ai_query races)."""
-        self._post_ai_tick_callbacks.append(callback)
-
-    def _run_deferred_ai_tick_callbacks(self) -> None:
-        callbacks = self._post_ai_tick_callbacks[:]
-        self._post_ai_tick_callbacks.clear()
-        for cb in callbacks:
-            try:
-                cb()
-            except Exception as exc:
-                logger.debug(f"deferred ai tick callback failed: {exc}")
 
     def _drain_pending_user_message(self) -> None:
         pending: str | None
@@ -2423,34 +2162,11 @@ class CompanionApp:
     def _speak_and_continue(self, segments, mood, shutdown_requested: bool = False):
         if segments:
             self._speech_active = True
-
-            def _begin_speech() -> None:
-                self._set_state(self.STATE_TALKING, mood)
-                try:
-                    from agetha.ui.glitch_overlay import maybe_mood_glitch
-                    maybe_mood_glitch(self.root, mood)
-                except Exception:
-                    pass
-                if self._voice_out:
-                    try:
-                        self._voice_out.start_speech(segments, mood)
-                    except Exception:
-                        if self._bleep:
-                            try:
-                                self._bleep.start_talking(tone=mood)
-                            except Exception:
-                                pass
-                elif self._bleep:
-                    try:
-                        self._bleep.start_talking(tone=mood)
-                    except Exception:
-                        pass
-                self._subtitle.speak(
-                    segments,
-                    on_done=lambda: self._on_speech_done(shutdown_requested),
-                )
-
-            self.root.after(0, _begin_speech)
+            self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
+            self.root.after(0, lambda: self._subtitle.speak(
+                segments,
+                on_done=lambda: self._on_speech_done(shutdown_requested),
+            ))
         else:
             self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
             self._reschedule_screen_poll()
@@ -2483,46 +2199,18 @@ class CompanionApp:
         return result[0]
 
     def _show_window_picker_dialog(self, matches: list[tuple[int, str]]) -> int | None:
-        from agetha.ui.w95_window import apply_borderless_win95, show_borderless
-
         dlg = tk.Toplevel(self.root)
-        apply_borderless_win95(dlg, self.root, topmost=True)
+        dlg.title("Agetha — Pick window")
         dlg.configure(bg=W95_BG)
+        dlg.attributes("-topmost", True)
         dlg.resizable(False, False)
-
-        outer = tk.Frame(dlg, bg=W95_BG, relief="raised", bd=2)
-        outer.pack(fill="both", expand=True)
-
-        title_bar = tk.Frame(outer, bg=W95_TITLE_BG, height=18)
-        title_bar.pack(fill="x", padx=2, pady=(2, 0))
-        title_bar.pack_propagate(False)
         tk.Label(
-            title_bar, text="⚠  Pick window",
-            bg=W95_TITLE_BG, fg=W95_TITLE_FG,
-            font=W95_FONT_BOLD, anchor="w", padx=4,
-        ).pack(side="left", fill="y")
-
-        chosen: list[int | None] = [None]
-
-        def _cancel():
-            chosen[0] = None
-            dlg.destroy()
-
-        tk.Button(
-            title_bar, text="✕",
-            bg=W95_BTN_BG, fg=W95_TEXT, font=("MS Sans Serif", 7, "bold"),
-            relief="raised", bd=2, width=2, command=_cancel,
-        ).pack(side="right", padx=(0, 2), pady=1)
-
-        body = tk.Frame(outer, bg=W95_BG, padx=10, pady=10)
-        body.pack(fill="both", expand=True)
-        tk.Label(
-            body, text="Multiple windows match. Which one?",
-            bg=W95_BG, fg=W95_TEXT, font=W95_FONT,
-        ).pack(anchor="w", pady=(0, 4))
-        frame = tk.Frame(body, bg=W95_BG)
-        frame.pack(fill="both", expand=True)
-        listbox = tk.Listbox(frame, width=58, height=min(8, len(matches)), font=W95_FONT)
+            dlg, text="Multiple windows match. Which one?",
+            bg=W95_BG, fg="#000000", font=("Tahoma", 9),
+        ).pack(padx=10, pady=(10, 4))
+        frame = tk.Frame(dlg, bg=W95_BG)
+        frame.pack(padx=10, pady=4, fill="both", expand=True)
+        listbox = tk.Listbox(frame, width=58, height=min(8, len(matches)), font=("Tahoma", 9))
         scroll = tk.Scrollbar(frame, orient="vertical", command=listbox.yview)
         listbox.configure(yscrollcommand=scroll.set)
         listbox.pack(side="left", fill="both", expand=True)
@@ -2530,6 +2218,7 @@ class CompanionApp:
         for _hwnd, title in matches:
             listbox.insert("end", title[:72])
         listbox.selection_set(0)
+        chosen: list[int | None] = [None]
 
         def _ok(_event=None):
             sel = listbox.curselection()
@@ -2537,46 +2226,21 @@ class CompanionApp:
             chosen[0] = matches[idx][0]
             dlg.destroy()
 
-        btn_row = tk.Frame(outer, bg=W95_BG, pady=6)
-        btn_row.pack(fill="x")
-        tk.Button(
-            btn_row, text="OK", font=W95_FONT_BOLD, bg=W95_BTN_BG, fg=W95_TEXT,
-            relief="raised", bd=2, width=8, command=_ok,
-        ).pack(side="left", padx=(16, 4))
-        tk.Button(
-            btn_row, text="Cancel", font=W95_FONT_BOLD, bg=W95_BTN_BG, fg=W95_TEXT,
-            relief="raised", bd=2, width=8, command=_cancel,
-        ).pack(side="left", padx=4)
+        def _cancel():
+            chosen[0] = None
+            dlg.destroy()
+
+        btn_row = tk.Frame(dlg, bg=W95_BG)
+        btn_row.pack(pady=(4, 10))
+        tk.Button(btn_row, text="OK", width=8, command=_ok).pack(side="left", padx=4)
+        tk.Button(btn_row, text="Cancel", width=8, command=_cancel).pack(side="left", padx=4)
         listbox.bind("<Double-Button-1>", _ok)
         dlg.protocol("WM_DELETE_WINDOW", _cancel)
-        dlg.update_idletasks()
-        try:
-            px, py = self.root.winfo_x(), self.root.winfo_y()
-            pw = self.root.winfo_width()
-            ww = dlg.winfo_width() or 400
-            wh = dlg.winfo_height() or 300
-            sw = dlg.winfo_screenwidth()
-            sh = dlg.winfo_screenheight()
-            x = px + (pw - ww) // 2
-            y = py - wh - 10
-            x = max(0, min(x, sw - ww))
-            y = max(0, min(y, sh - wh))
-            dlg.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
-        show_borderless(dlg)
         dlg.grab_set()
         dlg.wait_window()
         return chosen[0]
 
-    def _ai_query(
-        self,
-        user_message: str,
-        screen_context=None,
-        doc_content: str = "",
-        memory_search_context: str = "",
-        suppress_search_memory: bool = False,
-    ):
+    def _ai_query(self, user_message: str, screen_context=None, doc_content: str = ""):
         if self._cancel_event.is_set() or not self._ai:
             return None
         with self._ai_tick_lock:
@@ -2595,16 +2259,12 @@ class CompanionApp:
                     screen_context=self._last_screen_text if screen_context is None else screen_context,
                     user_message=user_message,
                     doc_content=doc_content,
-                    memory_search_context=memory_search_context,
-                    suppress_search_memory=suppress_search_memory,
                     on_token=_on_token,
                 )
             return self._ai.query(
                 screen_context=self._last_screen_text if screen_context is None else screen_context,
                 user_message=user_message,
                 doc_content=doc_content,
-                memory_search_context=memory_search_context,
-                suppress_search_memory=suppress_search_memory,
             )
         except Exception as exc:
             logger.error(f"_ai_query failed: {exc}")
@@ -2630,37 +2290,19 @@ class CompanionApp:
                 static_name = self.EXTRA_STATIC_GIFS.get("happy")
             if not static_name or static_name not in self._gif_cache:
                 return False
-
-            def _begin_short_speech() -> None:
-                self._set_state(self.STATE_TALKING, mood)
-                if self._voice_out:
-                    try:
-                        self._voice_out.start_speech(segments, mood)
-                    except Exception:
-                        if self._bleep:
-                            try:
-                                self._bleep.start_talking(tone=mood)
-                            except Exception:
-                                pass
-                elif self._bleep:
-                    try:
-                        self._bleep.start_talking(tone=mood)
-                    except Exception:
-                        pass
-                self._subtitle.speak(
-                    segments,
-                    on_done=lambda: self._on_speech_done(ctx.shutdown_requested),
-                )
-
+            self.root.after(0, lambda: self._set_state(self.STATE_TALKING, mood))
             self._speech_active = True
             self.root.after(12, lambda: self._play_gif(static_name))
-            self.root.after(0, _begin_short_speech)
+            self.root.after(0, lambda: self._subtitle.speak(
+                segments,
+                on_done=lambda: self._on_speech_done(ctx.shutdown_requested),
+            ))
             return True
         except Exception:
             return False
 
     def _dispatch_response(self, response: dict, user_message: str | None = None):
-        from agetha.commands.command_handlers import dispatch
+        from command_handlers import dispatch
         dispatch(self, response, user_message)
 
     def _on_speech_done(self, shutdown: bool = False):
@@ -2674,11 +2316,6 @@ class CompanionApp:
 
     def _shutdown(self):
         self._stop_talking_rotation()
-        if self._voice_out:
-            try:
-                self._voice_out.stop()
-            except Exception:
-                pass
         if self._bleep:
             try:
                 self._bleep.stop()
@@ -2695,11 +2332,6 @@ class CompanionApp:
         try:
             self.root.mainloop()
         finally:
-            if self._voice_out:
-                try:
-                    self._voice_out.stop()
-                except Exception:
-                    pass
             if self._bleep:
                 try:
                     self._bleep.stop()
@@ -2711,7 +2343,7 @@ class CompanionApp:
 
 def _warn_if_no_api_key():
     """First-run hint when config exists but no AI backend is configured."""
-    from agetha.app_config import get_settings, CONFIG_PATH, ENV_PATH
+    from app_config import get_settings, CONFIG_PATH, ENV_PATH
     s = get_settings()
     if s.bool("USE_LOCAL_AI"):
         if s.get("LOCAL_AI_MODEL", "").strip():
@@ -2753,7 +2385,7 @@ def _early_config_check():
     """
     Ensure config.txt exists; always continue with defaults if missing or invalid.
     """
-    from agetha.app_config import ensure_config_file, get_last_config_load, get_settings, CONFIG_PATH
+    from app_config import ensure_config_file, get_last_config_load, get_settings, CONFIG_PATH
 
     ensure_config_file(CONFIG_PATH, write_if_missing=True)
     get_settings(reload=True)

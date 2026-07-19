@@ -18,8 +18,8 @@ from typing import Callable
 import tkinter as tk
 from tkinter import font as tkfont
 
-from agetha.app_config import BASE_DIR, get_settings
-from agetha.utils import logger, native_error_popup
+from app_config import BASE_DIR, get_settings
+from utils import logger, native_error_popup
 
 W95_BG = "#c0c0c0"
 W95_TITLE_BG = "#000080"
@@ -349,8 +349,8 @@ class MicPickerDialog:
         self._mics = mics
 
         self._win = tk.Toplevel(parent)
-        from agetha.ui.w95_window import apply_borderless_win95, show_borderless
-        apply_borderless_win95(self._win, parent, topmost=True)
+        self._win.overrideredirect(True)
+        self._win.attributes("-topmost", True)
         self._win.configure(bg=W95_BG)
         self._win.resizable(False, False)
         self._drag_x = self._drag_y = 0
@@ -415,14 +415,10 @@ class MicPickerDialog:
         self._win.update_idletasks()
         px, py = parent.winfo_x(), parent.winfo_y()
         pw, ph = parent.winfo_width(), parent.winfo_height()
-        ww = self._win.winfo_width() or 260
-        wh = self._win.winfo_height() or 200
-        sw = self._win.winfo_screenwidth()
-        sh = self._win.winfo_screenheight()
-        x = max(0, min(px + (pw - ww) // 2, sw - ww))
-        y = max(0, min(py + (ph - wh) // 2, sh - wh))
+        ww, wh = self._win.winfo_width(), self._win.winfo_height()
+        x = max(0, px + (pw - ww) // 2)
+        y = max(0, py + (ph - wh) // 2)
         self._win.geometry(f"+{x}+{y}")
-        show_borderless(self._win)
         self._win.bind("<Return>", lambda _: self._ok())
         self._win.bind("<Escape>", lambda _: self._cancel())
 
