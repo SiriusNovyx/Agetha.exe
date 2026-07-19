@@ -14,7 +14,13 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agetha.app_config import AppSettings
-from agetha.features.tts_player import PYTTSX3_OK, TTSPlayer, VoiceOutputCoordinator
+from agetha.features.tts_player import (
+    EDGE_TTS_OK,
+    KOKORO_OK,
+    PYTTSX3_OK,
+    TTSPlayer,
+    VoiceOutputCoordinator,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = (
@@ -49,6 +55,14 @@ class TestAppSettingsVoiceOutput(unittest.TestCase):
         s = AppSettings({"TTS_VOLUME": "2.5"})
         self.assertEqual(s.tts_volume, 1.0)
 
+    def test_voice_tts_engine_valid(self) -> None:
+        s = AppSettings({"VOICE_TTS_ENGINE": "edge_tts"})
+        self.assertEqual(s.voice_tts_engine, "edge_tts")
+
+    def test_voice_tts_engine_invalid_falls_back(self) -> None:
+        s = AppSettings({"VOICE_TTS_ENGINE": "elevenlabs"})
+        self.assertEqual(s.voice_tts_engine, "pyttsx3")
+
 
 class TestVoiceOutputCoordinator(unittest.TestCase):
     def test_bleeps_only_no_tts_init(self) -> None:
@@ -75,41 +89,63 @@ class TestVoiceOutputCoordinator(unittest.TestCase):
 
     def test_tts_only_without_pyttsx3_falls_back_to_bleeps(self) -> None:
         bleep = MagicMock()
-        settings = AppSettings({"VOICE_OUTPUT_MODE": "tts_only"})
+        settings = AppSettings({"VOICE_OUTPUT_MODE": "tts_only", "VOICE_TTS_ENGINE": "pyttsx3"})
         with patch("agetha.features.tts_player.PYTTSX3_OK", False):
-            coord = VoiceOutputCoordinator(bleep, settings)
-            coord.start_speech([{"text": "hi"}], "neutral")
+            with patch("agetha.features.tts_player._engine_package_ok", return_value=False):
+                coord = VoiceOutputCoordinator(bleep, settings)
+                coord.start_speech([{"text": "hi"}], "neutral")
         bleep.start_talking.assert_called_once_with(tone="neutral")
+
+    def test_tts_engine_passed_to_player(self) -> None:
+        bleep = MagicMock()
+        settings = AppSettings({
+            "VOICE_OUTPUT_MODE": "tts_only",
+            "VOICE_TTS_ENGINE": "edge_tts",
+        })
+        with patch("agetha.features.tts_player.TTSPlayer") as mock_player:
+            mock_player.return_value.package_ok = False
+            VoiceOutputCoordinator(bleep, settings)
+        kwargs = mock_player.call_args.kwargs
+        self.assertEqual(kwargs.get("engine"), "edge_tts")
 
 
 class TestTTSPlayerGraceful(unittest.TestCase):
     def test_speak_text_without_pyttsx3(self) -> None:
         with patch("agetha.features.tts_player.PYTTSX3_OK", False):
-            player = TTSPlayer()
+            with patch("agetha.features.tts_player._engine_package_ok", return_value=False):
+                player = TTSPlayer(engine="pyttsx3")
         player.speak_text("hello")  # must not raise
 
     def test_speak_segments_without_pyttsx3(self) -> None:
         with patch("agetha.features.tts_player.PYTTSX3_OK", False):
-            player = TTSPlayer()
+            with patch("agetha.features.tts_player._engine_package_ok", return_value=False):
+                player = TTSPlayer(engine="pyttsx3")
         player.speak_segments([{"text": "a"}, {"text": "b"}])  # must not raise
 
     def test_stop_pause_resume_never_raise(self) -> None:
         with patch("agetha.features.tts_player.PYTTSX3_OK", False):
-            player = TTSPlayer()
+            with patch("agetha.features.tts_player._engine_package_ok", return_value=False):
+                player = TTSPlayer(engine="pyttsx3")
         player.pause()
         player.resume()
         player.stop()
 
     def test_segments_to_text_joins(self) -> None:
         with patch("agetha.features.tts_player.PYTTSX3_OK", False):
-            player = TTSPlayer()
+            with patch("agetha.features.tts_player._engine_package_ok", return_value=False):
+                player = TTSPlayer(engine="pyttsx3")
         with patch.object(player, "speak_text") as mock_speak:
             player.speak_segments([{"text": "one"}, {"text": "two"}])
         mock_speak.assert_any_call("one")
         mock_speak.assert_any_call("two")
         self.assertEqual(mock_speak.call_count, 2)
 
+    def test_invalid_engine_normalized_to_pyttsx3(self) -> None:
+        with patch("agetha.features.tts_player._engine_package_ok", return_value=False):
+            player = TTSPlayer(engine="nope")
+        self.assertEqual(player.engine_name, "pyttsx3")
+
 
 if __name__ == "__main__":
-    print(f"PYTTSX3_OK={PYTTSX3_OK}")
+    print(f"PYTTSX3_OK={PYTTSX3_OK} EDGE_TTS_OK={EDGE_TTS_OK} KOKORO_OK={KOKORO_OK}")
     unittest.main(verbosity=2)

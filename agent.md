@@ -3,7 +3,7 @@
 Guidance for humans and coding agents working on this fork.  
 **Priorities (locked):** (1) realism — she feels like a living process on this PC; (2) safety — Command Guard / confirmations / no real harm. Spectacle is optional flavor.
 
-**Version focus:** Overhaul ~v3.7.0 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+**Version focus:** Overhaul ~v5.0.0 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
 ---
 
@@ -141,7 +141,12 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 - Session recap once per boot: `format_session_recap_for_prompt()`  
 - OCR coding assist prompt when error tags present (`_screen_has_error_pattern`)  
 - Presence: idle → loaf → sleep  
-- Medic: `medic_helper.py realism` → `REALISM_OK`
+- Circadian clock (v4): `agetha/core/rhythm.py` → `format_rhythm_for_prompt()`  
+- Dream journal (v4): `agetha/core/dreams.py` — dream on deep sleep, one-shot recall on wake, `view_dreams`  
+- Task keeper (v4): `agetha/features/tasks.py` — `add_task`/`complete_task`/`list_tasks`, pending nag context  
+- Emotion engine (v5): `agetha/core/emotion_engine.py` + `emotional_history.py` — tone only; denials are mild; memories untrusted in prompts  
+- Transparent Windows (v5): `autostart.py` (Startup shortcut only), `win_integration.py`, `status_providers.py`; tray is optional scaffold (`tray_scaffold.py`)  
+- Medic: `medic_helper.py realism` → `REALISM_OK` (covers v4+v5 APIs)
 
 ---
 

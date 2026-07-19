@@ -32,6 +32,12 @@ _WINDOW_COMMANDS = frozenset({
     "target_window_move", "target_window_resize", "target_window_close", "force_close",
 })
 
+# Inspection-only commands: do not apply command_approved emotion events.
+_EMOTION_READONLY_COMMANDS = frozenset({
+    "view_emotions", "view_memory", "view_dreams", "list_tasks",
+    "search_memory", "recycle_bin_status", "read_notepad",
+})
+
 if TYPE_CHECKING:
     from main import CompanionApp
 
@@ -109,6 +115,12 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
                 app.flash_error_gif()
             except Exception:
                 pass
+        # Emotion: a safety denial is mild disappointment only — never betrayal.
+        try:
+            from agetha.core.emotion_engine import note
+            note("command_declined", summary=f"user declined command {command}")
+        except Exception:
+            pass
         denied = [{"text": "Fine. I won't.", "pause": 0.0}]
         app._speak_and_continue(denied, "angry", False)
         return
@@ -119,6 +131,12 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
             update_stats("command")
         except Exception:
             pass
+        if command not in _EMOTION_READONLY_COMMANDS:
+            try:
+                from agetha.core.emotion_engine import note
+                note("command_approved", summary=f"user approved command {command}")
+            except Exception:
+                pass
 
     if app._try_short_mood_speak(command, ctx):
         return
@@ -1019,6 +1037,258 @@ def handle_play_virus_trivia(app, response, ctx):
     else:
         app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
         app._reschedule_screen_poll()
+    return True
+
+
+# ── v4.0.0 — dream journal & task keeper ─────────────────────────────────────
+
+@register("view_dreams")
+def handle_view_dreams(app, response, ctx):
+    from main import AgethaPopup
+    if not get_settings().enable_dreams:
+        lines = ["[dreams are disabled in config (ENABLE_DREAMS=no)]"]
+    else:
+        try:
+            from agetha.core.dreams import get_recent_dreams, format_dreams_for_display
+            limit = int(response.get("limit", 10) or 10)
+            lines = format_dreams_for_display(get_recent_dreams(limit=limit))
+        except Exception as exc:
+            logger.warning(f"view_dreams failed: {exc}")
+            lines = [f"[dream journal error: {exc}]"]
+    app.root.after(0, lambda: AgethaPopup(app.root, lines, ctx.mood))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+@register("add_task")
+def handle_add_task(app, response, ctx):
+    if not get_settings().enable_tasks:
+        app._speak_and_continue(
+            [{"text": "Tasks are disabled in config.", "pause": 0.0}], "neutral", False,
+        )
+        return True
+    text = (response.get("text") or "").strip()
+    if not text:
+        app._speak_and_continue(
+            [{"text": "Remember what, exactly?", "pause": 0.0}], "thinking", False,
+        )
+        return True
+    try:
+        from agetha.features.tasks import add_task
+        record = add_task(text)
+        if record:
+            app.root.after(0, lambda: app._show_op_success(f"Task #{record['id']} saved."))
+    except Exception as exc:
+        logger.warning(f"add_task failed: {exc}")
+        app.root.after(0, lambda: app._show_op_error(f"Task save failed: {exc}"))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+@register("complete_task")
+def handle_complete_task(app, response, ctx):
+    if not get_settings().enable_tasks:
+        app._speak_and_continue(
+            [{"text": "Tasks are disabled in config.", "pause": 0.0}], "neutral", False,
+        )
+        return True
+    task_ref = response.get("task") or response.get("task_id") or response.get("text") or ""
+    try:
+        from agetha.features.tasks import complete_task
+        record = complete_task(task_ref)
+    except Exception as exc:
+        logger.warning(f"complete_task failed: {exc}")
+        record = None
+    if record:
+        app.root.after(0, lambda: app._show_op_success(f"Task #{record['id']} done."))
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    else:
+        app.root.after(0, lambda: app._show_op_error("No matching pending task."))
+        app._speak_and_continue(
+            [{"text": "That's not on the list.", "pause": 0.0}], "thinking", False,
+        )
+    return True
+
+
+@register("list_tasks")
+def handle_list_tasks(app, response, ctx):
+    from main import AgethaPopup
+    if not get_settings().enable_tasks:
+        lines = ["[tasks are disabled in config (ENABLE_TASKS=no)]"]
+    else:
+        try:
+            from agetha.features.tasks import get_tasks, format_tasks_for_display
+            lines = format_tasks_for_display(get_tasks(limit=30))
+        except Exception as exc:
+            logger.warning(f"list_tasks failed: {exc}")
+            lines = [f"[task list error: {exc}]"]
+    app.root.after(0, lambda: AgethaPopup(app.root, lines, ctx.mood))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+# ── v5.0.0 — emotion transparency ────────────────────────────────────────────
+
+@register("view_emotions")
+def handle_view_emotions(app, response, ctx):
+    from main import AgethaPopup
+    if not get_settings().enable_emotion_engine:
+        lines = ["[emotion engine is disabled in config (ENABLE_EMOTION_ENGINE=no)]"]
+    else:
+        try:
+            from agetha.core.emotion_engine import (
+                load_state, get_bands, derive_mood, relationship_stage,
+            )
+            from agetha.core.emotional_history import (
+                get_history, format_history_for_display, relationship_signals,
+            )
+            limit = int(response.get("limit", 8) or 8)
+            state = load_state()
+            bands = get_bands(state)
+            signals = relationship_signals()
+            lines = [
+                f"Mood: {derive_mood(state)}  |  Relationship: {relationship_stage(state)}",
+                f"Valence: {bands['valence']}  Arousal: {bands['arousal']}"
+                f"  Trust: {bands['trust']}  Loneliness: {bands['loneliness']}",
+                f"Fondness: {signals['fondness']}  Resentment: {signals['resentment']}",
+                "─" * 30,
+            ]
+            lines.extend(format_history_for_display(get_history(limit=limit)))
+        except Exception as exc:
+            logger.warning(f"view_emotions failed: {exc}")
+            lines = [f"[emotion view error: {exc}]"]
+    app.root.after(0, lambda: AgethaPopup(app.root, lines, ctx.mood))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+@register("clear_emotions")
+def handle_clear_emotions(app, response, ctx):
+    if not get_settings().enable_emotion_engine:
+        app._speak_and_continue(
+            [{"text": "Emotion engine is disabled.", "pause": 0.0}], "neutral", False,
+        )
+        return True
+    scope = (response.get("scope") or "all").strip().lower()
+    entry_id = response.get("entry_id") or 0
+    try:
+        from agetha.core.emotional_history import remove_entry, clear_history
+        from agetha.core.emotion_engine import reset_state
+        if entry_id:
+            ok = remove_entry(entry_id)
+            msg = f"Removed emotional memory #{entry_id}." if ok else "No such memory."
+        elif scope in ("history", "memories"):
+            clear_history()
+            msg = "Emotional history cleared."
+        else:
+            clear_history()
+            reset_state()
+            msg = "Emotional state and history reset."
+        app.root.after(0, lambda: app._show_op_success(msg))
+    except Exception as exc:
+        logger.warning(f"clear_emotions failed: {exc}")
+        app.root.after(0, lambda: app._show_op_error(f"Reset failed: {exc}"))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+# ── v5.0.0 — safe Windows integration ────────────────────────────────────────
+
+@register("set_autostart")
+def handle_set_autostart(app, response, ctx):
+    if not get_settings().enable_autostart_control:
+        app._speak_and_continue(
+            [{"text": "Sign-in startup is turned off in my settings.", "pause": 0.0}],
+            "neutral", False,
+        )
+        return True
+    try:
+        from agetha.platform import autostart
+        from agetha.core.audit_log import log_audit
+        from agetha.commands.command_guard import CommandGuard
+        enable = CommandGuard.parse_enabled(response)
+        if enable:
+            ok, msg = autostart.enable()
+            action = "autostart_enable"
+        else:
+            ok, msg = autostart.disable()
+            action = "autostart_disable"
+        log_audit(
+            action,
+            {"shortcut": str(autostart.shortcut_path()), "status": autostart.validate()},
+            "success" if ok else "failed",
+        )
+        app.root.after(0, lambda: (app._show_op_success(msg) if ok else app._show_op_error(msg)))
+    except Exception as exc:
+        logger.warning(f"set_autostart failed: {exc}")
+        app.root.after(0, lambda: app._show_op_error(f"Startup change failed: {exc}"))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+@register("open_settings")
+def handle_open_settings(app, response, ctx):
+    try:
+        from agetha.platform.win_integration import open_settings
+        page = response.get("page", "home") or "home"
+        ok, msg = open_settings(page)
+        if ok:
+            app.root.after(0, lambda: app._show_op_success(msg))
+        else:
+            app.root.after(0, lambda: app._show_op_error(msg))
+    except Exception as exc:
+        logger.warning(f"open_settings failed: {exc}")
+        app.root.after(0, lambda: app._show_op_error(f"Settings launch failed: {exc}"))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+@register("set_theme")
+def handle_set_theme(app, response, ctx):
+    if not get_settings().enable_theme_control:
+        app._speak_and_continue(
+            [{"text": "Theme control is turned off in my settings.", "pause": 0.0}],
+            "neutral", False,
+        )
+        return True
+    try:
+        from agetha.platform.win_integration import set_theme, rollback_theme
+        from agetha.core.audit_log import log_audit
+        mode = (response.get("mode") or "").strip().lower()
+        scope = (response.get("scope") or "both").strip().lower()
+        if mode == "rollback":
+            ok, msg = rollback_theme()
+            action = "theme_rollback"
+            details = {"mode": "rollback"}
+        else:
+            ok, msg = set_theme(mode, scope=scope)
+            action = "theme_change"
+            details = {"mode": mode, "scope": scope}
+        log_audit(action, details, "success" if ok else "failed")
+        if ok:
+            app.root.after(0, lambda: app._show_op_success(msg))
+        else:
+            app.root.after(0, lambda: app._show_op_error(msg))
+    except Exception as exc:
+        logger.warning(f"set_theme failed: {exc}")
+        app.root.after(0, lambda: app._show_op_error(f"Theme change failed: {exc}"))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    return True
+
+
+@register("recycle_bin_status")
+def handle_recycle_bin_status(app, response, ctx):
+    try:
+        from agetha.platform.win_integration import recycle_bin_status
+        ok, msg, _info = recycle_bin_status()
+        if ok:
+            app.root.after(0, lambda: app._show_op_success(msg))
+        else:
+            app.root.after(0, lambda: app._show_op_error(msg))
+    except Exception as exc:
+        logger.warning(f"recycle_bin_status failed: {exc}")
+        app.root.after(0, lambda: app._show_op_error(f"Recycle Bin query failed: {exc}"))
+    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
 

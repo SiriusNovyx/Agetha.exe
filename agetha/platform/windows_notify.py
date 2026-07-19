@@ -59,6 +59,31 @@ def start_menu_shortcut_path() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / _START_MENU_NAME
 
 
+def _run_powershell_encoded(encoded: str, *, timeout: int) -> subprocess.CompletedProcess[str]:
+    """Run encoded PowerShell without flashing/minimizing the parent console.
+
+    ``powershell -WindowStyle Hidden`` is avoided: on Windows it often minimizes
+    the caller's console (e.g. Medic_Checker) instead of only hiding the child.
+    """
+    kwargs: dict = {
+        "args": [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            encoded,
+        ],
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "shell": False,
+    }
+    if IS_WINDOWS:
+        # CREATE_NO_WINDOW: no console for the child; does not touch the parent.
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return subprocess.run(**kwargs)
+
+
 def ensure_start_menu_shortcut() -> bool:
     """
     Create/update %APPDATA%\\...\\Start Menu\\Programs\\Agetha.lnk with AGETHA_AUMID.
@@ -192,16 +217,7 @@ Write-Output 'OK'
 """
     try:
         encoded = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
-        proc = subprocess.run(
-            [
-                "powershell", "-NoProfile", "-NonInteractive",
-                "-WindowStyle", "Hidden", "-EncodedCommand", encoded,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=45,
-            shell=False,
-        )
+        proc = _run_powershell_encoded(encoded, timeout=45)
         out = (proc.stdout or "").strip()
         # Success if Apply printed OK, or shortcut exists after a benign re-run
         if lnk.is_file() and (proc.returncode == 0 or "OK" in out):
@@ -275,13 +291,7 @@ Write-Output 'OK'
 """
     try:
         encoded = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            shell=False,
-        )
+        proc = _run_powershell_encoded(encoded, timeout=30)
         if proc.returncode == 0 and "OK" in (proc.stdout or ""):
             logger.info("Toast shown via AUMID Agetha.Desktop")
             return True
