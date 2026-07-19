@@ -161,6 +161,42 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
         ),
     ),
     (
+        "Presence & realism (v4)",
+        (
+            ("ENABLE_CIRCADIAN_RHYTHM", "bool", False, ()),
+            ("RHYTHM_NIGHT_START", "text", False, ()),
+            ("RHYTHM_NIGHT_END", "text", False, ()),
+            ("ENABLE_DREAMS", "bool", False, ()),
+            ("DREAMS_MAX_ENTRIES", "text", False, ()),
+            ("ENABLE_TASKS", "bool", False, ()),
+            ("TASKS_MAX_ENTRIES", "text", False, ()),
+        ),
+    ),
+    (
+        "Emotion engine (v5)",
+        (
+            ("ENABLE_EMOTION_ENGINE", "bool", False, ()),
+            ("EMOTION_BASELINE_VALENCE", "text", False, ()),
+            ("EMOTION_BASELINE_AROUSAL", "text", False, ()),
+            ("EMOTION_BASELINE_TRUST", "text", False, ()),
+            ("EMOTION_BASELINE_LONELINESS", "text", False, ()),
+            ("EMOTION_DECAY_PER_HOUR", "text", False, ()),
+            ("EMOTION_HISTORY_MAX", "text", False, ()),
+        ),
+    ),
+    (
+        "Windows integration (v5) — tray needs restart",
+        (
+            # Command/status gates re-read via get_settings(); tray starts once at launch.
+            ("ENABLE_AUTOSTART_CONTROL", "bool", False, ()),
+            ("ENABLE_THEME_CONTROL", "bool", False, ()),
+            ("ENABLE_STATUS_PROVIDERS", "bool", False, ()),
+            ("STATUS_POLL_INTERVAL_SEC", "text", False, ()),
+            ("ENABLE_TRAY", "bool", True, ()),
+            ("TRAY_BACKGROUND_CLOSE", "bool", False, ()),
+        ),
+    ),
+    (
         "Memory & Context — restart required",
         (
             ("MEMORY_CHARS", "text", True, ()),

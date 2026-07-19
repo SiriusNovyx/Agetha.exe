@@ -241,7 +241,8 @@ def _compact_unlocked(
         # Not enough faded ones — take the oldest non-summary events too
         extras = [e for e in entries if e.get("category") != "summary" and e not in candidates]
         candidates.extend(extras[: overflow - len(candidates)])
-    to_fold = candidates[: max(overflow, len(candidates))] if overflow > 0 else []
+    # Fold only enough entries to clear the overflow — never every faded candidate.
+    to_fold = candidates[:overflow] if overflow > 0 else []
     if not to_fold:
         return entries[-max_entries:]
     fold_ids = {e.get("id") for e in to_fold}

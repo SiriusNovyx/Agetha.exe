@@ -7,7 +7,7 @@ limited to coarse OS-level facts:
 
     - battery level / plugged state (psutil, already a dependency)
     - free disk space on the system drive
-    - network reachability (up/down)
+    - network: local non-loopback interface up/down (no outbound probes)
 
 Never captured: keystrokes, clipboard, screen contents, credentials, browsing
 data, or the contents of any document. Observations are short fixed-template
@@ -20,7 +20,6 @@ Uses an injectable UTC clock. Never raises.
 from __future__ import annotations
 
 import shutil
-import socket
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,12 +112,19 @@ def _sample_disk() -> dict[str, Any] | None:
 
 
 def _sample_network() -> dict[str, Any] | None:
+    """Local interface up/down only — never opens outbound connections."""
     try:
-        sock = socket.create_connection(("1.1.1.1", 53), timeout=2)
-        sock.close()
-        return {"online": True}
-    except OSError:
-        return {"online": False}
+        import psutil
+        stats = psutil.net_if_stats()
+        if not stats:
+            return {"online": False}
+        online = any(
+            bool(getattr(info, "isup", False))
+            and str(name).lower() not in ("lo", "loopback")
+            and "loopback" not in str(name).lower()
+            for name, info in stats.items()
+        )
+        return {"online": online}
     except Exception:
         return None
 

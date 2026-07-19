@@ -32,6 +32,12 @@ _WINDOW_COMMANDS = frozenset({
     "target_window_move", "target_window_resize", "target_window_close", "force_close",
 })
 
+# Inspection-only commands: do not apply command_approved emotion events.
+_EMOTION_READONLY_COMMANDS = frozenset({
+    "view_emotions", "view_memory", "view_dreams", "list_tasks",
+    "search_memory", "recycle_bin_status", "read_notepad",
+})
+
 if TYPE_CHECKING:
     from main import CompanionApp
 
@@ -125,11 +131,12 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
             update_stats("command")
         except Exception:
             pass
-        try:
-            from agetha.core.emotion_engine import note
-            note("command_approved", summary=f"user approved command {command}")
-        except Exception:
-            pass
+        if command not in _EMOTION_READONLY_COMMANDS:
+            try:
+                from agetha.core.emotion_engine import note
+                note("command_approved", summary=f"user approved command {command}")
+            except Exception:
+                pass
 
     if app._try_short_mood_speak(command, ctx):
         return

@@ -378,6 +378,25 @@ class TestEmotionalHistory(_TempStateMixin):
         cats = {e["category"] for e in self.eh.get_history(limit=50, now_fn=self.clock.now)}
         self.assertIn("summary", cats)
 
+    def test_compaction_folds_only_overflow(self) -> None:
+        """When many faded candidates exist, fold only enough to clear overflow."""
+        small = AppSettings({"EMOTION_HISTORY_MAX": "20"})
+        with patch("agetha.app_config.get_settings", return_value=small):
+            for i in range(19):
+                self.eh.record_event(
+                    "user_chat", importance=0.2, decay_rate=0.5,
+                    summary=f"old {i}", now_fn=self.clock.now,
+                )
+            self.clock.advance(days=30)  # fade the older batch
+            self.eh.record_event("user_polite", importance=1.0, decay_rate=0.01,
+                                 summary="recent a", now_fn=self.clock.now)
+            self.eh.record_event("user_polite", importance=1.0, decay_rate=0.01,
+                                 summary="recent b", now_fn=self.clock.now)
+            # 21 entries → overflow 1 → should keep ~20, not collapse to a handful
+            count = self.eh.get_history_count()
+        self.assertLessEqual(count, 20)
+        self.assertGreaterEqual(count, 18)
+
     def test_relationship_signals_bounded_and_denial_neutral(self) -> None:
         for _ in range(50):
             self.eh.record_event("user_polite", importance=1.0, summary="kind",
@@ -909,6 +928,23 @@ class TestStatusProviders(unittest.TestCase):
         with patch("agetha.app_config.get_settings", return_value=_PLAIN):
             self.assertEqual(self.sp.poll(now_fn=self.clock.now), [])
             self.assertIn("OFF", self.sp.status_summary())
+
+    def test_network_sample_is_local_only(self) -> None:
+        """Network status must not open outbound TCP probes (Codex P2)."""
+        import agetha.features.status_providers as sp_mod
+        self.assertFalse(hasattr(sp_mod, "socket") or "socket" in dir(sp_mod))
+        # With patched interfaces: one up non-loopback → online
+        fake_stats = {
+            "Ethernet": type("S", (), {"isup": True})(),
+            "Loopback Pseudo-Interface 1": type("S", (), {"isup": True})(),
+        }
+        with patch("psutil.net_if_stats", return_value=fake_stats):
+            # Call the real sampler (setUp patches _sample_network)
+            self._sample_patches[2].stop()
+            try:
+                self.assertEqual(self.sp._sample_network(), {"online": True})
+            finally:
+                self._sample_patches[2].start()
 
     def test_edge_triggered_changes_only(self) -> None:
         with patch("agetha.app_config.get_settings", return_value=self.on):
