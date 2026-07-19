@@ -30,13 +30,10 @@ ENABLE_GROQ = yes
 # Put OPENROUTER_API_KEY in .env only (never in this file).
 ENABLE_OPENROUTER = no
 
-# OPENROUTER_API_KEY — ignored here; use .env: OPENROUTER_API_KEY=...
-OPENROUTER_API_KEY =
-
 # OPENROUTER_MODEL — model slug from openrouter.ai/models
 # Use exact IDs from https://openrouter.ai/models (many ":free" variants are retired).
 # Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
-OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+OPENROUTER_MODEL = google/gemma-4-31b-it:free
 
 # FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
 FASTER_MODE = no

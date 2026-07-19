@@ -2753,15 +2753,12 @@ def _early_config_check():
     """
     Ensure config.txt exists; always continue with defaults if missing or invalid.
     """
-    from agetha.app_config import ensure_config_file, get_last_config_load, get_settings, CONFIG_PATH
+    from agetha.app_config import ensure_config_file, get_settings, CONFIG_PATH
 
     ensure_config_file(CONFIG_PATH, write_if_missing=True)
     get_settings(reload=True)
     refresh_config_constants()
-    load_info = get_last_config_load()
-    if load_info and load_info.warnings:
-        for w in load_info.warnings:
-            print(f"[Agetha] Config: {w}")
+    # Config warnings are already emitted via app_config._log_config (no secret names).
 
     _warn_if_no_api_key()
 

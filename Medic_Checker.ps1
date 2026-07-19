@@ -14,6 +14,8 @@ $ErrorActionPreference = 'Continue'
 
 $Script:Root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 Set-Location -LiteralPath $Script:Root
+# Initialized before Invoke-StandardChecks (StrictMode forbids reading unset script vars).
+$script:VenvPython = $null
 
 function Get-ConfigValue {
     param(
@@ -80,8 +82,15 @@ function New-AgethaDesktopShortcut {
     $create = Get-ConfigValue -Key 'CREATE_DESKTOP_SHORTCUT' -Default 'no'
     if ($create -notmatch '^(?i)yes$') { return }
     try {
-        # Prefer Python helper (creates Start Menu + AUMID); also make Desktop .lnk via same launcher.
-        $pyToast = if ($script:VenvPython) { $script:VenvPython } else { 'python' }
+        # Prefer venv Python (may run before Invoke-StandardChecks sets $script:VenvPython).
+        $venvPy = Join-Path $Script:Root '.venv\Scripts\python.exe'
+        if ($script:VenvPython) {
+            $pyToast = $script:VenvPython
+        } elseif (Test-Path -LiteralPath $venvPy) {
+            $pyToast = $venvPy
+        } else {
+            $pyToast = 'python'
+        }
         & $pyToast (Join-Path $Script:Root 'medic_helper.py') toast_shortcut 2>$null | Out-Null
         $desktop = [Environment]::GetFolderPath('Desktop')
         $lnk = Join-Path $desktop 'Agetha.lnk'

@@ -58,8 +58,9 @@ ENABLE_GROQ = yes
 ENABLE_OPENROUTER = no
 
 # OPENROUTER_MODEL — model slug from openrouter.ai/models
-# Non-:free models may be billed. Prefer Groq first when using paid OpenRouter models.
-OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+# Use exact IDs from https://openrouter.ai/models (many ":free" variants are retired).
+# Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
+OPENROUTER_MODEL = google/gemma-4-31b-it:free
 
 # FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
 FASTER_MODE = no
@@ -562,10 +563,11 @@ def parse_config_file(path: Path | None = None) -> dict[str, str]:
 
     ignored_secrets = _strip_secrets_from_config(file_config)
     if ignored_secrets:
+        # Count only — do not log key names (CodeQL: clear-text logging of secrets).
+        n_ignored = len(ignored_secrets)
         result.warnings.append(
-            "Ignored API key(s) in config.txt (use .env only): "
-            + ", ".join(ignored_secrets[:12])
-            + ("…" if len(ignored_secrets) > 12 else "")
+            f"Ignored {n_ignored} API key entr{'y' if n_ignored == 1 else 'ies'} "
+            "in config.txt (use .env only)."
         )
 
     merged, invalid_keys = _merge_with_defaults(file_config)
@@ -698,7 +700,7 @@ class AppSettings:
 
     @property
     def openrouter_model(self) -> str:
-        return self.get("OPENROUTER_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free").strip()
+        return self.get("OPENROUTER_MODEL", "google/gemma-4-31b-it:free").strip()
 
     @property
     def enable_voice(self) -> bool:
@@ -1006,7 +1008,7 @@ def patch_config_keys(updates: dict[str, str]) -> tuple[bool, list[str]]:
         if not key:
             continue
         if _is_secret_key(key):
-            _log_config(f"Refused to write secret key {key} to config.txt — use .env")
+            _log_config("Refused to write an API key to config.txt — use .env")
             failed.append(key)
             continue
         clean[key] = str(raw_val)

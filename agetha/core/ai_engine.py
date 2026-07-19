@@ -150,7 +150,7 @@ class _LocalOllamaClient:
 
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+DEFAULT_OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
 
 
 class _OpenRouterClient:
