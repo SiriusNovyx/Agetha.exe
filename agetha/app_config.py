@@ -288,7 +288,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 3.6.0
+APP_VERSION = 3.7.0
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
@@ -936,7 +936,7 @@ class AppSettings:
 
     @property
     def app_version(self) -> str:
-        return self.get("APP_VERSION", "3.6.0").strip() or "3.6.0"
+        return self.get("APP_VERSION", "3.7.0").strip() or "3.7.0"
 
     @property
     def github_releases_url(self) -> str:

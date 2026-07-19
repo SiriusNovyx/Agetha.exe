@@ -3,7 +3,7 @@
 Guidance for humans and coding agents working on this fork.  
 **Priorities (locked):** (1) realism — she feels like a living process on this PC; (2) safety — Command Guard / confirmations / no real harm. Spectacle is optional flavor.
 
-**Version focus:** Overhaul ~v3.6.0 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+**Version focus:** Overhaul ~v3.7.0 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
 ---
 
