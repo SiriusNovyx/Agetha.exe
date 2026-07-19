@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
 
-from agetha.utils import IS_WINDOWS, IS_LINUX, native_error_popup, logger
+from agetha.utils import IS_WINDOWS, IS_LINUX, apply_window_icon, native_error_popup, native_message_box, logger
 from agetha.app_config import get_settings, parse_config_file, DEFAULT_CONFIG, ensure_config_file, BASE_DIR
 from agetha.platform.window_control import is_self_window_target, is_self_process_target
 
@@ -150,7 +150,7 @@ class _LocalOllamaClient:
 
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+DEFAULT_OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
 
 
 class _OpenRouterClient:
@@ -194,35 +194,62 @@ class _OpenRouterClient:
         )
         to = timeout or self.timeout
 
+        def _reraise_http(exc: BaseException) -> None:
+            import urllib.error as _ue
+            if not isinstance(exc, _ue.HTTPError):
+                raise
+            code = getattr(exc, "code", None)
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")[:400]
+            except Exception:
+                body = ""
+            detail = str(exc)
+            if body:
+                try:
+                    err_obj = _j.loads(body)
+                    api_msg = ((err_obj.get("error") or {}).get("message") or "").strip()
+                    if api_msg:
+                        detail = f"HTTP Error {code}: {api_msg}"
+                except Exception:
+                    pass
+            raise RuntimeError(detail) from exc
+
         if stream:
             def _gen():
-                with urllib.request.urlopen(req, timeout=to) as resp:
-                    for line_bytes in resp:
-                        line = line_bytes.decode("utf-8", errors="replace").strip()
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data_str = line[len("data:"):].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            chunk = _j.loads(data_str)
-                        except Exception:
-                            continue
-                        choices = chunk.get("choices") or [{}]
-                        delta = (choices[0] or {}).get("delta") or {}
-                        content = delta.get("content") or ""
-                        usage_obj = chunk.get("usage")
-                        ns_usage = (
-                            SimpleNamespace(**usage_obj) if isinstance(usage_obj, dict) else None
-                        )
-                        yield SimpleNamespace(
-                            choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
-                            usage=ns_usage,
-                        )
+                try:
+                    with urllib.request.urlopen(req, timeout=to) as resp:
+                        for line_bytes in resp:
+                            line = line_bytes.decode("utf-8", errors="replace").strip()
+                            if not line or not line.startswith("data:"):
+                                continue
+                            data_str = line[len("data:"):].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk = _j.loads(data_str)
+                            except Exception:
+                                continue
+                            choices = chunk.get("choices") or [{}]
+                            delta = (choices[0] or {}).get("delta") or {}
+                            content = delta.get("content") or ""
+                            usage_obj = chunk.get("usage")
+                            ns_usage = (
+                                SimpleNamespace(**usage_obj) if isinstance(usage_obj, dict) else None
+                            )
+                            yield SimpleNamespace(
+                                choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
+                                usage=ns_usage,
+                            )
+                except Exception as exc:
+                    _reraise_http(exc)
             return _gen()
 
-        with urllib.request.urlopen(req, timeout=to) as resp:
-            raw_bytes = resp.read()
+        try:
+            with urllib.request.urlopen(req, timeout=to) as resp:
+                raw_bytes = resp.read()
+        except Exception as exc:
+            _reraise_http(exc)
         obj = _j.loads(raw_bytes.decode("utf-8", errors="replace"))
         content = ((obj.get("choices") or [{}])[0].get("message") or {}).get("content", "")
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
@@ -744,31 +771,22 @@ class AIEngine:
         self._app_settings = get_settings()
         self._faster_mode = self._app_settings.faster_mode
         self._use_local_ai = self._parse_bool(self._config.get("USE_LOCAL_AI", "no"), default=False)
-        self._use_openrouter = self._app_settings.enable_openrouter
+        self._want_openrouter = self._app_settings.enable_openrouter
         self._enable_groq = self._parse_bool(self._config.get("ENABLE_GROQ", "yes"), default=True)
-
-        # Priority: local AI > OpenRouter > Groq
-        if self._use_local_ai:
-            self._enable_groq = False
-            self._use_openrouter = False
-        elif self._use_openrouter:
-            self._enable_groq = False
-
         self._openrouter_key = self._app_settings.openrouter_api_key
         self._openrouter_model = (
             self._app_settings.openrouter_model or DEFAULT_OPENROUTER_MODEL
         )
+        self._openrouter_is_free = self._openrouter_model.strip().lower().endswith(":free")
+        self._use_openrouter = False
+        self._openrouter_as_fallback = False
 
-        if not GROQ_OK and not self._use_local_ai and not self._use_openrouter:
-            self._emit_error(
-                "The 'groq' package is not installed.",
-                "Run:  pip install groq",
-                "Then restart Agetha.",
-            )
-            self._client = None
-            return
+        # Priority: local AI > Groq (primary) > OpenRouter (fallback / solo)
+        if self._use_local_ai:
+            self._enable_groq = False
+            self._want_openrouter = False
 
-        self._groq_keys = []
+        self._groq_keys: list[str] = []
         if self._enable_groq:
             for i in range(1, 11):
                 key_name = "GROQ_API_KEY" if i == 1 else f"GROQ_API_KEY_{i}"
@@ -776,23 +794,59 @@ class AIEngine:
                 if key:
                     self._groq_keys.append(key)
 
-        if self._use_openrouter and not self._openrouter_key:
+        has_openrouter = bool(self._want_openrouter and self._openrouter_key)
+        has_groq = bool(self._enable_groq and self._groq_keys and GROQ_OK)
+
+        if self._want_openrouter and not self._openrouter_key and not self._use_local_ai:
             self._emit_error(
                 "ENABLE_OPENROUTER is set to yes but OPENROUTER_API_KEY is empty.",
-                "Open config.txt or .env and add your OpenRouter API key.",
+                "Add OPENROUTER_API_KEY to .env (not config.txt).",
                 "Get a key at: https://openrouter.ai/keys",
             )
             self._client = None
             return
 
-        if not self._groq_keys and not self._use_local_ai and not self._use_openrouter:
-            self._emit_error(
-                "No GROQ_API_KEY found in config.txt",
-                "Open config.txt and add at least one Groq API key.",
-                "Get a free key at: console.groq.com",
-            )
+        if not self._use_local_ai and not has_groq and not has_openrouter:
+            if self._enable_groq and not GROQ_OK:
+                self._emit_error(
+                    "The 'groq' package is not installed.",
+                    "Run:  pip install groq",
+                    "Then restart Agetha.",
+                )
+            else:
+                self._emit_error(
+                    "No GROQ_API_KEY found in .env",
+                    "Copy .env.example to .env and add GROQ_API_KEY_1=...",
+                    "Get a free key at: console.groq.com",
+                )
             self._client = None
             return
+
+        if has_groq and has_openrouter:
+            # Both ready — ask the user which provider to start with
+            choice = self._ask_provider_choice()
+            if choice == "openrouter":
+                self._use_openrouter = True
+                self._enable_groq = False
+                self._openrouter_as_fallback = False
+                if not self._openrouter_is_free:
+                    logger.info(
+                        f"User chose OpenRouter with non-free model: {self._openrouter_model}"
+                    )
+            else:
+                # Groq first; OpenRouter kept as automatic failover
+                self._use_openrouter = False
+                self._openrouter_as_fallback = True
+        elif has_groq:
+            self._use_openrouter = False
+            self._openrouter_as_fallback = False
+        elif has_openrouter:
+            self._use_openrouter = True
+            self._enable_groq = False
+            self._openrouter_as_fallback = False
+            # Paid OpenRouter with Groq off → recommend Groq-first setup
+            if not self._openrouter_is_free:
+                self._recommend_groq_before_paid_openrouter()
 
         self._current_groq_key_index   = 0
         self._current_groq_model_index = 0
@@ -840,8 +894,7 @@ class AIEngine:
         msg, title = "Please configure Agetha with your API keys.\nRead the README.txt for setup guide.", "Agetha — First Run"
         if platform.system() == "Windows":
             try:
-                import ctypes
-                ctypes.windll.user32.MessageBoxW(0, msg, title, 0x40 | 0x1000)
+                native_message_box(title, msg, 0x40 | 0x1000)
                 return
             except Exception:
                 pass
@@ -849,6 +902,7 @@ class AIEngine:
             import tkinter as tk
             from tkinter import messagebox
             root = tk.Tk(); root.withdraw()
+            apply_window_icon(root)
             try:
                 root.attributes("-topmost", True)
             except Exception:
@@ -971,6 +1025,154 @@ class AIEngine:
             self._current_groq_model_index = 0
             self._init_client(); return True
         return False
+
+    @staticmethod
+    def _is_rate_limit_error(exc: BaseException) -> bool:
+        """True for HTTP 429 / rate-limit messages (urllib HTTPError is an OSError)."""
+        if getattr(exc, "code", None) == 429:
+            return True
+        errtxt = str(exc).lower()
+        return "429" in errtxt or "rate limit" in errtxt or "too many" in errtxt or "rate_limit" in errtxt
+
+    def _openrouter_rate_limit_wait(self, attempt: int) -> float:
+        """Exponential backoff seconds for OpenRouter 429 (capped)."""
+        return float(min(2 ** min(attempt, 4), 30))
+
+    def _ask_provider_choice(self) -> str:
+        """
+        Windows Yes/No dialog when both Groq and OpenRouter are enabled.
+        Returns 'groq' (Yes / default) or 'openrouter' (No).
+        """
+        groq_model = self._config.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+        paid_note = (
+            f"\n       (not free — may be billed)"
+            if not self._openrouter_is_free
+            else "\n       (:free model)"
+        )
+        msg = (
+            "Both Groq and OpenRouter are enabled.\n\n"
+            "Choose which AI provider to use:\n\n"
+            f"  Yes  = Groq first  ({groq_model})\n"
+            "         OpenRouter auto-starts if Groq runs out.\n\n"
+            f"  No   = OpenRouter now  ({self._openrouter_model})"
+            f"{paid_note}"
+        )
+        title = "Agetha — Choose AI Provider"
+        # IDYES=6, IDNO=7; MB_YESNO=0x4, MB_ICONINFORMATION=0x40
+        if platform.system() == "Windows":
+            try:
+                result = native_message_box(title, msg, 0x4 | 0x40 | 0x1000)
+                choice = "openrouter" if result == 7 else "groq"
+                logger.info(f"Provider choice dialog: {choice}")
+                return choice
+            except Exception as exc:
+                logger.warning(f"Provider choice MessageBox failed: {exc}")
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            apply_window_icon(root)
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+            use_groq = messagebox.askyesno(title, msg, parent=root)
+            root.destroy()
+            choice = "groq" if use_groq else "openrouter"
+            logger.info(f"Provider choice dialog: {choice}")
+            return choice
+        except Exception as exc:
+            logger.warning(f"Provider choice fallback failed: {exc} — defaulting to Groq")
+            return "groq"
+
+    def _recommend_groq_before_paid_openrouter(self) -> None:
+        """Warn when OpenRouter uses a paid model while Groq is unavailable."""
+        msg = (
+            "OpenRouter is enabled with a non-free model:\n"
+            f"  {self._openrouter_model}\n\n"
+            "Groq is disabled or has no API key, so Agetha will bill OpenRouter usage now.\n\n"
+            "Recommendation:\n"
+            "  1. Set ENABLE_GROQ = yes in config.txt\n"
+            "  2. Add GROQ_API_KEY_1=… in .env\n"
+            "  3. Keep ENABLE_OPENROUTER = yes\n\n"
+            "Agetha will use free Groq first, then auto-switch to OpenRouter "
+            "when Groq tokens run out."
+        )
+        logger.warning(msg.replace("\n", " "))
+        self._show_provider_warning(msg, title="Agetha — Recommendation")
+
+    def _switch_to_openrouter_fallback(self, reason: str = "") -> bool:
+        """Move from exhausted Groq onto OpenRouter. Returns True if client is ready."""
+        if self._use_openrouter or not self._openrouter_as_fallback:
+            return False
+        if not self._openrouter_key:
+            return False
+        self._use_openrouter = True
+        self._enable_groq = False
+        self._groq_exhausted = True
+        self._init_client()
+        if self._client is None:
+            self._use_openrouter = False
+            return False
+        why = f" ({reason})" if reason else ""
+        if self._openrouter_is_free:
+            warn = (
+                f"Warning: Groq ran out of tokens{why}.\n"
+                f"Automatically switched to OpenRouter ({self._openrouter_model})."
+            )
+        else:
+            warn = (
+                f"Warning: Groq ran out of tokens{why}.\n"
+                "Automatically switched to OpenRouter.\n\n"
+                f"You are using a non-free model: {self._openrouter_model}\n"
+                "OpenRouter may charge for this usage."
+            )
+        logger.warning(warn.replace("\n", " "))
+        self._show_provider_warning(warn, title="Agetha — Provider Switch")
+        return True
+
+    @staticmethod
+    def _show_provider_warning(msg: str, *, title: str = "Agetha — Warning") -> None:
+        if platform.system() == "Windows":
+            try:
+                # 0x30 = MB_ICONWARNING, 0x1000 = MB_SYSTEMMODAL
+                native_message_box(title, msg, 0x30 | 0x1000)
+                return
+            except Exception:
+                pass
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            apply_window_icon(root)
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+            messagebox.showwarning(title, msg, parent=root)
+            root.destroy()
+        except Exception:
+            pass
+
+    def _groq_exhausted_or_failover(self, reason: str) -> dict | None:
+        """
+        Try OpenRouter failover after Groq is spent.
+        Returns None if failover succeeded (caller should continue).
+        Returns a groq_exhausted response dict if failover is unavailable.
+        """
+        if self._switch_to_openrouter_fallback(reason):
+            return None
+        self._groq_exhausted = True
+        logger.error(f"All Groq keys/models exhausted ({reason}).")
+        return {
+            "command": "idle",
+            "mood": "neutral",
+            "segments": [],
+            "shutdown": False,
+            "groq_exhausted": True,
+        }
 
     # ── Memory ────────────────────────────────────────────────────────────────
 
@@ -1414,8 +1616,10 @@ class AIEngine:
 
         retries = 0
         total_retries = 0
+        or_rate_retries = 0
         MAX_RETRIES_PER_KEY = 3
         MAX_TOTAL_RETRIES = 30
+        MAX_OR_RATE_RETRIES = 5
 
         while True:
             try:
@@ -1467,13 +1671,38 @@ class AIEngine:
                 logger.warning(f"{provider} error: {e}")
                 errtxt = str(e).lower()
 
-                # Rate-limit errors: rotate key immediately, reset retries
-                if "rate" in errtxt or "429" in errtxt or "too many" in errtxt:
+                # Rate-limit: OpenRouter backoff retry; Groq rotates keys then OpenRouter failover
+                if self._is_rate_limit_error(e):
                     retries = 0
-                    if self._enable_groq and not self._use_openrouter and self._rotate_key():
+                    if self._use_openrouter:
+                        or_rate_retries += 1
+                        if or_rate_retries <= MAX_OR_RATE_RETRIES:
+                            wait = self._openrouter_rate_limit_wait(or_rate_retries)
+                            logger.warning(
+                                f"OpenRouter rate limited; retry {or_rate_retries}/{MAX_OR_RATE_RETRIES} in {wait:.0f}s…"
+                            )
+                            time.sleep(wait)
+                            continue
+                        logger.error("OpenRouter rate-limit retries exhausted.")
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                    if self._enable_groq and self._rotate_key():
                         continue
+                    exhausted = self._groq_exhausted_or_failover("rate limit")
+                    if exhausted is None:
+                        continue
+                    return exhausted
 
-                if not self._use_local_ai and (isinstance(e, (OSError, ConnectionError, TimeoutError)) or "connection" in errtxt or "network" in errtxt or "unreachable" in errtxt):
+                # HTTPError is an OSError — do not treat 429 as a connection failure
+                if (
+                    not self._use_local_ai
+                    and not self._is_rate_limit_error(e)
+                    and (
+                        isinstance(e, (OSError, ConnectionError, TimeoutError))
+                        or "connection" in errtxt
+                        or "network" in errtxt
+                        or "unreachable" in errtxt
+                    )
+                ):
                     self._show_error_gif = True
                     return {"command": "show_error_gif", "path": getattr(self, "_error_gif_path", ""), "segments": [], "shutdown": False}
                 if self._use_local_ai:
@@ -1511,15 +1740,18 @@ class AIEngine:
                 if retries >= MAX_RETRIES_PER_KEY:
                     retries = 0
                     if not self._rotate_key():
-                        self._groq_exhausted = True
-                        logger.error("All Groq keys/models exhausted after max retries.")
-                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False, "groq_exhausted": True}
+                        exhausted = self._groq_exhausted_or_failover("max retries")
+                        if exhausted is None:
+                            continue
+                        return exhausted
                     # Key rotated, retry with new key
                     continue
 
                 if not self._rotate_key():
-                    self._groq_exhausted = True
-                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False, "groq_exhausted": True}
+                    exhausted = self._groq_exhausted_or_failover("key/model rotation exhausted")
+                    if exhausted is None:
+                        continue
+                    return exhausted
 
     def query(self, screen_context: str = "", user_message: str = "", doc_content: str = "",
               memory_search_context: str = "", suppress_search_memory: bool = False,
@@ -1554,8 +1786,10 @@ class AIEngine:
 
         retries = 0
         total_retries = 0
+        or_rate_retries = 0
         MAX_RETRIES_PER_KEY = 3
         MAX_TOTAL_RETRIES = 30
+        MAX_OR_RATE_RETRIES = 5
 
         while True:
             try:
@@ -1595,25 +1829,52 @@ class AIEngine:
                 errtxt = str(e).lower()
                 if self._use_local_ai:
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                if self._is_rate_limit_error(e):
+                    retries = 0
+                    if self._use_openrouter:
+                        or_rate_retries += 1
+                        if or_rate_retries <= MAX_OR_RATE_RETRIES:
+                            wait = self._openrouter_rate_limit_wait(or_rate_retries)
+                            logger.warning(
+                                f"OpenRouter rate limited; retry {or_rate_retries}/{MAX_OR_RATE_RETRIES} in {wait:.0f}s…"
+                            )
+                            time.sleep(wait)
+                            continue
+                        logger.error("OpenRouter rate-limit retries exhausted.")
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                    if self._enable_groq and self._rotate_key():
+                        continue
+                    exhausted = self._groq_exhausted_or_failover("rate limit")
+                    if exhausted is None:
+                        continue
+                    return exhausted
                 if self._use_openrouter:
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
-                if isinstance(e, (OSError, ConnectionError, TimeoutError)) or "connection" in errtxt or "network" in errtxt or "unreachable" in errtxt:
+                if (
+                    not self._is_rate_limit_error(e)
+                    and (
+                        isinstance(e, (OSError, ConnectionError, TimeoutError))
+                        or "connection" in errtxt
+                        or "network" in errtxt
+                        or "unreachable" in errtxt
+                    )
+                ):
                     self._show_error_gif = True
                     return {"command": "show_error_gif", "path": getattr(self, "_error_gif_path", ""), "segments": [], "shutdown": False}
-                if "rate" in errtxt or "429" in errtxt or "too many" in errtxt:
-                    retries = 0
-                    if self._enable_groq and not self._use_openrouter and self._rotate_key():
-                        continue
                 retries += 1
                 if retries >= MAX_RETRIES_PER_KEY:
                     retries = 0
                     if not self._rotate_key():
-                        self._groq_exhausted = True
-                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False, "groq_exhausted": True}
+                        exhausted = self._groq_exhausted_or_failover("max retries")
+                        if exhausted is None:
+                            continue
+                        return exhausted
                     continue
                 if not self._rotate_key():
-                    self._groq_exhausted = True
-                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False, "groq_exhausted": True}
+                    exhausted = self._groq_exhausted_or_failover("key/model rotation exhausted")
+                    if exhausted is None:
+                        continue
+                    return exhausted
 
     # ── JSON parser ───────────────────────────────────────────────────────────
 

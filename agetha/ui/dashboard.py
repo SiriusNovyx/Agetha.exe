@@ -5,8 +5,9 @@ dashboard.py — Win95-style companion dashboard (no main.py import).
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from pathlib import Path
+from typing import Any
 
 from agetha.app_config import BASE_DIR
 from agetha.utils import logger
@@ -20,38 +21,166 @@ W95_SHADOW = "#808080"
 W95_BTN_BG = "#c0c0c0"
 W95_FONT = ("MS Sans Serif", 8)
 W95_FONT_BOLD = ("MS Sans Serif", 8, "bold")
+W95_WARN = "#800000"
 
 NOTEPAD_FILE = BASE_DIR / "memory" / "notepad.txt"
 
 _POLL_MS = 2000
-_SAFE_CONFIG_KEYS = (
-    "ENABLE_LONGTERM_MEMORY",
-    "LONGTERM_MEMORY_MAX_RESULTS",
-    "LONGTERM_MEMORY_MAX_CHARS",
-    "ENABLE_WEB_RAG",
-    "ENABLE_GLITCH_EFFECTS",
-    "GLITCH_MOOD_AUTO",
-    "GLITCH_FULLSCREEN",
-    "ENABLE_COMPANION_STATS_CONTEXT",
-    "ENABLE_COMMAND_EXECUTION",
-    "ENABLE_WINDOW_CONTROL",
-    "ENABLE_SCREEN_READER",
-    "ENABLE_AMBIENT_POLLS",
-    "FASTER_MODE",
-    "DRY_RUN_MODE",
-    "VOICE_OUTPUT_MODE",
-    "APP_VERSION",
+
+# kind: "bool" | "text" | "choice"
+# needs_restart: True = Agetha must restart for full effect
+# launcher_only: True = Medic_Checker only (no Agetha restart warning)
+_SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]], ...]], ...] = (
+    (
+        "Hot-reload (apply without restart)",
+        (
+            ("ENABLE_AMBIENT_POLLS", "bool", False, ()),
+            ("DRY_RUN_MODE", "bool", False, ()),
+            ("ENABLE_GLITCH_EFFECTS", "bool", False, ()),
+            ("GLITCH_MOOD_AUTO", "bool", False, ()),
+            ("GLITCH_FULLSCREEN", "bool", False, ()),
+            ("GLITCH_MAX_DURATION_MS", "text", False, ()),
+            ("GLITCH_DEFAULT_STYLE", "choice", False, (
+                "scanlines", "static", "rgb_split", "flicker", "bsod", "matrix", "tear",
+            )),
+            ("SCREEN_POLL_INTERVAL_SEC", "text", False, ()),
+            ("TOUCH_COOLDOWN_SEC", "text", False, ()),
+            ("WAKE_DELAY_SEC", "text", False, ()),
+            ("LOAF_TIMER_MIN", "text", False, ()),
+            ("TARGET_APP_ALIASES", "text", False, ()),
+            ("WINDOW_PICKER_ON_AMBIGUOUS", "bool", False, ()),
+            ("WEB_FETCH_MAX_CHARS", "text", False, ()),
+            ("WEB_TIMEOUT_SEC", "text", False, ()),
+            ("WEB_SEARCH_MAX_RESULTS", "text", False, ()),
+        ),
+    ),
+    (
+        "AI Backend — restart required",
+        (
+            ("USE_LOCAL_AI", "bool", True, ()),
+            ("ENABLE_GROQ", "bool", True, ()),
+            ("ENABLE_OPENROUTER", "bool", True, ()),
+            ("OPENROUTER_MODEL", "text", True, ()),
+            ("GROQ_MODEL", "text", True, ()),
+            ("LOCAL_AI_MODEL", "text", True, ()),
+            ("LOCAL_AI_TIMEOUT", "text", True, ()),
+            ("FASTER_MODE", "bool", True, ()),
+        ),
+    ),
+    (
+        "AI Tuning — restart required",
+        (
+            ("AI_TEMPERATURE", "text", True, ()),
+            ("AI_MAX_TOKENS", "text", True, ()),
+            ("AI_TOP_P", "text", True, ()),
+            ("ENABLE_STREAMING", "bool", True, ()),
+        ),
+    ),
+    (
+        "Permissions — restart required",
+        (
+            ("ENABLE_COMMAND_EXECUTION", "bool", True, ()),
+            ("ENABLE_WINDOW_CONTROL", "bool", True, ()),
+            ("ENABLE_COMMAND_CONFIRMATIONS", "bool", True, ()),
+            ("FORCE_CLOSE_AUTO_ALLOW", "bool", True, ()),
+            ("PROTECTED_PROCESSES", "text", True, ()),
+        ),
+    ),
+    (
+        "Memory & Context — restart required",
+        (
+            ("MEMORY_CHARS", "text", True, ()),
+            ("HISTORY_LIMIT", "text", True, ()),
+            ("FILE_READ_CHARS", "text", True, ()),
+            ("EPISODIC_PROMPT_LIMIT", "text", True, ()),
+            ("EPISODIC_ENTRY_MAX_CHARS", "text", True, ()),
+            ("EPISODIC_MAX_ENTRIES", "text", True, ()),
+            ("ENABLE_LONGTERM_MEMORY", "bool", True, ()),
+            ("LONGTERM_MEMORY_MAX_RESULTS", "text", True, ()),
+            ("LONGTERM_MEMORY_MAX_CHARS", "text", True, ()),
+            ("ENABLE_WEB_RAG", "bool", True, ()),
+            ("ENABLE_COMPANION_STATS_CONTEXT", "bool", True, ()),
+        ),
+    ),
+    (
+        "Mood snap — restart required",
+        (
+            ("ENABLE_ATTENTION_SNAP", "bool", True, ()),
+            ("MOOD_SNAP_MANIC_SEC", "text", True, ()),
+            ("MOOD_SNAP_ANGRY_SEC", "text", True, ()),
+            ("MOOD_SNAP_PARANOID_SEC", "text", True, ()),
+            ("MOOD_SNAP_DOMINANT_SEC", "text", True, ()),
+            ("MOOD_SNAP_SURPRISED_SEC", "text", True, ()),
+            ("MOOD_SNAP_EXCITED_SEC", "text", True, ()),
+            ("MOOD_SNAP_HAPPY_SEC", "text", True, ()),
+            ("MOOD_SNAP_NEUTRAL_SEC", "text", True, ()),
+            ("MOOD_SNAP_THINKING_SEC", "text", True, ()),
+            ("MOOD_SNAP_VULNERABLE_SEC", "text", True, ()),
+            ("MOOD_SNAP_MELANCHOLIC_SEC", "text", True, ()),
+            ("MOOD_SNAP_SAD_SEC", "text", True, ()),
+            ("MOOD_SNAP_WHISPER_SEC", "text", True, ()),
+        ),
+    ),
+    (
+        "Screen / OCR — restart required",
+        (
+            ("ENABLE_SCREEN_READER", "bool", True, ()),
+            ("OCR_MAX_DIMENSION", "text", True, ()),
+            ("OCR_FOCUSED_WINDOW_ONLY", "bool", True, ()),
+            ("INCLUDE_WINDOW_TITLE_IN_CONTEXT", "bool", True, ()),
+            ("TESSERACT_PATH", "text", True, ()),
+            ("OCR_CUSTOM_PATTERNS", "text", True, ()),
+            ("OCR_PAUSE_WHILE_TYPING_SEC", "text", True, ()),
+        ),
+    ),
+    (
+        "UI — restart required",
+        (
+            ("WINDOW_TOPMOST", "bool", True, ()),
+            ("WINDOW_START_X", "text", True, ()),
+            ("WINDOW_START_Y", "text", True, ()),
+            ("SUBTITLE_CHAR_DELAY", "text", True, ()),
+            ("ANIMATION_SPEED", "text", True, ()),
+            ("WINDOW_MOVE_SMOOTH", "bool", True, ()),
+            ("WINDOW_MOVE_DURATION_MS", "text", True, ()),
+            ("ENABLE_FILE_DRAG_DROP", "bool", True, ()),
+            ("APP_VERSION", "text", True, ()),
+            ("GITHUB_RELEASES_URL", "text", True, ()),
+        ),
+    ),
+    (
+        "Voice — restart required",
+        (
+            ("ENABLE_VOICE", "bool", True, ()),
+            ("USE_LOCAL_STT", "bool", True, ()),
+            ("VOICE_OUTPUT_MODE", "choice", True, ("bleeps_only", "tts_only", "both")),
+            ("TTS_RATE", "text", True, ()),
+            ("TTS_VOLUME", "text", True, ()),
+            ("TTS_VOICE_NAME", "text", True, ()),
+        ),
+    ),
+    (
+        "Medic_Checker (launcher — next Medic run)",
+        (
+            ("SKIP_TESSERACT_CHECK", "bool", False, ()),
+            ("SKIP_ASSET_CHECK", "bool", False, ()),
+            ("AUTO_PIP_INSTALL", "bool", False, ()),
+            ("CREATE_DESKTOP_SHORTCUT", "bool", False, ()),
+            ("CHECK_FOR_UPDATES", "bool", False, ()),
+        ),
+    ),
 )
 
-_EDITABLE_TOGGLES = (
-    "ENABLE_LONGTERM_MEMORY",
-    "ENABLE_WEB_RAG",
-    "ENABLE_GLITCH_EFFECTS",
-    "GLITCH_MOOD_AUTO",
-    "GLITCH_FULLSCREEN",
-    "ENABLE_COMPANION_STATS_CONTEXT",
-    "ENABLE_AMBIENT_POLLS",
-    "ENABLE_SCREEN_READER",
+_LAUNCHER_KEYS = frozenset({
+    "SKIP_TESSERACT_CHECK", "SKIP_ASSET_CHECK", "AUTO_PIP_INSTALL",
+    "CREATE_DESKTOP_SHORTCUT", "CHECK_FOR_UPDATES",
+})
+
+_RESTART_KEYS = frozenset(
+    key
+    for _section, items in _SETTING_SECTIONS
+    for key, _kind, needs_restart, _choices in items
+    if needs_restart
 )
 
 
@@ -139,17 +268,23 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
 
     win = tk.Toplevel(parent)
     apply_borderless_win95(win, parent, topmost=True)
+    try:
+        from agetha.utils import apply_window_icon
+        apply_window_icon(win)
+    except Exception:
+        pass
     if sys.platform == "win32":
         try:
             win.tk.call("wm", "transient", win._w, "")
         except Exception:
             pass
     win.configure(bg=W95_BG)
-    win.geometry("520x420")
-    win.minsize(420, 320)
+    win.geometry("560x480")
+    win.minsize(460, 360)
 
     _closing = False
     _after_jobs: list[str] = []
+    _close_hooks: list = []
 
     def _schedule(ms: int, func) -> str:
         job = win.after(ms, func)
@@ -190,6 +325,12 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     def _close_dashboard() -> None:
         nonlocal _closing
         _closing = True
+        for hook in list(_close_hooks):
+            try:
+                hook()
+            except Exception:
+                pass
+        _close_hooks.clear()
         _cancel_jobs()
         _save_notepad()
         win.destroy()
@@ -407,64 +548,213 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         command=lambda: (note_text.delete("1.0", "end"), note_text.insert("1.0", read_notepad_text())),
     ).pack(side="right", padx=(0, 4))
 
-    # ── Settings (limited edit) ───────────────────────────────────────────────
+    # ── Settings (full config editor, apply once) ─────────────────────────────
     settings_frame = tk.Frame(notebook, bg=W95_BG)
     notebook.add(settings_frame, text="Settings")
 
-    scroll_outer = tk.Frame(settings_frame, bg=W95_BG)
-    scroll_outer.pack(fill="both", expand=True, padx=8, pady=8)
+    try:
+        from agetha.app_config import get_settings as _get_settings_now
+        raw_cfg: dict[str, Any] = dict(_get_settings_now().raw)
+    except Exception:
+        raw_cfg = dict(getattr(app_settings, "raw", {}) or {})
 
+    editors: dict[str, tuple[str, Any]] = {}
+    status_var = tk.StringVar(value="Edit settings, then click Apply settings.")
+
+    header = tk.Frame(settings_frame, bg=W95_BG)
+    header.pack(fill="x", padx=8, pady=(8, 4))
     tk.Label(
-        scroll_outer, text="Toggle safe options (writes config.txt):",
-        bg=W95_BG, fg=W95_TEXT, font=W95_FONT_BOLD, anchor="w",
-    ).pack(fill="x", pady=(0, 6))
+        header,
+        text="All config.txt settings (API keys stay in .env). Changes apply only when you click Apply.",
+        bg=W95_BG, fg=W95_TEXT, font=W95_FONT, anchor="w", wraplength=500, justify="left",
+    ).pack(fill="x")
+    tk.Label(
+        header,
+        text="* = requires restarting Agetha   ·   Medic section applies on next Medic_Checker run",
+        bg=W95_BG, fg=W95_WARN, font=W95_FONT, anchor="w",
+    ).pack(fill="x", pady=(2, 0))
 
-    raw_cfg = getattr(app_settings, "raw", {}) or {}
+    canvas_host = tk.Frame(settings_frame, bg=W95_BG)
+    canvas_host.pack(fill="both", expand=True, padx=8, pady=4)
+    settings_canvas = tk.Canvas(canvas_host, bg=W95_BG, highlightthickness=0, bd=0)
+    settings_scroll = tk.Scrollbar(canvas_host, orient="vertical", command=settings_canvas.yview)
+    settings_inner = tk.Frame(settings_canvas, bg=W95_BG)
+    settings_inner_id = settings_canvas.create_window((0, 0), window=settings_inner, anchor="nw")
+    settings_canvas.configure(yscrollcommand=settings_scroll.set)
+    settings_scroll.pack(side="right", fill="y")
+    settings_canvas.pack(side="left", fill="both", expand=True)
+
+    def _on_inner_configure(_event: tk.Event | None = None) -> None:
+        settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+
+    def _on_canvas_configure(event: tk.Event) -> None:
+        settings_canvas.itemconfigure(settings_inner_id, width=event.width)
+
+    settings_inner.bind("<Configure>", _on_inner_configure)
+    settings_canvas.bind("<Configure>", _on_canvas_configure)
+
+    def _wheel(event: tk.Event) -> None:
+        if getattr(event, "delta", 0):
+            settings_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        elif getattr(event, "num", None) == 4:
+            settings_canvas.yview_scroll(-1, "units")
+        elif getattr(event, "num", None) == 5:
+            settings_canvas.yview_scroll(1, "units")
+
+    settings_canvas.bind_all("<MouseWheel>", _wheel)
+    settings_canvas.bind_all("<Button-4>", _wheel)
+    settings_canvas.bind_all("<Button-5>", _wheel)
+
+    def _unbind_wheel() -> None:
+        try:
+            settings_canvas.unbind_all("<MouseWheel>")
+            settings_canvas.unbind_all("<Button-4>")
+            settings_canvas.unbind_all("<Button-5>")
+        except Exception:
+            pass
+
+    _close_hooks.append(_unbind_wheel)
 
     def _cfg_yes(key: str) -> bool:
         return str(raw_cfg.get(key, "no")).strip().lower() in ("yes", "true", "1", "on")
 
-    def _make_toggle(parent: tk.Misc, key: str) -> None:
-        var = tk.BooleanVar(value=_cfg_yes(key))
+    def _mark_dirty(_key: str | None = None) -> None:
+        status_var.set("Unsaved changes — click Apply settings.")
 
-        def _on_toggle() -> None:
-            try:
-                from agetha.app_config import patch_config_key
-                val = "yes" if var.get() else "no"
-                if patch_config_key(key, val):
-                    raw_cfg[key] = val
-                else:
-                    var.set(not var.get())
-            except Exception as exc:
-                logger.warning(f"dashboard: toggle {key} failed: {exc}")
-                var.set(not var.get())
+    for section_title, items in _SETTING_SECTIONS:
+        tk.Label(
+            settings_inner, text=section_title,
+            bg=W95_BG, fg=W95_TEXT, font=W95_FONT_BOLD, anchor="w",
+        ).pack(fill="x", pady=(8, 2))
+        for key, kind, needs_restart, choices in items:
+            row = tk.Frame(settings_inner, bg=W95_BG)
+            row.pack(fill="x", pady=1)
+            label = f"{key} *" if needs_restart else key
+            if kind == "bool":
+                var = tk.BooleanVar(value=_cfg_yes(key))
+                tk.Checkbutton(
+                    row, text=label, variable=var, command=lambda k=key: _mark_dirty(k),
+                    bg=W95_BG, fg=W95_TEXT, font=W95_FONT, activebackground=W95_BG,
+                    selectcolor=W95_BG, anchor="w",
+                ).pack(side="left", fill="x", expand=True)
+                editors[key] = ("bool", var)
+            elif kind == "choice":
+                tk.Label(row, text=label, width=28, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
+                current = str(raw_cfg.get(key, choices[0] if choices else "")).strip()
+                if current not in choices and choices:
+                    current = choices[0]
+                var = tk.StringVar(value=current)
+                om = tk.OptionMenu(row, var, *choices)
+                om.configure(bg=W95_BTN_BG, fg=W95_TEXT, font=W95_FONT, activebackground=W95_BTN_BG)
+                om.pack(side="left", fill="x", expand=True)
+                var.trace_add("write", lambda *_a, k=key: _mark_dirty(k))
+                editors[key] = ("choice", var)
+            else:
+                tk.Label(row, text=label, width=28, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
+                var = tk.StringVar(value=str(raw_cfg.get(key, "")))
+                entry = tk.Entry(row, textvariable=var, font=W95_FONT, bg="#ffffff", fg=W95_TEXT)
+                entry.pack(side="left", fill="x", expand=True)
+                var.trace_add("write", lambda *_a, k=key: _mark_dirty(k))
+                editors[key] = ("text", var)
 
-        row = tk.Frame(parent, bg=W95_BG)
-        row.pack(fill="x", pady=2)
-        tk.Checkbutton(
-            row, text=key, variable=var, command=_on_toggle,
-            bg=W95_BG, fg=W95_TEXT, font=W95_FONT, activebackground=W95_BG,
-            selectcolor=W95_BG,
-        ).pack(side="left")
+    footer = tk.Frame(settings_frame, bg=W95_BG)
+    footer.pack(fill="x", padx=8, pady=(0, 8))
+    tk.Label(
+        footer, textvariable=status_var, bg=W95_BG, fg=W95_TEXT, font=W95_FONT, anchor="w",
+    ).pack(side="left", fill="x", expand=True)
 
-    for key in _EDITABLE_TOGGLES:
-        _make_toggle(scroll_outer, key)
+    def _collect_values() -> dict[str, str]:
+        out: dict[str, str] = {}
+        for key, (kind, var) in editors.items():
+            if kind == "bool":
+                out[key] = "yes" if bool(var.get()) else "no"
+            else:
+                out[key] = str(var.get()).strip()
+        return out
 
-    tk.Label(scroll_outer, text="\nRead-only snapshot:", bg=W95_BG, fg=W95_TEXT, font=W95_FONT_BOLD, anchor="w").pack(fill="x", pady=(8, 4))
-    settings_text = tk.Text(scroll_outer, wrap="word", height=8, font=W95_FONT, bg="#ffffff", fg=W95_TEXT, state="disabled")
-    settings_text.pack(fill="both", expand=True)
+    def _apply_settings() -> None:
+        try:
+            from agetha.app_config import patch_config_keys
+            from agetha.utils import refresh_config_constants
+        except Exception as exc:
+            logger.warning(f"dashboard: apply imports failed: {exc}")
+            status_var.set(f"Apply failed: {exc}")
+            return
 
-    cfg_lines: list[str] = []
-    try:
-        for key in _SAFE_CONFIG_KEYS:
-            cfg_lines.append(f"{key} = {raw_cfg.get(key, '(default)')}")
-    except Exception as exc:
-        cfg_lines.append(f"(config unavailable: {exc})")
+        new_vals = _collect_values()
+        updates: dict[str, str] = {}
+        restart_changed: list[str] = []
+        launcher_changed: list[str] = []
+        for key, val in new_vals.items():
+            old = str(raw_cfg.get(key, "")).strip()
+            if editors[key][0] == "bool":
+                old_norm = "yes" if old.lower() in ("yes", "true", "1", "on") else "no"
+                changed = old_norm != val
+            else:
+                changed = old != val
+            if not changed:
+                continue
+            updates[key] = val
+            if key in _RESTART_KEYS:
+                restart_changed.append(key)
+            elif key in _LAUNCHER_KEYS:
+                launcher_changed.append(key)
 
-    settings_text.configure(state="normal")
-    settings_text.delete("1.0", "end")
-    settings_text.insert("1.0", "\n".join(cfg_lines))
-    settings_text.configure(state="disabled")
+        if not updates:
+            status_var.set("No changes to apply.")
+            return
+
+        ok, failed = patch_config_keys(updates)
+        if not ok:
+            status_var.set("Apply failed — could not write config.txt.")
+            messagebox.showerror(
+                "Agetha — Settings",
+                "Could not write config.txt.\nCheck file permissions and try again.",
+                parent=win,
+            )
+            return
+
+        for key, val in updates.items():
+            if key not in failed:
+                raw_cfg[key] = val
+        try:
+            refresh_config_constants()
+        except Exception as exc:
+            logger.warning(f"dashboard: refresh_config_constants failed: {exc}")
+
+        if failed:
+            status_var.set(f"Applied with errors: {', '.join(failed)}")
+        else:
+            status_var.set(f"Applied {len(updates)} setting(s).")
+
+        if restart_changed:
+            names = "\n".join(f"  • {k}" for k in restart_changed[:20])
+            more = "" if len(restart_changed) <= 20 else f"\n  …and {len(restart_changed) - 20} more"
+            messagebox.showwarning(
+                "Agetha — Restart Required",
+                "These settings require restarting Agetha to take full effect:\n\n"
+                f"{names}{more}\n\n"
+                "Close Agetha and launch it again (or re-run Medic_Checker).",
+                parent=win,
+            )
+        elif launcher_changed and not restart_changed:
+            messagebox.showinfo(
+                "Agetha — Settings Applied",
+                "Medic_Checker settings were saved.\n"
+                "They apply on the next Medic_Checker run (Agetha restart not required).",
+                parent=win,
+            )
+        elif not restart_changed and not failed:
+            messagebox.showinfo(
+                "Agetha — Settings Applied",
+                "Settings applied. Hot-reload keys are active now.",
+                parent=win,
+            )
+
+    tk.Button(
+        footer, text="Apply settings", font=W95_FONT_BOLD, bg=W95_BTN_BG,
+        relief="raised", bd=2, command=_apply_settings,
+    ).pack(side="right", padx=(8, 0))
 
     # Position near parent, clamped to screen bounds
     win.update_idletasks()

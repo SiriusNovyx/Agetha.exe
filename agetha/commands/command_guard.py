@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import Callable
 
-from agetha.utils import IS_WINDOWS, logger
+from agetha.utils import IS_WINDOWS, apply_window_icon, logger, native_message_box
 from agetha.app_config import get_settings
 from agetha.platform.window_control import is_self_process_target
 
@@ -233,7 +233,6 @@ class CommandGuard:
         """Native OS dialog. Returns True if user confirms."""
         if IS_WINDOWS:
             try:
-                import ctypes
                 flags = _MB_TOPMOST | _MB_SETFOREGROUND
                 if style == "info":
                     flags |= _MB_ICONINFORMATION
@@ -246,12 +245,12 @@ class CommandGuard:
                     flags |= _MB_OKCANCEL
                     if default_no:
                         flags |= _MB_DEFBUTTON2
-                    result = ctypes.windll.user32.MessageBoxW(owner_hwnd, message, title, flags)
+                    result = native_message_box(title, message, flags, owner_hwnd=owner_hwnd)
                     return result == 1  # IDOK
                 flags |= _MB_YESNO
                 if default_no:
                     flags |= _MB_DEFBUTTON2
-                result = ctypes.windll.user32.MessageBoxW(owner_hwnd, message, title, flags)
+                result = native_message_box(title, message, flags, owner_hwnd=owner_hwnd)
                 return result == 6  # IDYES
             except Exception as exc:
                 logger.warning(f"MessageBoxW failed: {exc}")
@@ -265,6 +264,7 @@ class CommandGuard:
             from tkinter import messagebox as mb
             root = tk.Tk()
             root.withdraw()
+            apply_window_icon(root)
             try:
                 root.attributes("-topmost", True)
             except Exception:

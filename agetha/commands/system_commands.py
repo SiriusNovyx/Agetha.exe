@@ -328,20 +328,37 @@ def show_notification(title: str, message: str) -> str:
         return "[no message]"
     try:
         if IS_WINDOWS:
+            # Prefer WinRT toast under AppUserModelID "Agetha.Desktop" (Start Menu shortcut).
+            try:
+                from agetha.platform.windows_notify import show_toast
+                if show_toast(title or "Agetha", message):
+                    return "[notification sent]"
+            except Exception as toast_exc:
+                logger.warning(f"Agetha toast path failed, falling back to balloon: {toast_exc}")
+
             import base64
+            from agetha.utils import ICON_PATH
             msg_ps = message.replace("'", "''").replace("`", "``")
             title_ps = title.replace("'", "''").replace("`", "``")
-            # Unregistered toast AppUserModelIDs fail silently on Windows.
+            icon_ps = str(ICON_PATH.resolve()).replace("'", "''") if ICON_PATH.is_file() else ""
+            # Fallback: classic NotifyIcon balloon with icon.ico
             ps_script = f"""
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $t = '{title_ps}'
 $m = '{msg_ps}'
+$iconPath = '{icon_ps}'
 try {{
     $n = New-Object System.Windows.Forms.NotifyIcon
-    $n.Icon = [System.Drawing.SystemIcons]::Information
+    if ($iconPath -and (Test-Path -LiteralPath $iconPath)) {{
+        $n.Icon = New-Object System.Drawing.Icon($iconPath)
+    }} else {{
+        $n.Icon = [System.Drawing.SystemIcons]::Application
+    }}
+    $n.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::None
     $n.BalloonTipTitle = $t
     $n.BalloonTipText = $m
+    $n.Text = 'Agetha'
     $n.Visible = $true
     $n.ShowBalloonTip(8000)
     Start-Sleep -Milliseconds 8500

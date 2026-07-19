@@ -31,6 +31,105 @@ from agetha.app_config import BASE_DIR, CONFIG_PATH, ENV_PATH
 
 ASSETS = BASE_DIR / "assets"
 FONT_PATH = ASSETS / "barrio.ttf"
+ICON_PATH = ASSETS / "icon.ico"
+
+
+def apply_window_icon(widget) -> bool:
+    """Apply assets/icon.ico to a Tk window (title bar / taskbar)."""
+    if widget is None or not ICON_PATH.is_file():
+        return False
+    try:
+        path = str(ICON_PATH.resolve())
+        widget.iconbitmap(default=path)
+        widget.iconbitmap(path)
+        return True
+    except Exception:
+        try:
+            widget.iconbitmap(str(ICON_PATH))
+            return True
+        except Exception as exc:
+            logger.debug(f"Could not apply window icon: {exc}")
+            return False
+
+
+def native_message_box(title: str, message: str, flags: int, owner_hwnd: int = 0) -> int:
+    """
+    Windows MessageBoxW with assets/icon.ico on the dialog title bar.
+    Returns the MessageBox result code (0 on failure / non-Windows).
+    Does not change WinRT toast notifications.
+    """
+    if not IS_WINDOWS:
+        return 0
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.MessageBoxW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT]
+    user32.MessageBoxW.restype = ctypes.c_int
+
+    hwnd_owner = int(owner_hwnd or 0)
+    hwnd_temp = 0
+    hicon = 0
+    created_owner = False
+
+    try:
+        if ICON_PATH.is_file():
+            IMAGE_ICON = 1
+            LR_LOADFROMFILE = 0x0010
+            user32.LoadImageW.argtypes = [
+                wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                ctypes.c_int, ctypes.c_int, wintypes.UINT,
+            ]
+            user32.LoadImageW.restype = wintypes.HANDLE
+            hicon = user32.LoadImageW(None, str(ICON_PATH.resolve()), IMAGE_ICON, 0, 0, LR_LOADFROMFILE)
+
+        if hwnd_owner == 0 and hicon:
+            # Tiny tool window as MessageBox owner so the title-bar icon is icon.ico
+            WS_POPUP = 0x80000000
+            WS_EX_TOOLWINDOW = 0x00000080
+            user32.CreateWindowExW.argtypes = [
+                wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+            ]
+            user32.CreateWindowExW.restype = wintypes.HWND
+            hwnd_temp = user32.CreateWindowExW(
+                WS_EX_TOOLWINDOW, "STATIC", title,
+                WS_POPUP, 0, 0, 0, 0,
+                None, None, None, None,
+            )
+            if hwnd_temp:
+                WM_SETICON = 0x0080
+                ICON_SMALL = 0
+                ICON_BIG = 1
+                user32.SendMessageW(hwnd_temp, WM_SETICON, ICON_SMALL, hicon)
+                user32.SendMessageW(hwnd_temp, WM_SETICON, ICON_BIG, hicon)
+                hwnd_owner = int(hwnd_temp)
+                created_owner = True
+        elif hwnd_owner and hicon:
+            WM_SETICON = 0x0080
+            user32.SendMessageW(hwnd_owner, WM_SETICON, 0, hicon)
+            user32.SendMessageW(hwnd_owner, WM_SETICON, 1, hicon)
+
+        return int(user32.MessageBoxW(hwnd_owner, message, title, flags))
+    except Exception as exc:
+        logger.warning(f"native_message_box failed: {exc}")
+        try:
+            return int(ctypes.windll.user32.MessageBoxW(0, message, title, flags))
+        except Exception:
+            return 0
+    finally:
+        if created_owner and hwnd_temp:
+            try:
+                user32.DestroyWindow(hwnd_temp)
+            except Exception:
+                pass
+        if hicon:
+            try:
+                ctypes.windll.user32.DestroyIcon(hicon)
+            except Exception:
+                pass
+
 
 # ── Native Error Popup ─────────────────────────────────────────────────────────
 def native_error_popup(title: str, message: str) -> None:
@@ -39,9 +138,8 @@ def native_error_popup(title: str, message: str) -> None:
     logger.error(f"{title}: {message}")
     if IS_WINDOWS:
         try:
-            import ctypes
             # 0x10 = MB_ICONERROR, 0x00040000 = MB_TOPMOST
-            ctypes.windll.user32.MessageBoxW(0, message, title, 0x10 | 0x00040000)
+            native_message_box(title, message, 0x10 | 0x00040000)
             return
         except Exception:
             pass
@@ -50,6 +148,7 @@ def native_error_popup(title: str, message: str) -> None:
         from tkinter import messagebox as _mb
         _r = _tk.Tk()
         _r.withdraw()
+        apply_window_icon(_r)
         try:
             _r.attributes("-topmost", True)
         except Exception:

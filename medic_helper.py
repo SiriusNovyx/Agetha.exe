@@ -36,7 +36,28 @@ def cmd_env_status() -> None:
     print("SET" if any(len(k) > 20 for k in keys) else "EMPTY")
 
 
+def _env_api_key_status() -> tuple[str, str]:
+    """Return (or_val, groq_ready) from .env only. groq_ready is 'yes' or ''."""
+    env_path = _MEDIC_DIR / ".env"
+    if not env_path.is_file():
+        return "", ""
+    try:
+        env_text = env_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    or_key = re.search(r"^OPENROUTER_API_KEY\s*=\s*(.+)$", env_text, re.M)
+    or_val = or_key.group(1).strip() if or_key else ""
+    groq_keys = [
+        m.group(1).strip()
+        for m in re.finditer(r"^GROQ_API_KEY(?:_\d+)?\s*=\s*(.+)$", env_text, re.M)
+        if m.group(1).strip() and m.group(1).strip() not in ("", "YOUR_KEY_HERE")
+    ]
+    groq_ready = "yes" if any(len(k) > 20 for k in groq_keys) else ""
+    return or_val, groq_ready
+
+
 def cmd_config_status() -> None:
+    """Report AI backend status. API keys are read from .env only (not config.txt)."""
     path = _MEDIC_DIR / "config.txt"
     if not path.is_file():
         print("MISSING")
@@ -45,20 +66,43 @@ def cmd_config_status() -> None:
     local = re.search(r"USE_LOCAL_AI\s*=\s*(\S+)", text)
     model = re.search(r"LOCAL_AI_MODEL\s*=\s*(\S+)", text)
     openrouter = re.search(r"ENABLE_OPENROUTER\s*=\s*(\S+)", text)
-    or_key = re.search(r"OPENROUTER_API_KEY\s*=\s*(.+)", text)
-    or_val = or_key.group(1).strip() if or_key else ""
-    key = re.search(r"GROQ_API_KEY\s*=\s*(.+)", text)
-    key_val = key.group(1).strip() if key else ""
+    or_val, groq_ready = _env_api_key_status()
     if local and local.group(1).lower() == "yes" and model and model.group(1).strip():
         print("LOCAL")
     elif local and local.group(1).lower() == "yes":
         print("LOCAL_NO_MODEL")
     elif openrouter and openrouter.group(1).lower() == "yes" and len(or_val) > 10:
         print("OPENROUTER")
-    elif len(key_val) > 20:
+    elif groq_ready:
         print("SET")
     else:
         print("EMPTY")
+
+
+def cmd_config_secrets() -> None:
+    """Print KEYS_IN_CONFIG if non-empty API keys remain in config.txt (ignored)."""
+    path = _MEDIC_DIR / "config.txt"
+    if not path.is_file():
+        print("OK")
+        return
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        print("OK")
+        return
+    found = [
+        m.group(1).upper()
+        for m in re.finditer(
+            r"^(GROQ_API_KEY(?:_\d+)?|OPENROUTER_API_KEY)\s*=\s*(\S+)",
+            text,
+            re.M | re.I,
+        )
+        if m.group(2).strip()
+    ]
+    if found:
+        print("KEYS_IN_CONFIG:" + ",".join(found[:12]))
+    else:
+        print("OK")
 
 
 def cmd_voice_deps() -> None:
@@ -179,15 +223,106 @@ def cmd_realism_apis() -> None:
         print("REALISM_OK")
 
 
+def cmd_openrouter_module() -> None:
+    """Print OPENROUTER_READY, OPENROUTER_OK_NOT_READY:…, or OPENROUTER_MISSING:…"""
+    try:
+        from agetha.core import ai_engine as ae
+    except Exception as exc:
+        print(f"OPENROUTER_MISSING:import ai_engine:{exc}")
+        return
+    client = getattr(ae, "_OpenRouterClient", None)
+    if client is None:
+        print("OPENROUTER_MISSING:_OpenRouterClient not found in agetha.core.ai_engine")
+        return
+    if not isinstance(client, type):
+        print("OPENROUTER_MISSING:_OpenRouterClient is not a class")
+        return
+    create = getattr(client, "chat_completions_create", None)
+    if not callable(create):
+        print("OPENROUTER_MISSING:_OpenRouterClient.chat_completions_create missing")
+        return
+    try:
+        import urllib.request  # noqa: F401
+        import json as _json
+    except ImportError as exc:
+        print(f"OPENROUTER_MISSING:urllib.request:{exc}")
+        return
+
+    # Module exists — check ready-to-use (key + model listed on OpenRouter)
+    try:
+        from agetha.app_config import get_settings
+        settings = get_settings(reload=True)
+    except Exception as exc:
+        print(f"OPENROUTER_OK_NOT_READY:config:{exc}")
+        return
+
+    if not settings.enable_openrouter:
+        print("OPENROUTER_OK_NOT_READY:ENABLE_OPENROUTER=no")
+        return
+    if not (settings.openrouter_api_key or "").strip():
+        print("OPENROUTER_OK_NOT_READY:OPENROUTER_API_KEY empty")
+        return
+
+    model = (settings.openrouter_model or "").strip()
+    if not model:
+        print("OPENROUTER_OK_NOT_READY:OPENROUTER_MODEL empty")
+        return
+
+    try:
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={"User-Agent": "Agetha-Medic"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = _json.loads(resp.read().decode("utf-8", errors="replace"))
+        ids = {m.get("id", "") for m in payload.get("data", []) if isinstance(m, dict)}
+    except Exception as exc:
+        print(f"OPENROUTER_OK_NOT_READY:models_list_unreachable:{exc}")
+        return
+
+    if model not in ids:
+        hint = ""
+        if model.endswith(":free"):
+            bare = model[: -len(":free")]
+            if bare in ids:
+                hint = f";try:{bare}"
+        print(f"OPENROUTER_OK_NOT_READY:model_not_found:{model}{hint}")
+        return
+
+    paid = not model.lower().endswith(":free")
+    groq_on = settings.bool("ENABLE_GROQ", True)
+    groq_key = bool((settings.get("GROQ_API_KEY", "") or "").strip())
+    if paid and (not groq_on or not groq_key):
+        print("OPENROUTER_READY_RECOMMEND_GROQ")
+        return
+
+    print("OPENROUTER_READY")
+
+
+def cmd_toast_shortcut() -> None:
+    """Ensure Start Menu Agetha.lnk + AUMID for branded Windows toasts."""
+    if sys.platform != "win32":
+        print("TOAST_SKIP")
+        return
+    try:
+        from agetha.platform.windows_notify import ensure_start_menu_shortcut
+        print("TOAST_OK" if ensure_start_menu_shortcut() else "TOAST_FAIL")
+    except Exception as exc:
+        print(f"TOAST_FAIL:{exc}")
+
+
 _COMMANDS = {
     "platform": cmd_platform,
     "env": cmd_env_status,
     "config": cmd_config_status,
+    "config_secrets": cmd_config_secrets,
     "voice": cmd_voice_deps,
     "dnd": cmd_dnd_deps,
     "tts": cmd_tts_deps,
     "features": cmd_feature_modules,
     "realism": cmd_realism_apis,
+    "openrouter": cmd_openrouter_module,
+    "toast_shortcut": cmd_toast_shortcut,
 }
 
 
