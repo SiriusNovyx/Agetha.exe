@@ -51,7 +51,7 @@ from agetha.platform.voice_input import (
     load_mic_settings, save_mic_settings, coerce_device_index,
 )
 from agetha.utils import (
-    native_error_popup, logger, BASE_DIR, WINDOW_W, WINDOW_H,
+    native_error_popup, native_message_box, apply_window_icon, logger, BASE_DIR, WINDOW_W, WINDOW_H,
     TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS,
     refresh_config_constants,
 )
@@ -1045,6 +1045,7 @@ class CompanionApp:
         self.root.configure(bg=W95_BG)
         self.root.overrideredirect(True)
         self.root.resizable(False, False)
+        apply_window_icon(self.root)
         try:
             if _SETTINGS.window_topmost:
                 self.root.attributes("-topmost", True)
@@ -2737,14 +2738,13 @@ def _warn_if_no_api_key():
         pass
     msg = (
         "No Groq API key or Ollama model found.\n\n"
-        "Add GROQ_API_KEY to config.txt or .env,\n"
+        "Add GROQ_API_KEY_1 to .env (not config.txt),\n"
         "or set USE_LOCAL_AI=yes and LOCAL_AI_MODEL.\n\n"
         "Optional: TESSERACT_PATH for screen reading."
     )
     title = "Agetha — Setup"
     try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x30 | 0x1000)
+        native_message_box(title, msg, 0x30 | 0x1000)
     except Exception:
         print(f"[Agetha] {msg}")
 
@@ -2768,5 +2768,11 @@ def _early_config_check():
 
 if __name__ == "__main__":
     _early_config_check()
+    try:
+        from agetha.platform.windows_notify import ensure_start_menu_shortcut, set_process_aumid
+        set_process_aumid()
+        ensure_start_menu_shortcut()
+    except Exception as _aumid_exc:
+        logger.debug(f"Windows AUMID / Start shortcut setup skipped: {_aumid_exc}")
     app = CompanionApp()
     app.run()

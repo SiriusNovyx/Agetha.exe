@@ -3,6 +3,9 @@ app_config.py — Central config.txt loader for Agetha Mod.
 
 Parses config.txt once, merges .env overrides, exposes typed settings.
 Missing, unreadable, or invalid config.txt always falls back to DEFAULT_CONFIG.
+
+API keys (GROQ_API_KEY*, OPENROUTER_API_KEY) are loaded from .env only —
+values in config.txt are ignored.
 """
 
 from __future__ import annotations
@@ -29,51 +32,43 @@ DEFAULT_CONFIG = """# ==========================================================
 #   • Comments start with #
 #   • Booleans: yes / no  (also: true, false, 1, 0, on, off)
 #   • If a line is missing, corrupt, or has an invalid value → built-in default
-#   • Secrets: prefer .env for API keys (copy .env.example → .env)
-#             .env overrides the same key here when non-empty
+#   • Secrets: API keys go in .env ONLY (copy .env.example → .env)
+#             Never put GROQ_API_KEY* or OPENROUTER_API_KEY in this file
 #
 # After editing, restart Agetha (or re-run Medic_Checker.bat).
 # =============================================================================
 
 
 # ── AI Backend ───────────────────────────────────────────────────────────────
-# Choose cloud Groq OR local Ollama — not both at once.
+# Priority: local Ollama > Groq / OpenRouter (cloud).
+# With both Groq + OpenRouter enabled, Agetha asks which to use at startup
+# (Yes=Groq, No=OpenRouter). If Groq is chosen, OpenRouter auto-starts when
+# Groq tokens/keys run out.
 
-# USE_LOCAL_AI — yes = use Ollama on this PC; no = use Groq cloud API.
+# USE_LOCAL_AI — yes = use Ollama on this PC; no = use cloud APIs below.
 USE_LOCAL_AI = no
 
 # ENABLE_GROQ — yes = allow Groq API (ignored when USE_LOCAL_AI = yes).
 ENABLE_GROQ = yes
 
-# ENABLE_OPENROUTER — yes = use OpenRouter instead of Groq (experimental).
+# ENABLE_OPENROUTER — yes = enable OpenRouter (fallback after Groq, or solo if Groq off).
 # Ignored when USE_LOCAL_AI = yes. Get a key: https://openrouter.ai/keys
+# Put OPENROUTER_API_KEY in .env only (never in this file).
+# Tip: keep ENABLE_GROQ=yes for free tier first; use OpenRouter when Groq is exhausted.
 ENABLE_OPENROUTER = no
 
-# OPENROUTER_API_KEY — single OpenRouter key (prefer .env: OPENROUTER_API_KEY=...)
-OPENROUTER_API_KEY =
-
 # OPENROUTER_MODEL — model slug from openrouter.ai/models
+# Non-:free models may be billed. Prefer Groq first when using paid OpenRouter models.
 OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
 
 # FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
 FASTER_MODE = no
 
 
-# ── Groq API Keys ─────────────────────────────────────────────────────────────
+# ── Groq (API keys in .env only) ──────────────────────────────────────────────
 # Get free keys: https://console.groq.com
-# Up to 10 keys — Agetha rotates on rate limits. Prefer .env: GROQ_API_KEY_1=gsk_...
-
-# GROQ_API_KEY — primary key (GROQ_API_KEY_1 in .env maps here).
-GROQ_API_KEY =
-GROQ_API_KEY_2 =
-GROQ_API_KEY_3 =
-GROQ_API_KEY_4 =
-GROQ_API_KEY_5 =
-GROQ_API_KEY_6 =
-GROQ_API_KEY_7 =
-GROQ_API_KEY_8 =
-GROQ_API_KEY_9 =
-GROQ_API_KEY_10 =
+# Copy .env.example → .env and set GROQ_API_KEY_1=… (up to _10 for rotation).
+# Do not put GROQ_API_KEY* lines in this file — they are ignored.
 
 # GROQ_MODEL — model name from Groq console (default: llama-3.3-70b-versatile).
 GROQ_MODEL = llama-3.3-70b-versatile
@@ -357,6 +352,15 @@ TTS_VOLUME = 0.8
 TTS_VOICE_NAME =
 """
 
+# API secrets — never accepted from config.txt; loaded from .env only.
+_SECRET_KEYS = frozenset(
+    {
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        *(f"GROQ_API_KEY_{i}" for i in range(1, 11)),
+    }
+)
+
 _BOOL_KEYS = frozenset({
     "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
     "ENABLE_VOICE", "USE_LOCAL_STT", "ENABLE_FILE_DRAG_DROP",
@@ -483,7 +487,34 @@ def _merge_with_defaults(file_config: dict[str, str]) -> tuple[dict[str, str], l
     return merged, invalid_keys
 
 
+def _is_secret_key(key: str) -> bool:
+    return key.strip().upper() in _SECRET_KEYS
+
+
+def _strip_secrets_from_config(
+    file_config: dict[str, str],
+) -> list[str]:
+    """Remove API-key entries from config.txt values. Returns non-empty keys ignored."""
+    ignored: list[str] = []
+    for key in list(file_config.keys()):
+        if not _is_secret_key(key):
+            continue
+        if file_config[key].strip():
+            ignored.append(key)
+        del file_config[key]
+    return ignored
+
+
 def _load_env_overrides(config: dict[str, str]) -> None:
+    """Apply non-empty .env values. API keys are sourced from .env only."""
+    # Ensure secret slots exist (empty) so callers can .get() them safely.
+    for key in (
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        *(f"GROQ_API_KEY_{i}" for i in range(2, 11)),
+    ):
+        config.setdefault(key, "")
+
     if not ENV_PATH.exists():
         return
     try:
@@ -506,7 +537,7 @@ def get_last_config_load() -> ConfigLoadResult | None:
 
 
 def parse_config_file(path: Path | None = None) -> dict[str, str]:
-    """Load config.txt merged over defaults; .env overrides non-empty values."""
+    """Load config.txt merged over defaults; .env supplies API keys and overrides."""
     global _last_load
     path = path or CONFIG_PATH
     result = ConfigLoadResult(path=path)
@@ -529,6 +560,14 @@ def parse_config_file(path: Path | None = None) -> dict[str, str]:
             result.used_defaults = True
             result.warnings.append(f"Could not read config.txt ({exc}) — using defaults.")
 
+    ignored_secrets = _strip_secrets_from_config(file_config)
+    if ignored_secrets:
+        result.warnings.append(
+            "Ignored API key(s) in config.txt (use .env only): "
+            + ", ".join(ignored_secrets[:12])
+            + ("…" if len(ignored_secrets) > 12 else "")
+        )
+
     merged, invalid_keys = _merge_with_defaults(file_config)
     result.invalid_keys = invalid_keys
     if invalid_keys:
@@ -536,6 +575,11 @@ def parse_config_file(path: Path | None = None) -> dict[str, str]:
             f"Ignored invalid values for: {', '.join(invalid_keys[:12])}"
             + ("…" if len(invalid_keys) > 12 else "")
         )
+
+    # Never inherit secret values from defaults/template leftovers.
+    for key in list(merged.keys()):
+        if _is_secret_key(key):
+            merged[key] = ""
 
     _load_env_overrides(merged)
     _last_load = result
@@ -951,32 +995,54 @@ class AppSettings:
         return items
 
 
-def patch_config_key(key: str, value: str) -> bool:
-    """Update one KEY = value line in config.txt. Returns True on success. Never raises."""
-    key = key.strip().upper()
-    if not key:
-        return False
+def patch_config_keys(updates: dict[str, str]) -> tuple[bool, list[str]]:
+    """Update multiple KEY = value lines in one write. Returns (ok, failed_keys)."""
+    if not updates:
+        return True, []
+    failed: list[str] = []
+    clean: dict[str, str] = {}
+    for raw_key, raw_val in updates.items():
+        key = str(raw_key).strip().upper()
+        if not key:
+            continue
+        if _is_secret_key(key):
+            _log_config(f"Refused to write secret key {key} to config.txt — use .env")
+            failed.append(key)
+            continue
+        clean[key] = str(raw_val)
+    if not clean:
+        return False, failed
     path = CONFIG_PATH
     try:
         ensure_config_file(write_if_missing=True)
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-        pattern = re.compile(rf"^(\s*{re.escape(key)}\s*=).*", re.IGNORECASE)
-        replaced = False
+        remaining = dict(clean)
         out: list[str] = []
         for line in lines:
-            if pattern.match(line):
-                out.append(f"{key} = {value}\n")
-                replaced = True
+            matched_key: str | None = None
+            for key in remaining:
+                pattern = re.compile(rf"^(\s*{re.escape(key)}\s*=).*", re.IGNORECASE)
+                if pattern.match(line):
+                    matched_key = key
+                    break
+            if matched_key is not None:
+                out.append(f"{matched_key} = {remaining.pop(matched_key)}\n")
             else:
                 out.append(line if line.endswith("\n") else line + "\n")
-        if not replaced:
+        for key, value in remaining.items():
             out.append(f"{key} = {value}\n")
         path.write_text("".join(out), encoding="utf-8")
         get_settings(reload=True)
-        return True
+        return True, failed
     except Exception as exc:
-        _log_config(f"patch_config_key failed for {key}: {exc}")
-        return False
+        _log_config(f"patch_config_keys failed: {exc}")
+        return False, list(clean.keys()) + failed
+
+
+def patch_config_key(key: str, value: str) -> bool:
+    """Update one KEY = value line in config.txt. Returns True on success. Never raises."""
+    ok, failed = patch_config_keys({key: value})
+    return ok and not failed
 
 
 _settings: AppSettings | None = None

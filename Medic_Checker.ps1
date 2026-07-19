@@ -80,18 +80,22 @@ function New-AgethaDesktopShortcut {
     $create = Get-ConfigValue -Key 'CREATE_DESKTOP_SHORTCUT' -Default 'no'
     if ($create -notmatch '^(?i)yes$') { return }
     try {
+        # Prefer Python helper (creates Start Menu + AUMID); also make Desktop .lnk via same launcher.
+        $pyToast = if ($script:VenvPython) { $script:VenvPython } else { 'python' }
+        & $pyToast (Join-Path $Script:Root 'medic_helper.py') toast_shortcut 2>$null | Out-Null
         $desktop = [Environment]::GetFolderPath('Desktop')
         $lnk = Join-Path $desktop 'Agetha.lnk'
         $target = Join-Path $Script:Root 'Medic_Checker.bat'
+        $icon = Join-Path $Script:Root 'assets\icon.ico'
         $shell = New-Object -ComObject WScript.Shell
         $sc = $shell.CreateShortcut($lnk)
         $sc.TargetPath = $target
         $sc.WorkingDirectory = $Script:Root
         $sc.Description = 'Agetha AI Companion'
-        $icon = Join-Path $Script:Root 'assets\icon.ico'
         if (Test-Path -LiteralPath $icon) { $sc.IconLocation = $icon }
         $sc.Save()
         Write-Ok "Desktop shortcut: $lnk"
+        Write-Info 'Start Menu Agetha.lnk uses AppUserModelID Agetha.Desktop for branded toasts.'
     } catch {
         Write-Warn "Could not create desktop shortcut: $_"
     }
@@ -352,7 +356,8 @@ function Get-ConfigStatus {
 
     if (Test-Path -LiteralPath (Join-Path $Script:Root '.env')) {
         $envStatus = Invoke-PythonHelper -PythonExe $py -Command 'env'
-        if ($envStatus -eq 'SET') { return 'SET' }
+        # medic_helper env prints SET (Groq) or OPENROUTER — both mean a usable key
+        if ($envStatus -eq 'SET' -or $envStatus -eq 'OPENROUTER') { return $envStatus }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Script:Root 'config.txt'))) {
         return 'NO_CONFIG'
@@ -651,28 +656,48 @@ function Invoke-StandardChecks {
     $cfgStatus = Get-ConfigStatus
     switch ($cfgStatus) {
         'SET' {
-            if (Test-Path -LiteralPath (Join-Path $Script:Root '.env')) {
-                Write-Ok '.env - Groq API key configured.'
-            } else {
-                Write-Ok 'config.txt - Groq API key configured.'
-            }
+            Write-Ok '.env - Groq API key configured.'
         }
         'LOCAL'       { Write-Ok 'config.txt - Local AI (Ollama) mode active.' }
-        'OPENROUTER'  { Write-Ok 'config.txt - OpenRouter mode active.' }
+        'OPENROUTER'  { Write-Ok '.env - OpenRouter API key configured.' }
         'LOCAL_NO_MODEL' {
             Write-Warn 'USE_LOCAL_AI=yes but LOCAL_AI_MODEL is blank.'
             Write-Info 'Run: ollama list  then set LOCAL_AI_MODEL in config.txt'
         }
         'EMPTY' {
-            Write-Warn 'No API key in config.txt or .env - Agetha will not respond.'
+            Write-Warn 'No API key in .env - Agetha will not respond.'
             Write-Info 'Free key: https://console.groq.com'
-            Write-Info 'Recommended: copy .env.example to .env and add GROQ_API_KEY_1=...'
+            Write-Info 'Required: copy .env.example to .env and add GROQ_API_KEY_1=...'
+            Write-Info 'API keys in config.txt are ignored — use .env only.'
         }
         'NO_CONFIG' {
             Write-Warn 'config.txt not found. Default generated on first run.'
             Write-Info 'Free Groq key: https://console.groq.com'
-            Write-Info 'Or copy .env.example to .env and add keys there.'
+            Write-Info 'Copy .env.example to .env and add keys there (not config.txt).'
         }
+    }
+
+    $secretStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'config_secrets'
+    if ($secretStatus -match '^KEYS_IN_CONFIG:') {
+        Write-Warn 'API key(s) found in config.txt are ignored — move them to .env'
+        Write-Info "Ignored keys: $($secretStatus.Substring(15))"
+    }
+
+    $orModStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'openrouter'
+    if ($orModStatus -eq 'OPENROUTER_READY') {
+        Write-Ok 'OpenRouter module found and ready to use (key + model valid).'
+    } elseif ($orModStatus -eq 'OPENROUTER_READY_RECOMMEND_GROQ') {
+        Write-Ok 'OpenRouter module found and ready (paid / non-:free model).'
+        Write-Warn 'Recommendation: enable Groq first (ENABLE_GROQ=yes + GROQ_API_KEY_1 in .env).'
+        Write-Info 'Agetha will use free Groq, then auto-switch to OpenRouter when Groq runs out.'
+    } elseif ($orModStatus -match '^OPENROUTER_OK_NOT_READY:') {
+        Write-Ok 'OpenRouter module found (_OpenRouterClient in agetha.core.ai_engine).'
+        Write-Warn "OpenRouter not ready to use: $($orModStatus.Substring(24))"
+        Write-Info 'Pick a live model slug from https://openrouter.ai/models and set OPENROUTER_MODEL.'
+    } elseif ($orModStatus -match '^OPENROUTER_MISSING:') {
+        Write-Warn "OpenRouter module not found: $($orModStatus.Substring(19))"
+    } else {
+        Write-Warn "OpenRouter module check unexpected: $orModStatus"
     }
     Write-Host ''
 

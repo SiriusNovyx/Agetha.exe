@@ -1,6 +1,5 @@
 # Sensitive
 .env
-config.txt
 conversation.txt
 
 # Runtime

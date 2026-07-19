@@ -15,22 +15,27 @@
 
 
 # ── AI Backend ───────────────────────────────────────────────────────────────
-# Choose cloud Groq OR local Ollama — not both at once.
+# Priority: local Ollama > Groq / OpenRouter (cloud).
+# With both Groq + OpenRouter on, Agetha asks which to use at startup (Yes=Groq, No=OpenRouter).
+# If you pick Groq, OpenRouter still auto-starts when Groq tokens run out.
 
-# USE_LOCAL_AI — yes = use Ollama on this PC; no = use Groq cloud API.
+# USE_LOCAL_AI — yes = use Ollama on this PC; no = use cloud APIs below.
 USE_LOCAL_AI = no
 
 # ENABLE_GROQ — yes = allow Groq API (ignored when USE_LOCAL_AI = yes).
 ENABLE_GROQ = yes
 
-# ENABLE_OPENROUTER — yes = use OpenRouter instead of Groq (experimental).
+# ENABLE_OPENROUTER — yes = OpenRouter fallback after Groq, or solo if Groq off.
 # Ignored when USE_LOCAL_AI = yes. Get a key: https://openrouter.ai/keys
+# Put OPENROUTER_API_KEY in .env only (never in this file).
 ENABLE_OPENROUTER = no
 
-# OPENROUTER_API_KEY — single OpenRouter key (prefer .env: OPENROUTER_API_KEY=...)
+# OPENROUTER_API_KEY — ignored here; use .env: OPENROUTER_API_KEY=...
 OPENROUTER_API_KEY =
 
 # OPENROUTER_MODEL — model slug from openrouter.ai/models
+# Use exact IDs from https://openrouter.ai/models (many ":free" variants are retired).
+# Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
 OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
 
 # FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
