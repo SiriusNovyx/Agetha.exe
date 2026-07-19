@@ -379,7 +379,7 @@ class TestEmotionalHistory(_TempStateMixin):
         self.assertIn("summary", cats)
 
     def test_compaction_folds_only_overflow(self) -> None:
-        """When many faded candidates exist, fold only enough to clear overflow."""
+        """Many faded candidates: fold overflow+1 (summary room), not all faded."""
         small = AppSettings({"EMOTION_HISTORY_MAX": "20"})
         with patch("agetha.app_config.get_settings", return_value=small):
             for i in range(19):
@@ -392,10 +392,43 @@ class TestEmotionalHistory(_TempStateMixin):
                                  summary="recent a", now_fn=self.clock.now)
             self.eh.record_event("user_polite", importance=1.0, decay_rate=0.01,
                                  summary="recent b", now_fn=self.clock.now)
-            # 21 entries → overflow 1 → should keep ~20, not collapse to a handful
-            count = self.eh.get_history_count()
-        self.assertLessEqual(count, 20)
-        self.assertGreaterEqual(count, 18)
+            # 21 entries → need 2 folds + 1 summary → cap 20, not collapse to ~3
+            hist = self.eh.get_history(limit=50, now_fn=self.clock.now)
+            count = len(hist)
+        self.assertEqual(count, 20)
+        self.assertIn("summary", {e["category"] for e in hist})
+        # Recent high-importance events must survive (not silently trimmed)
+        texts = " ".join(str(e.get("summary", "")) for e in hist)
+        self.assertTrue("recent a" in texts or "recent b" in texts)
+
+    def test_compaction_overflow_one_fits_summary(self) -> None:
+        """Overflow=1 must fold 2 so appending summary does not force a silent drop."""
+        # EMOTION_HISTORY_MAX is clamped to min 20 by AppSettings.
+        small = AppSettings({"EMOTION_HISTORY_MAX": "20"})
+        with patch("agetha.app_config.get_settings", return_value=small):
+            for i in range(20):
+                self.eh.record_event(
+                    "user_chat", importance=0.2, decay_rate=0.5,
+                    summary=f"keepable {i}", now_fn=self.clock.now,
+                )
+            self.clock.advance(days=30)
+            before_ids = {e["id"] for e in self.eh.get_history(limit=50, now_fn=self.clock.now)}
+            self.assertEqual(len(before_ids), 20)
+            self.eh.record_event(
+                "user_polite", importance=1.0, decay_rate=0.01,
+                summary="brand new", now_fn=self.clock.now,
+            )
+            hist = self.eh.get_history(limit=50, now_fn=self.clock.now)
+        self.assertEqual(len(hist), 20)
+        summaries = [e for e in hist if e.get("category") == "summary"]
+        self.assertEqual(len(summaries), 1)
+        # Summary must account for 2 folded events (overflow+1), not 1
+        self.assertIn("2 older events", summaries[0].get("summary", ""))
+        self.assertIn("brand new", " ".join(str(e.get("summary", "")) for e in hist))
+        # Exactly 2 faded ids folded into summary — not 3 via silent hard-trim
+        after_ids = {e["id"] for e in hist if e.get("category") != "summary"}
+        lost = before_ids - after_ids
+        self.assertEqual(len(lost), 2)
 
     def test_relationship_signals_bounded_and_denial_neutral(self) -> None:
         for _ in range(50):
