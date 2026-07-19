@@ -49,7 +49,7 @@ def _setup_dpi_awareness() -> None:
 
 _setup_dpi_awareness()
 
-from utils import logger
+from agetha.utils import logger
 ctypes = None
 if IS_WINDOWS:
     import ctypes
@@ -249,7 +249,7 @@ def _ensure_custom_patterns() -> None:
     if _custom_patterns_loaded:
         return
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         for label, mood, pattern_str in get_settings().ocr_custom_patterns():
             try:
                 pat = re.compile(pattern_str, re.I)
@@ -624,7 +624,7 @@ class ScreenReader:
         self.last_active_window_title: str               = ""
 
         # Tesseract path (Windows)
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         _cfg = get_settings()
         self._ocr_max_dimension = _cfg.ocr_max_dimension
 

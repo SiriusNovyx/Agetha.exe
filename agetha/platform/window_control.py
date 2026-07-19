@@ -11,7 +11,7 @@ from ctypes import wintypes
 from difflib import SequenceMatcher
 from typing import Callable
 
-from utils import IS_WINDOWS, logger
+from agetha.utils import IS_WINDOWS, logger
 
 if IS_WINDOWS:
     _user32 = ctypes.windll.user32
@@ -79,7 +79,7 @@ def ease_out_cubic(t: float) -> float:
 
 def _animation_settings() -> tuple[bool, int]:
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         s = get_settings()
         return s.window_move_smooth, s.window_move_duration_ms
     except Exception:
@@ -122,7 +122,7 @@ def resolve_target_name(partial_name: str) -> str:
     if not name:
         return name
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         aliases = get_settings().target_app_aliases()
         return aliases.get(name.lower(), name)
     except Exception:
@@ -202,7 +202,7 @@ def _pick_hwnd(
         return exact[0][0]
 
     try:
-        from app_config import get_settings
+        from agetha.app_config import get_settings
         use_picker = get_settings().window_picker_on_ambiguous
     except Exception:
         use_picker = True

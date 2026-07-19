@@ -1,11 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v3.5.0)
+  Agetha startup health check and launcher (Overhaul Edition v3.6.0)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
-  optional Tesseract, assets, config, and py_compile - then launches main.py.
+  optional Tesseract, assets (including presence loaf/sleep GIFs), config,
+  realism/presence APIs, safety toggles, and py_compile - then launches main.py.
 #>
 
 Set-StrictMode -Version Latest
@@ -32,9 +33,9 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.5.1'
+    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.6.0'
     if ($v) { return $v }
-    return '3.5.1'
+    return '3.6.0'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -52,7 +53,7 @@ try {
     $script:AppVersion = Get-AppVersion
     $Host.UI.RawUI.WindowTitle = "Agetha.exe  -  Health Check  |  v$script:AppVersion"
 } catch {
-    $script:AppVersion = '3.5.0'
+    $script:AppVersion = '3.6.0'
 }
 
 function Test-GitHubUpdate {
@@ -433,21 +434,24 @@ function Invoke-StandardChecks {
         Write-Ok 'tkextrafont optional package present.'
     }
 
-    # Optional: voice, local STT, drag-and-drop (driven by config.txt)
-    Write-Step 'Optional features (voice / drag-and-drop)...'
+    # Optional: voice, local STT, drag-and-drop, TTS (driven by config.txt)
+    Write-Step 'Optional features (voice / drag-and-drop / TTS)...'
     $enableVoice = (Get-ConfigValue -Key 'ENABLE_VOICE' -Default 'no') -match '^(?i)yes$'
     $useLocalStt = (Get-ConfigValue -Key 'USE_LOCAL_STT' -Default 'no') -match '^(?i)yes$'
     $enableDnd = (Get-ConfigValue -Key 'ENABLE_FILE_DRAG_DROP' -Default 'yes') -match '^(?i)yes$'
+    $voiceOutputMode = (Get-ConfigValue -Key 'VOICE_OUTPUT_MODE' -Default 'bleeps_only').ToLower()
+    $needsTts = $voiceOutputMode -in @('tts_only', 'both')
     $optionalPkgs = @()
     if ($enableVoice) {
         $optionalPkgs += 'SpeechRecognition', 'PyAudio'
         if ($useLocalStt) { $optionalPkgs += 'faster-whisper' }
     }
     if ($enableDnd) { $optionalPkgs += 'tkinterdnd2' }
+    if ($needsTts) { $optionalPkgs += 'pyttsx3' }
     # @() keeps a single package as a 1-element array (pipeline unwraps scalars; breaks .Count in StrictMode)
     $optionalPkgs = @($optionalPkgs | Select-Object -Unique)
     if ($optionalPkgs.Count -eq 0) {
-        Write-Info 'ENABLE_VOICE=no and/or ENABLE_FILE_DRAG_DROP=no - optional packages skipped.'
+        Write-Info 'ENABLE_VOICE=no, ENABLE_FILE_DRAG_DROP=no, VOICE_OUTPUT_MODE=bleeps_only - optional packages skipped.'
     } else {
         $optMissing = @()
         foreach ($pkg in $optionalPkgs) {
@@ -466,11 +470,25 @@ function Invoke-StandardChecks {
                 Write-Info 'Voice: ENABLE_VOICE=yes needs SpeechRecognition + PyAudio'
                 Write-Info 'Local STT: USE_LOCAL_STT=yes needs faster-whisper (~75 MB model on first run)'
                 Write-Info 'Drag-drop: ENABLE_FILE_DRAG_DROP=yes needs tkinterdnd2 (Windows)'
+                Write-Info 'TTS: VOICE_OUTPUT_MODE=tts_only|both needs pyttsx3'
             }
         } else {
             Write-Warn "Optional missing: $($optMissing -join ', ')"
             Write-Info 'Set AUTO_PIP_INSTALL=yes or: pip install -r requirements.txt'
         }
+    }
+    if ($needsTts) {
+        $ttsStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'tts'
+        if ($ttsStatus -eq 'TTS_OK') {
+            Write-Ok "TTS (pyttsx3) ready for VOICE_OUTPUT_MODE=$voiceOutputMode."
+        } elseif ($ttsStatus -eq 'TTS_MISSING') {
+            Write-Warn "VOICE_OUTPUT_MODE=$voiceOutputMode but pyttsx3 not installed - falls back to bleeps."
+            Write-Info 'Install: pip install "pyttsx3>=2.90,<3.0.0"'
+        } else {
+            Write-Info "VOICE_OUTPUT_MODE=$voiceOutputMode (TTS check: $ttsStatus)"
+        }
+    } else {
+        Write-Ok 'VOICE_OUTPUT_MODE=bleeps_only - TTS optional package skipped.'
     }
     if ($enableVoice) {
         $voiceLines = & $script:VenvPython medic_helper.py voice 2>&1
@@ -537,7 +555,7 @@ function Invoke-StandardChecks {
         'icon.ico', 'idle-1.gif', 'idle-2.gif', 'idle-3.gif', 'loaf.gif',
         'sad-static.gif', 'sad.gif', 'sleeping.gif', 'surprised.gif',
         'talking-1.gif', 'talking-2.gif', 'talking-3.gif',
-        'thinking-static.gif', 'thinking.gif', 'barrio.ttf'
+        'thinking-static.gif', 'thinking.gif', 'want.gif', 'barrio.ttf'
     )
     $assetFail = $false
     foreach ($name in $assets) {
@@ -548,9 +566,9 @@ function Invoke-StandardChecks {
         }
     }
     if (-not $assetFail) {
-        Write-Ok 'All 20 assets present.'
+        Write-Ok "All $($assets.Count) assets present (all mood GIFs including want.gif + loaf/sleep presence)."
     } else {
-        Write-Warn 'Missing assets will cause broken or invisible animations.'
+        Write-Warn 'Missing assets will cause broken or invisible animations (want.gif, loaf.gif, sleeping.gif matter for presence).'
     }
     }
     Write-Host ''
@@ -568,6 +586,57 @@ function Invoke-StandardChecks {
         Write-Ok 'memory\soul.md present.'
     } else {
         Write-Info 'memory\soul.md will be auto-generated on first run.'
+    }
+    $phase1Files = @(
+        @{ Name = 'episodic_memory.json'; Label = 'episodic memory' }
+        @{ Name = 'longterm_memory.jsonl'; Label = 'long-term searchable memory' }
+        @{ Name = 'companion_stats.json'; Label = 'companion stats (Virus Registry)' }
+        @{ Name = 'notepad.txt'; Label = 'dashboard notepad' }
+    )
+    foreach ($pf in $phase1Files) {
+        $p = Join-Path $memoryDir $pf.Name
+        if (Test-Path -LiteralPath $p) {
+            Write-Ok "memory\$($pf.Name) present ($($pf.Label))."
+        } else {
+            Write-Info "memory\$($pf.Name) will be created on first use ($($pf.Label))."
+        }
+    }
+    $enableLtMem = (Get-ConfigValue -Key 'ENABLE_LONGTERM_MEMORY' -Default 'yes') -match '^(?i)yes$'
+    if ($enableLtMem) {
+        Write-Ok 'ENABLE_LONGTERM_MEMORY=yes - search_memory + JSONL dual-write + session recap active.'
+    } else {
+        Write-Info 'ENABLE_LONGTERM_MEMORY=no - long-term search / session recap archive disabled.'
+    }
+    $enableStatsCtx = (Get-ConfigValue -Key 'ENABLE_COMPANION_STATS_CONTEXT' -Default 'yes') -match '^(?i)yes$'
+    if ($enableStatsCtx) {
+        Write-Ok 'ENABLE_COMPANION_STATS_CONTEXT=yes - host heat / infection persona context in prompts.'
+    } else {
+        Write-Info 'ENABLE_COMPANION_STATS_CONTEXT=no - companion stats not injected into AI prompts.'
+    }
+    $loafMin = Get-ConfigValue -Key 'LOAF_TIMER_MIN' -Default '15'
+    Write-Info "Presence: LOAF_TIMER_MIN=$loafMin (idle → loaf → sleep; cosmetic only)."
+    Write-Info "VOICE_OUTPUT_MODE=$(Get-ConfigValue -Key 'VOICE_OUTPUT_MODE' -Default 'bleeps_only')"
+    $enableWebRag = (Get-ConfigValue -Key 'ENABLE_WEB_RAG' -Default 'no') -match '^(?i)yes$'
+    if ($enableWebRag) {
+        Write-Ok 'ENABLE_WEB_RAG=yes - search_web / fetch_webpage active (CAUTION confirmations).'
+    } else {
+        Write-Info 'ENABLE_WEB_RAG=no - web search/fetch disabled (safe default).'
+    }
+    $enableGlitch = (Get-ConfigValue -Key 'ENABLE_GLITCH_EFFECTS' -Default 'no') -match '^(?i)yes$'
+    if ($enableGlitch) {
+        Write-Ok 'ENABLE_GLITCH_EFFECTS=yes - visual glitch overlay allowed (cosmetic only).'
+    } else {
+        Write-Info 'ENABLE_GLITCH_EFFECTS=no - glitch overlay disabled (safe default).'
+    }
+    $enableConfirm = (Get-ConfigValue -Key 'ENABLE_COMMAND_CONFIRMATIONS' -Default 'yes') -match '^(?i)yes$'
+    if ($enableConfirm) {
+        Write-Ok 'ENABLE_COMMAND_CONFIRMATIONS=yes - Caution/Danger native Yes/No dialogs active.'
+    } else {
+        Write-Warn 'ENABLE_COMMAND_CONFIRMATIONS=no - risky OS actions will NOT prompt (not recommended).'
+    }
+    $enableCmdExec = (Get-ConfigValue -Key 'ENABLE_COMMAND_EXECUTION' -Default 'yes') -match '^(?i)yes$'
+    if (-not $enableCmdExec) {
+        Write-Info 'ENABLE_COMMAND_EXECUTION=no - all OS commands blocked (speak/idle still work).'
     }
     $conv = Join-Path $Script:Root 'conversation.txt'
     if (-not (Test-Path -LiteralPath $conv)) {
@@ -610,9 +679,13 @@ function Invoke-StandardChecks {
     # [7/7] py_compile
     Write-Head '[7 / 7]  Python syntax (py_compile)'
     $modules = @(
-        'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'utils.py',
-        'command_guard.py', 'command_handlers.py', 'system_commands.py', 'medic_helper.py',
-        'window_control.py', 'app_config.py', 'voice_input.py'
+        'main.py', 'medic_helper.py',
+        'agetha\app_config.py', 'agetha\utils.py',
+        'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
+        'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
+        'agetha\platform\screen_reader.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
+        'agetha\features\tts_player.py', 'agetha\features\web_rag.py',
+        'agetha\ui\dashboard.py', 'agetha\ui\w95_window.py', 'agetha\ui\glitch_overlay.py', 'agetha\ui\virus_trivia.py'
     )
     $compileFail = $false
     foreach ($mod in $modules) {
@@ -627,7 +700,27 @@ function Invoke-StandardChecks {
         Wait-Key
         exit 1
     }
-    Write-Ok 'All 12 modules compile cleanly.'
+    $featStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'features'
+    if ($featStatus -eq 'FEATURE_OK') {
+        Write-Ok 'Phase 1-4 modules import cleanly (memory_search, companion_stats, dashboard, tts_player, web_rag, glitch_overlay, virus_trivia, w95_window).'
+    } elseif ($featStatus -match '^FEATURE_FAIL:') {
+        Write-Warn "Extension module import issue: $($featStatus.Substring(12))"
+    }
+    $realismStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'realism'
+    if ($realismStatus -eq 'REALISM_OK') {
+        Write-Ok 'Realism APIs ready (host-mood presence, session recap, OCR coding-assist guardrails).'
+    } elseif ($realismStatus -match '^REALISM_FAIL:') {
+        Write-Warn "Realism API issue: $($realismStatus.Substring(13))"
+    } else {
+        Write-Info "Realism check skipped or unexpected: $realismStatus"
+    }
+    $phase4Test = Join-Path $Script:Root 'tests\test_phase4_realism.py'
+    if (Test-Path -LiteralPath $phase4Test) {
+        Write-Ok 'tests\test_phase4_realism.py present (run: python tests/test_phase4_realism.py).'
+    } else {
+        Write-Info 'tests\test_phase4_realism.py not found - optional QA suite.'
+    }
+    Write-Ok "All $($modules.Count) modules compile cleanly."
     Write-Host ''
 }
 
@@ -641,9 +734,13 @@ Write-Head '+============================================================+'
 Write-Host ''
 
 $coreFiles = @(
-    'main.py', 'ai_engine.py', 'screen_reader.py', 'memory_system.py', 'utils.py',
-    'command_guard.py', 'command_handlers.py', 'system_commands.py',
-    'medic_helper.py', 'window_control.py', 'app_config.py', 'voice_input.py', 'requirements.txt'
+    'main.py', 'medic_helper.py', 'requirements.txt',
+    'agetha\app_config.py', 'agetha\utils.py',
+    'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
+    'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
+    'agetha\platform\screen_reader.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
+    'agetha\features\tts_player.py', 'agetha\features\web_rag.py',
+    'agetha\ui\dashboard.py', 'agetha\ui\w95_window.py', 'agetha\ui\glitch_overlay.py', 'agetha\ui\virus_trivia.py'
 )
 $missingCore = $coreFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Script:Root $_)) }
 if ($missingCore) {
@@ -652,7 +749,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (12 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (v3.6.0 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut
