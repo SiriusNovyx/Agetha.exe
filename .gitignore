@@ -2,6 +2,9 @@
 .env
 conversation.txt
 
+# Character / UI media (third-party; not covered by this repo's LICENSE — keep local only)
+assets/
+
 # Runtime
 memory/
 venv/
