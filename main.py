@@ -1,6 +1,6 @@
 """
 Desktop AI Companion - Main Application
-Requires: pip install pillow pyautogui pytesseract numpy pygame requests
+Requires: pip install pillow pyautogui pytesseract numpy pygame-ce requests
 Assets folder must contain mood GIFs (idle/talking/happy/sad/angry/thinking/
   surprised/want/loaf/sleeping/error + *-static variants). Every GIF is mapped
   to a mood or presence path. Font: barrio.ttf must be in assets/ folder.
@@ -1459,6 +1459,11 @@ class CompanionApp:
                 update_stats("file_drop", file_size=0)
         except Exception:
             pass
+        try:
+            from agetha.core.emotion_engine import note
+            note("file_shared", summary=f"user shared a file: {filename}")
+        except Exception:
+            pass
         self._set_state(self.STATE_IDLE)
         if self._input_box["state"] == "disabled":
             return
@@ -1634,6 +1639,11 @@ class CompanionApp:
         # Don't interrupt an ongoing AI response or block the input box permanently
         if self._input_box["state"] == "disabled":
             return
+        try:
+            from agetha.core.emotion_engine import note
+            note("touch", summary="user touched the avatar")
+        except Exception:
+            pass
         self._persistent_mood = None
         threading.Thread(
             target=self._ai_tick,
@@ -2120,6 +2130,17 @@ class CompanionApp:
             ):
                 self._is_loafing = False
                 self._set_state(self.STATE_SLEEPING)
+                # v4.0.0 — she dreams while deep-sleeping (memory/ only, no OS)
+                try:
+                    from agetha.core.dreams import generate_dream
+                    threading.Thread(target=generate_dream, daemon=True).start()
+                except Exception:
+                    pass
+                try:
+                    from agetha.core.emotion_engine import apply_event
+                    apply_event("sleep")
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -2135,6 +2156,17 @@ class CompanionApp:
             if self._state == self.STATE_SLEEPING or getattr(self, "_is_loafing", False):
                 self._is_loafing = False
                 if self._state == self.STATE_SLEEPING:
+                    # v4.0.0 — arm one-shot dream recall for the next AI prompt
+                    try:
+                        from agetha.core.dreams import mark_wake_recall
+                        mark_wake_recall()
+                    except Exception:
+                        pass
+                    try:
+                        from agetha.core.emotion_engine import apply_event
+                        apply_event("wake")
+                    except Exception:
+                        pass
                     self._set_state(self.STATE_IDLE, "surprised")
         except Exception:
             pass
@@ -2167,6 +2199,24 @@ class CompanionApp:
         try:
             from agetha.core.companion_stats import update_stats
             update_stats("tick")
+        except Exception:
+            pass
+        try:
+            from agetha.core.emotion_engine import tick as _emotion_tick
+            crossed = _emotion_tick()
+            if crossed:
+                from agetha.core.emotional_history import record_event
+                record_event(
+                    "long_absence", importance=0.7,
+                    summary=f"no interaction for a while ({crossed})",
+                )
+        except Exception:
+            pass
+        # v5.0.0 — optional coarse status observations (self-rate-limited)
+        try:
+            if get_settings().enable_status_providers:
+                from agetha.features.status_providers import poll as _status_poll
+                threading.Thread(target=_status_poll, daemon=True).start()
         except Exception:
             pass
 
@@ -2217,6 +2267,11 @@ class CompanionApp:
                     tone = classify_user_tone(user_message)
                     if tone:
                         update_stats(tone)
+                except Exception:
+                    tone = None
+                try:
+                    from agetha.core.emotion_engine import note
+                    note(tone or "user_chat")
                 except Exception:
                     pass
             self.root.after(0, self._wake_from_presence_rest)
@@ -2674,6 +2729,22 @@ class CompanionApp:
             self.root.after(0, self._reschedule_screen_poll)
 
     def _shutdown(self):
+        # v5.0.0 — hide to tray instead of exiting ONLY when the tray icon is
+        # actually running and TRAY_BACKGROUND_CLOSE=yes. Never silently stays
+        # in the background otherwise. The tray's own Exit stops the tray
+        # first, so it always reaches the full shutdown below.
+        try:
+            from agetha.features.tray_scaffold import should_background_close
+            if should_background_close():
+                self.root.withdraw()
+                return
+        except Exception:
+            pass
+        try:
+            from agetha.features.tray_scaffold import stop_tray
+            stop_tray()
+        except Exception:
+            pass
         self._stop_talking_rotation()
         if self._voice_out:
             try:
@@ -2693,9 +2764,21 @@ class CompanionApp:
         self.root.quit()
 
     def run(self):
+        # v5.0.0 — optional tray icon (compatibility scaffold: silent no-op
+        # unless ENABLE_TRAY=yes AND the optional pystray package is installed)
+        try:
+            from agetha.features.tray_scaffold import start_tray
+            start_tray(self)
+        except Exception:
+            pass
         try:
             self.root.mainloop()
         finally:
+            try:
+                from agetha.features.tray_scaffold import stop_tray
+                stop_tray()
+            except Exception:
+                pass
             if self._voice_out:
                 try:
                     self._voice_out.stop()

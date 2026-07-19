@@ -2,7 +2,7 @@
 
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
-**Version:** Overhaul v3.7.0 · **Medic_Checker:** v3.7 · **Original author:** @tomiszivacs
+**Version:** Overhaul v5.0.0 · **Medic_Checker:** v5.0 · **Original author:** @tomiszivacs
 
 ---
 
@@ -29,6 +29,22 @@ This fork makes Agetha feel sharper, more autonomous, and more integrated with y
 |-------|------|---------|
 | Static identity | `memory/soul.md` | Personality, mood rules, triggers (editable Markdown) |
 | Episodic memory | `memory/episodic_memory.json` | Timestamped interaction log (max 50 entries) |
+
+### Presence & Realism (v4.0.0)
+
+- **Circadian rhythm** — an internal clock (deep night / dawn / morning / afternoon / evening / night) flavors her energy and mood; drowsy whispers at 3 AM, sharp and smug in the morning
+- **Dream journal** — during deep sleep she *dreams*: fragments of real episodic and long-term memories woven into surreal entries (`memory/dreams.jsonl`); on waking she remembers the dream once and may mention it — ask "did you dream?" (`view_dreams`)
+- **Task keeper** — "remind me to…" stores tasks in `memory/tasks.json` (`add_task` / `complete_task` / `list_tasks`); pending tasks appear in her ambient context so she nags you about them in character
+- All three are local-only (no network), never touch files outside `memory/`, and are config-gated (`ENABLE_CIRCADIAN_RHYTHM`, `ENABLE_DREAMS`, `ENABLE_TASKS`)
+
+### Emotion Engine & Transparent Windows Integration (v5.0.0)
+
+- **Deep emotion engine** — persistent valence / arousal / trust / loneliness in `memory/emotional_state.json` (inertia, decay, bounded events). A declined dangerous command causes mild disappointment only — never guilt or pressure.
+- **Emotional history** — bounded relationship signals in `memory/emotional_history.jsonl`; viewable (`view_emotions`), removable, fully resettable (`clear_emotions`). Prompt injection is hardened: category templates + sanitized summaries labeled as untrusted historical data.
+- **Start Agetha when I sign in** — optional Startup-folder shortcut (`set_autostart`); config-gated **off** by default + Danger confirmation; no service, scheduled task, or registry Run key. Audited in `memory/audit_log.jsonl`.
+- **Safe Windows helpers** — `open_settings` (allowlisted `ms-settings:` pages), `set_theme` (HKCU light/dark only, with rollback backup), `recycle_bin_status` (aggregate count/size only).
+- **Status providers** — coarse local observations (battery / disk / network), disabled by default, pausable.
+- **Tray scaffold** — optional compatibility path if you install `pystray` yourself; not bundled, not a guaranteed runtime feature, silent when absent.
 
 ### Psychological Moods & Attention Snapping
 
@@ -87,7 +103,7 @@ Agetha_Mod/
 ├── config.txt              # User settings only — no API keys
 ├── .env.example            # API key template
 ├── requirements.txt
-├── Medic_Checker.ps1       # Startup health check & launcher (v3.6)
+├── Medic_Checker.ps1       # Startup health check & launcher (v4.0)
 ├── Medic_Checker.bat
 ├── Run_Agetha_Admin.ps1
 ├── assets/                 # GIFs, fonts, icons
@@ -97,7 +113,8 @@ Agetha_Mod/
 │   ├── test_phase2_tts.py
 │   ├── test_phase3_web_rag.py
 │   ├── test_phase3b_glitch.py
-│   └── test_phase4_realism.py
+│   ├── test_phase4_realism.py
+│   └── test_phase5_v4.py
 └── agetha/                 # Python package
     ├── app_config.py       # config.txt loader & typed settings
     ├── utils.py            # logging, paths, .env loader
@@ -105,18 +122,28 @@ Agetha_Mod/
     │   ├── ai_engine.py
     │   ├── memory_system.py
     │   ├── memory_search.py
-    │   └── companion_stats.py
+    │   ├── companion_stats.py
+    │   ├── rhythm.py           # v4 — circadian clock
+    │   ├── dreams.py           # v4 — dream journal
+    │   ├── emotion_engine.py   # v5 — persistent emotions
+    │   ├── emotional_history.py
+    │   └── audit_log.py
     ├── commands/           # command guard, handlers, OS utilities
     │   ├── command_guard.py
     │   ├── command_handlers.py
     │   └── system_commands.py
-    ├── platform/           # OCR, Win32 window control, voice input
+    ├── platform/           # OCR, Win32, voice, autostart, integration
     │   ├── screen_reader.py
     │   ├── window_control.py
-    │   └── voice_input.py
-    ├── features/           # optional TTS & web RAG
+    │   ├── voice_input.py
+    │   ├── autostart.py        # v5 — Startup-folder shortcut
+    │   └── win_integration.py  # v5 — settings / theme / recycle bin
+    ├── features/           # optional TTS, web RAG, tasks, status, tray
     │   ├── tts_player.py
-    │   └── web_rag.py
+    │   ├── web_rag.py
+    │   ├── tasks.py            # v4 — task keeper
+    │   ├── status_providers.py # v5 — coarse OS observations
+    │   └── tray_scaffold.py    # v5 — optional pystray scaffold
     └── ui/                 # Win95 dashboards, overlays, minigames
         ├── dashboard.py
         ├── w95_window.py
@@ -201,6 +228,16 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 | `glitch_overlay` | Brief harmless CRT glitch overlay (`style`, `duration_ms`) — requires `ENABLE_GLITCH_EFFECTS=yes` |
 | `read_notepad` | Read dashboard notepad (`memory/notepad.txt`) into AI context |
 | `play_virus_trivia` | Open Win95 virus trivia minigame popup |
+| `view_dreams` | Show dream journal popup (`limit` optional) — she dreams during deep sleep |
+| `add_task` | Remember a task for the user (`text`) — requires `ENABLE_TASKS=yes` |
+| `complete_task` | Mark a task done (`task` = id or text match) |
+| `list_tasks` | Show the user's task list in a popup |
+| `view_emotions` | Show emotional state + history popup |
+| `clear_emotions` | Reset emotional state and/or history (`entry_id` or `all`) ⚠ |
+| `set_autostart` | "Start Agetha when I sign in" — create/remove Startup shortcut (`enabled` true/false); requires `ENABLE_AUTOSTART_CONTROL=yes` ⚠ |
+| `open_settings` | Open an allowlisted Windows Settings page (`page`) ⚠ |
+| `set_theme` | Set current-user Windows light/dark theme (`mode`: light/dark/rollback; `scope`: apps/system/both); requires `ENABLE_THEME_CONTROL=yes` ⚠ |
+| `recycle_bin_status` | Aggregate Recycle Bin item count + total size (no filenames) |
 | `clear_memory` | Erase episodic memory (soul.md kept); `memory_scope`: all/recent/old/keep_5 |
 | `view_memory` | Show recent episodic entries in popup |
 
@@ -318,6 +355,36 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `conf
 | `GLITCH_FULLSCREEN` | `no` | Use fullscreen overlay instead of corner window |
 | `ENABLE_COMPANION_STATS_CONTEXT` | `yes` | Inject virus-registry stats + CPU heat hints into AI prompt |
 
+#### Presence & realism (v4.0.0)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_CIRCADIAN_RHYTHM` | `yes` | Internal clock flavors her mood by time of day |
+| `RHYTHM_NIGHT_START` | `23` | Hour (0–23) her "deep night" drowsy window begins |
+| `RHYTHM_NIGHT_END` | `6` | Hour (0–23) it ends (window wraps midnight) |
+| `ENABLE_DREAMS` | `yes` | She dreams during deep sleep → `memory/dreams.jsonl`; recalls on waking |
+| `DREAMS_MAX_ENTRIES` | `40` | Max dream records kept (5–500) |
+| `ENABLE_TASKS` | `yes` | `add_task` / `complete_task` / `list_tasks` → `memory/tasks.json` |
+| `TASKS_MAX_ENTRIES` | `100` | Max stored tasks (10–1000); oldest completed pruned first |
+
+#### Emotion & Windows integration (v5.0.0)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_EMOTION_ENGINE` | `yes` | Persistent valence/arousal/trust/loneliness + emotional history |
+| `EMOTION_BASELINE_VALENCE` | `0` | Resting valence (−100..100) |
+| `EMOTION_BASELINE_AROUSAL` | `30` | Resting arousal (0..100) |
+| `EMOTION_BASELINE_TRUST` | `50` | Resting trust (0..100) |
+| `EMOTION_BASELINE_LONELINESS` | `25` | Resting loneliness (0..100) |
+| `EMOTION_DECAY_PER_HOUR` | `0.10` | Fraction of distance-to-baseline recovered per hour |
+| `EMOTION_HISTORY_MAX` | `200` | Max emotional-history records (20–1000) |
+| `ENABLE_AUTOSTART_CONTROL` | `no` | Allow `set_autostart` ("Start Agetha when I sign in") |
+| `ENABLE_THEME_CONTROL` | `no` | Allow `set_theme` (HKCU light/dark only) |
+| `ENABLE_STATUS_PROVIDERS` | `no` | Coarse battery/disk/network observations |
+| `STATUS_POLL_INTERVAL_SEC` | `300` | Status-provider poll interval (60–3600) |
+| `ENABLE_TRAY` | `no` | Optional tray scaffold (requires user-installed `pystray`) |
+| `TRAY_BACKGROUND_CLOSE` | `no` | Keep running in tray on close (only if tray is active) |
+
 #### Web RAG security
 
 Web search and page fetch are **disabled by default** (`ENABLE_WEB_RAG = no`). When enabled:
@@ -384,7 +451,7 @@ Click the **📊** button in the title bar (beside minimize) to open the **Dashb
 | `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
 | `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
 | `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
-| `APP_VERSION` | `3.7.0` | Shown in window title |
+| `APP_VERSION` | `5.0.0` | Shown in window title |
 | `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
 | `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
 | `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |
@@ -405,15 +472,18 @@ Click the **📊** button in the title bar (beside minimize) to open the **Dashb
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `VOICE_OUTPUT_MODE` | `bleeps_only` | `bleeps_only` (Undertale-style bleeps), `tts_only`, or `both` |
-| `TTS_RATE` | `165` | pyttsx3 speech rate (80–300) |
+| `VOICE_TTS_ENGINE` | `pyttsx3` | `pyttsx3` (OS voices), `edge_tts` (free cloud neural), or `kokoro` (local neural) |
+| `TTS_RATE` | `165` | Speech rate (80–300); mapped per engine |
 | `TTS_VOLUME` | `0.8` | TTS volume (0.0–1.0) |
-| `TTS_VOICE_NAME` | *(empty)* | Partial match on installed voice id/name; empty = system default |
+| `TTS_VOICE_NAME` | *(empty)* | Engine-specific voice id (see below) |
 
-TTS is **optional**. The app runs without `pyttsx3`; install only when using `tts_only` or `both`:
+| `VOICE_TTS_ENGINE` | Install | `TTS_VOICE_NAME` examples | Notes |
+|--------------------|---------|---------------------------|-------|
+| `pyttsx3` | `pip install "pyttsx3>=2.90,<3.0.0"` | `Zira`, `David` | Offline OS voices |
+| `edge_tts` | `pip install "edge-tts>=6.1.0,<8.0.0"` | `en-US-AvaNeural` | Needs internet; no API key |
+| `kokoro` | `pip install "kokoro>=0.9.4" soundfile` | `af_heart`, `am_adam` | Offline; needs `espeak-ng` on PATH |
 
-```bash
-pip install "pyttsx3>=2.90,<3.0.0"
-```
+TTS is **optional**. The app falls back to bleeps if the chosen engine package is missing.
 
 Subtitles and TTS are not perfectly synced in v1 — bleeps follow mood; TTS runs on a background worker thread.
 
@@ -446,27 +516,30 @@ ENABLE_FILE_DRAG_DROP = yes
 ### Voice output / TTS (optional)
 
 ```ini
-VOICE_OUTPUT_MODE = bleeps_only   # bleeps_only | tts_only | both
+VOICE_OUTPUT_MODE = both          # bleeps_only | tts_only | both
+VOICE_TTS_ENGINE = edge_tts       # pyttsx3 | edge_tts | kokoro
 TTS_RATE = 165
 TTS_VOLUME = 0.8
-TTS_VOICE_NAME =                  # partial match, e.g. Zira or David
+TTS_VOICE_NAME = en-US-AvaNeural  # engine-specific; Zira for pyttsx3, af_heart for kokoro
 ```
 
 ```bash
-pip install "pyttsx3>=2.90,<3.0.0"   # only needed for tts_only / both
+pip install "edge-tts>=6.1.0,<8.0.0"   # when VOICE_TTS_ENGINE = edge_tts
+# or: pip install "pyttsx3>=2.90,<3.0.0"
+# or: pip install "kokoro>=0.9.4" soundfile
 ```
 
-Run **Medic_Checker** after enabling — it installs optional packages when `AUTO_PIP_INSTALL = yes`.
+Run **Medic_Checker** after enabling — it installs the package for `VOICE_TTS_ENGINE` when `AUTO_PIP_INSTALL = yes`.
 
 ---
 
-## Medic_Checker v3.6 (PowerShell)
+## Medic_Checker v4.0 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
 | Step | Check |
 |------|-------|
-| Pre-flight | All 16 core modules + `requirements.txt` present |
+| Pre-flight | All 23 core modules + `requirements.txt` present |
 | [A–D] | ARM64/Snapdragon x64 Python detection & auto-install |
 | [1/7] | Python installed |
 | [2/7] | Virtual environment create/activate |
@@ -474,11 +547,11 @@ Startup wrapper that validates your environment before launch:
 | [4/7] | Tesseract OCR (optional — enables screen reading) |
 | [5/7] | All 20 assets in `assets\` |
 | [6/7] | Config, `.env`, `memory\` (`soul.md`, episodic, long-term JSONL, stats, notepad); reports `ENABLE_LONGTERM_MEMORY` and `VOICE_OUTPUT_MODE` |
-| [7/7] | `py_compile` all 16 Python modules; import check for Phase 1+2 extensions |
+| [7/7] | `py_compile` all 23 Python modules; import check for Phase 1–5 extensions |
 
 **Color codes:** `[ OK ]` green · `[WARN]` yellow · `[FAIL]` red
 
-On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used so binary wheels (pygame, pyautogui, mss) install correctly under Prism emulation.
+On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used so binary wheels (pygame-ce, pyautogui, mss) install correctly under Prism emulation.
 
 ---
 
@@ -495,7 +568,7 @@ On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used 
 
 **Core:**
 ```
-pillow, numpy, requests, groq, pyautogui, pytesseract, mss, pygame, psutil
+pillow, numpy, requests, groq, pyautogui, pytesseract, mss, pygame-ce, psutil
 ```
 
 **Optional** (installed by Medic_Checker when enabled in `config.txt`):
@@ -503,7 +576,7 @@ pillow, numpy, requests, groq, pyautogui, pytesseract, mss, pygame, psutil
 SpeechRecognition, PyAudio          # ENABLE_VOICE = yes
 faster-whisper                    # USE_LOCAL_STT = yes
 tkinterdnd2                       # ENABLE_FILE_DRAG_DROP = yes (Windows)
-pyttsx3                           # VOICE_OUTPUT_MODE = tts_only | both
+pyttsx3 / edge-tts / kokoro       # VOICE_OUTPUT_MODE = tts_only|both (per VOICE_TTS_ENGINE)
 ```
 
 ---
@@ -539,6 +612,27 @@ command_handlers.py → Execute action + update UI
 ---
 
 ## Changelog (Overhaul)
+
+### v5.0.0 — Emotion Engine & Transparent Windows Integration (Phase 6)
+
+- **`emotion_engine.py`** — four-dimension persistent state with inertia, decay, milestone-based `long_absence` (once per stage), injectable UTC clock, RLock-guarded RMW
+- **`emotional_history.py`** — bounded relationship_state; deterministic category templates; sanitized untrusted prompt labels; view/remove/reset; denials never become resentment
+- **`audit_log.py`** — local append-only log for autostart/theme changes
+- **`autostart.py`** — "Start Agetha when I sign in" via visible Startup-folder shortcut; path-normalized target+args validation; refuses foreign/malformed overwrite/delete; PowerShell env-var path passing
+- **`win_integration.py`** — allowlisted `open_settings`, `set_theme` with existence-aware rollback chain, `recycle_bin_status` aggregates only
+- **`status_providers.py`** — default-off coarse local observations; pausable
+- **`tray_scaffold.py`** — optional pystray compatibility scaffold (not bundled; silent when absent)
+- All gated Windows mutations are Danger/Caution + config-default-off where required; Medic/docs/tests updated (`tests/test_phase6_v5.py`)
+
+### v4.0.0 — Presence & Realism (Phase 5)
+
+- **`rhythm.py`** — circadian internal clock: six day-phases flavor her energy and mood (drowsy deep-night whispers, sharp mornings); compact `INTERNAL CLOCK` block injected into AI context
+- **`dreams.py`** — dream journal: entering deep sleep weaves fragments of real episodic/long-term memories into surreal dream entries (`memory/dreams.jsonl`); one-shot `DREAM RECALL` on waking; new `view_dreams` command
+- **`tasks.py`** — task keeper: `add_task` / `complete_task` / `list_tasks` persisted to `memory/tasks.json`; pending tasks injected into ambient context so she nags in character
+- All new commands are **Safe tier** (they only touch `memory/`); features are config-gated and degrade gracefully when disabled
+- **Config:** `ENABLE_CIRCADIAN_RHYTHM`, `RHYTHM_NIGHT_START/END`, `ENABLE_DREAMS`, `DREAMS_MAX_ENTRIES`, `ENABLE_TASKS`, `TASKS_MAX_ENTRIES`
+- **Medic_Checker v4.0** — compiles 23 modules, imports Phase 1–5 extensions, reports `dreams.jsonl` / `tasks.json` status
+- **Tests:** `tests/test_phase5_v4.py` (29 tests — rhythm phases, dream lifecycle, task CRUD, command wiring)
 
 ### v3.5.0 — Voice, OpenRouter & UX (tamsamas upstream patterns)
 

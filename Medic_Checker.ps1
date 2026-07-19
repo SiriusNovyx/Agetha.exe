@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v3.7.0)
+  Agetha startup health check and launcher (Overhaul Edition v5.0.0)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
@@ -16,6 +16,8 @@ $Script:Root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 Set-Location -LiteralPath $Script:Root
 # Initialized before Invoke-StandardChecks (StrictMode forbids reading unset script vars).
 $script:VenvPython = $null
+$script:PythonVersionInfo = $null
+$script:PythonCmd = $null
 
 function Get-ConfigValue {
     param(
@@ -35,9 +37,9 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '3.7.0'
+    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.0.0'
     if ($v) { return $v }
-    return '3.7.0'
+    return '5.0.0'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -55,7 +57,7 @@ try {
     $script:AppVersion = Get-AppVersion
     $Host.UI.RawUI.WindowTitle = "Agetha.exe  -  Health Check  |  v$script:AppVersion"
 } catch {
-    $script:AppVersion = '3.7.0'
+    $script:AppVersion = '5.0.0'
 }
 
 function Test-GitHubUpdate {
@@ -292,7 +294,7 @@ function Offer-Arm64Repair {
     Write-Host ''
     Write-Head 'Why x64 Python is required on Snapdragon / ARM64 systems:'
     Write-Host ''
-    Write-Info 'Agetha depends on: pygame, pyautogui, mss, pillow'
+    Write-Info 'Agetha depends on: pygame-ce, pyautogui, mss, pillow'
     Write-Info 'PyPI ships x64 wheels only - ARM64 Python cannot install them.'
     Write-Info 'x64 Python runs under Windows Prism with no practical impact.'
     Write-Host ''
@@ -311,6 +313,187 @@ function Offer-Arm64Repair {
     Write-Info 'Choose "Windows installer (64-bit)", tick "Add Python to PATH", re-run.'
     Wait-Key
     exit 1
+}
+
+function Get-PythonVersionInfo {
+    param([hashtable]$Cmd)
+    if (-not $Cmd) { return $null }
+    $verOut = (Invoke-Python $Cmd --version 2>&1 | Out-String).Trim()
+    if ($verOut -match 'Python\s+(\d+)\.(\d+)(?:\.(\d+))?') {
+        $patch = 0
+        if ($Matches[3]) { $patch = [int]$Matches[3] }
+        return @{
+            Major = [int]$Matches[1]
+            Minor = [int]$Matches[2]
+            Patch = $patch
+            Text  = $verOut
+        }
+    }
+    return $null
+}
+
+function Test-IsSupportedPythonVersion {
+    # Hard floor/ceiling: below 3.10 or above 3.14 cannot run Agetha reliably.
+    param([hashtable]$VersionInfo)
+    if (-not $VersionInfo) { return $false }
+    if ($VersionInfo.Major -ne 3) { return $false }
+    return ($VersionInfo.Minor -ge 10 -and $VersionInfo.Minor -le 14)
+}
+
+function Test-IsRecommendedPythonVersion {
+    # 3.10-3.13 remain the most battle-tested; 3.14 works with pygame-ce.
+    param([hashtable]$VersionInfo)
+    if (-not $VersionInfo) { return $false }
+    if ($VersionInfo.Major -ne 3) { return $false }
+    return ($VersionInfo.Minor -ge 10 -and $VersionInfo.Minor -le 13)
+}
+
+function Test-PygameSatisfied {
+    param([Parameter(Mandatory)][string]$PythonExe)
+    # pygame-ce installs as importable 'pygame'; pip show lists pygame-ce.
+    $null = & $PythonExe -c 'import pygame' 2>&1
+    if ($LASTEXITCODE -eq 0) { return $true }
+    $null = & $PythonExe -m pip show pygame-ce 2>&1
+    if ($LASTEXITCODE -eq 0) { return $true }
+    $null = & $PythonExe -m pip show pygame 2>&1
+    if ($LASTEXITCODE -eq 0) { return $true }
+    return $false
+}
+
+function Remove-AgethaVenv {
+    $venvDir = Join-Path $Script:Root 'venv'
+    if (Test-Path -LiteralPath $venvDir) {
+        Write-Step 'Removing stale venv - it will be rebuilt in step [2/7]...'
+        Remove-Item -LiteralPath $venvDir -Recurse -Force
+        Write-Ok 'Stale venv removed.'
+    }
+}
+
+function Offer-UnsupportedPythonRepair {
+    param(
+        [Parameter(Mandatory)][hashtable]$VersionInfo,
+        [string]$Reason = '',
+        [switch]$ExitAfterRepair
+    )
+
+    Write-Line '+============================================================+' 'Red'
+    Write-Line '|   UNSUPPORTED / BROKEN PYTHON SETUP - ACTION REQUIRED      |' 'Red'
+    Write-Line '+============================================================+' 'Red'
+    Write-Host ''
+    Write-Fail "Detected $($VersionInfo.Text)"
+    if ($Reason) { Write-Info $Reason }
+    Write-Host ''
+    Write-Head 'Why package install fails on this Python:'
+    Write-Host ''
+    Write-Info 'Agetha uses pygame-ce (provides import pygame). Some other packages may'
+    Write-Info 'still lack wheels on very new Python builds. Recommended: Python 3.13.x.'
+    Write-Info 'If install fails, try: pip install pygame-ce  then pip install -r requirements.txt'
+    Write-Host ''
+
+    $pyVer = '3.13.3'
+    Write-Step "Proposed remedy: install Python $pyVer x64 (current user, no admin)."
+    Write-Info 'Recommended for Agetha: Python 3.13.x (best wheel coverage).'
+    Write-Host ''
+    $choice = Read-Host 'Download and install Python 3.13.3 x64 now? [Y/N]'
+    if ($choice -match '^(?i)y(es)?$') {
+        Install-X64Python -PyVer $pyVer
+
+        $py313 = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313'
+        $py313Exe = Join-Path $py313 'python.exe'
+        if (Test-Path -LiteralPath $py313Exe) {
+            Write-Step 'Preferring Python 3.13 on session PATH...'
+            $env:PATH = "$py313;$py313\Scripts;$env:PATH"
+        }
+
+        Remove-AgethaVenv
+
+        $script:PythonCmd = Resolve-PythonCommand
+        if (-not $script:PythonCmd) {
+            Write-Fail 'Python not found on PATH after install.'
+            Write-Info 'Close this window, reopen it, and run this script again.'
+            Wait-Key
+            exit 1
+        }
+        $newVer = Get-PythonVersionInfo -Cmd $script:PythonCmd
+        if ((-not $newVer) -or (-not (Test-IsRecommendedPythonVersion -VersionInfo $newVer))) {
+            $shown = '(unknown)'
+            if ($newVer -and $newVer.Text) { $shown = $newVer.Text }
+            Write-Fail "Still not on Python 3.13 after install: $shown"
+            Write-Info 'Close this window, ensure Python 3.13 is first on PATH, then re-run.'
+            Write-Info 'Manual: https://www.python.org/downloads/windows/ (64-bit 3.13.x)'
+            Wait-Key
+            exit 1
+        }
+        $script:PythonVersionInfo = $newVer
+        Write-Ok "Now using $($newVer.Text) (recommended)."
+        Write-Host ''
+        if ($ExitAfterRepair) {
+            Write-Ok 'Python 3.13 installed and old venv removed.'
+            Write-Info 'Close this window and run Medic_Checker.ps1 again to finish setup.'
+            Wait-Key
+            exit 0
+        }
+        return
+    }
+
+    Write-Fail 'Automated installation declined - cannot continue with this Python setup.'
+    Write-Info 'Manual steps:'
+    Write-Info '  1. Install Python 3.13.x x64: https://www.python.org/downloads/windows/'
+    Write-Info '  2. Tick "Add python.exe to PATH" during install'
+    Write-Info '  3. Delete the project venv folder, then re-run Medic_Checker.ps1'
+    Write-Info '  Or: pip install pygame-ce  then pip install -r requirements.txt'
+    Wait-Key
+    exit 1
+}
+
+function Write-PipFailureTail {
+    param([string]$PipOutput)
+    if (-not $PipOutput) { return }
+    $lines = @($PipOutput -split "`r?`n" | Where-Object { $_.Trim() -ne '' })
+    if ($lines.Count -eq 0) { return }
+    $start = [Math]::Max(0, $lines.Count - 12)
+    Write-Info '--- pip output (last lines) ---'
+    for ($i = $start; $i -lt $lines.Count; $i++) {
+        Write-Info $lines[$i]
+    }
+}
+
+function Install-PygameResilient {
+    param([Parameter(Mandatory)][string]$PythonExe)
+
+    Write-Step 'Installing pygame-ce (preferred; provides import pygame)...'
+    $outCe = & $PythonExe -m pip install 'pygame-ce>=2.5.6,<3.0.0' --only-binary=:all: --disable-pip-version-check 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'pygame-ce installed.'
+        return 'pygame-ce'
+    }
+    Write-Info 'pygame-ce binary-only install failed - retrying without --only-binary...'
+    Write-PipFailureTail -PipOutput $outCe
+    $outCe2 = & $PythonExe -m pip install 'pygame-ce>=2.5.6,<3.0.0' --disable-pip-version-check 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'pygame-ce installed.'
+        return 'pygame-ce'
+    }
+    Write-PipFailureTail -PipOutput $outCe2
+
+    Write-Info 'pygame-ce failed - last resort: classic pygame binary wheel only...'
+    $outA = & $PythonExe -m pip install 'pygame>=2.5.0,<3.0.0' --only-binary=:all: --disable-pip-version-check 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+        Write-Warn 'classic pygame installed (prefer pygame-ce when available).'
+        return 'pygame'
+    }
+    Write-PipFailureTail -PipOutput $outA
+    return $null
+}
+
+function New-RequirementsWithoutPygame {
+    param([Parameter(Mandatory)][string]$RequirementsPath)
+    $tempPath = Join-Path $env:TEMP 'agetha_requirements_no_pygame.txt'
+    $filtered = @(Get-Content -LiteralPath $RequirementsPath | Where-Object {
+        $_ -notmatch '^\s*pygame(-ce)?(\s*[><=!]|\s*$)'
+    })
+    Set-Content -LiteralPath $tempPath -Value $filtered -Encoding UTF8
+    return $tempPath
 }
 
 function Test-Arm64Python {
@@ -332,7 +515,7 @@ function Test-Arm64Python {
 
     if ($pyArch -eq 'AMD64') {
         Write-Ok 'Python is x64 (AMD64) - running under Prism emulation.'
-        Write-Ok 'Binary wheels for pygame / pyautogui / mss install correctly.'
+        Write-Ok 'Binary wheels for pygame-ce / pyautogui / mss install correctly.'
         Write-Host ''
         return
     }
@@ -393,14 +576,42 @@ function Invoke-StandardChecks {
         Wait-Key
         exit 1
     }
-    $ver = Invoke-Python $script:PythonCmd --version 2>&1 | Out-String
-    Write-Ok $ver.Trim()
+    $script:PythonVersionInfo = Get-PythonVersionInfo -Cmd $script:PythonCmd
+    if ($script:PythonVersionInfo) {
+        Write-Ok $script:PythonVersionInfo.Text
+        if (-not (Test-IsSupportedPythonVersion -VersionInfo $script:PythonVersionInfo)) {
+            Offer-UnsupportedPythonRepair -VersionInfo $script:PythonVersionInfo `
+                -Reason 'Agetha supports Python 3.10 through 3.14 (3.13 recommended).'
+        } elseif (Test-IsRecommendedPythonVersion -VersionInfo $script:PythonVersionInfo) {
+            Write-Ok 'Python version is recommended (3.10-3.13).'
+        } else {
+            Write-Warn 'Python 3.14 detected - most packages should work with pygame-ce.'
+            Write-Info 'If installs fail, prefer Python 3.13.x for best wheel coverage.'
+        }
+    } else {
+        $ver = Invoke-Python $script:PythonCmd --version 2>&1 | Out-String
+        Write-Warn "Could not parse Python version: $($ver.Trim())"
+        Write-Info 'Continuing - package install may fail if binary wheels are missing for this build.'
+    }
     Write-Host ''
 
     # [2/7] venv
     Write-Head '[2 / 7]  Virtual environment'
     $venvDir = Join-Path $Script:Root 'venv'
     $venvPy = Join-Path $venvDir 'Scripts\python.exe'
+    if (Test-Path -LiteralPath $venvPy) {
+        $venvVerInfo = Get-PythonVersionInfo -Cmd @{ Exe = $venvPy; Args = @() }
+        if ($venvVerInfo -and -not (Test-IsSupportedPythonVersion -VersionInfo $venvVerInfo)) {
+            Write-Warn "Existing venv uses unsupported $($venvVerInfo.Text)"
+            $sysVer = Get-PythonVersionInfo -Cmd $script:PythonCmd
+            if ($sysVer -and (Test-IsSupportedPythonVersion -VersionInfo $sysVer)) {
+                Write-Step "Rebuilding venv with $($sysVer.Text)..."
+                Remove-Item -LiteralPath $venvDir -Recurse -Force
+            } else {
+                Offer-UnsupportedPythonRepair -VersionInfo $venvVerInfo
+            }
+        }
+    }
     if (-not (Test-Path -LiteralPath $venvPy)) {
         Write-Step 'Not found - creating venv (first run only)...'
         Invoke-Python $script:PythonCmd -m venv $venvDir
@@ -419,27 +630,101 @@ function Invoke-StandardChecks {
 
     # [3/7] packages
     Write-Head '[3 / 7]  Python packages (requirements.txt)'
-    $required = @('pillow', 'pyautogui', 'pytesseract', 'numpy', 'pygame', 'requests', 'groq', 'mss', 'psutil')
+    $reqPath = Join-Path $Script:Root 'requirements.txt'
+    $required = @('pillow', 'pyautogui', 'pytesseract', 'numpy', 'pygame-ce', 'requests', 'groq', 'mss', 'psutil')
     $missing = @()
     foreach ($pkg in $required) {
-        $null = & $script:VenvPython -m pip show $pkg 2>&1
-        if ($LASTEXITCODE -ne 0) { $missing += $pkg }
+        if ($pkg -eq 'pygame-ce') {
+            if (-not (Test-PygameSatisfied -PythonExe $script:VenvPython)) { $missing += $pkg }
+        } else {
+            $null = & $script:VenvPython -m pip show $pkg 2>&1
+            if ($LASTEXITCODE -ne 0) { $missing += $pkg }
+        }
     }
     if ($missing.Count -eq 0) {
         Write-Ok 'All required packages installed.'
     } elseif (-not $script:AutoPipInstall) {
         Write-Warn "Missing: $($missing -join ', ')"
         Write-Warn 'AUTO_PIP_INSTALL=no - run: pip install -r requirements.txt'
+        Write-Info 'Audio: pip install "pygame-ce>=2.5.6,<3.0.0"'
     } else {
         Write-Step "Missing: $($missing -join ', ')"
         Write-Step 'Installing from requirements.txt - please wait...'
-        & $script:VenvPython -m pip install -r (Join-Path $Script:Root 'requirements.txt') --quiet --disable-pip-version-check
+        $pygameProvider = $null
+        $pipOut = & $script:VenvPython -m pip install -r $reqPath --disable-pip-version-check 2>&1 | Out-String
+
         if ($LASTEXITCODE -ne 0) {
-            Write-Fail 'Package install failed. Run: pip install -r requirements.txt'
-            Wait-Key
-            exit 1
+            Write-Warn 'Full requirements install failed.'
+            Write-PipFailureTail -PipOutput $pipOut
+
+            $needPygame = ($missing -contains 'pygame-ce') -or (-not (Test-PygameSatisfied -PythonExe $script:VenvPython))
+            if ($needPygame -and -not (Test-PygameSatisfied -PythonExe $script:VenvPython)) {
+                $pygameProvider = Install-PygameResilient -PythonExe $script:VenvPython
+                if (-not $pygameProvider) {
+                    Write-Fail 'pygame-ce could not be installed.'
+                    if ($script:PythonVersionInfo) {
+                        Offer-UnsupportedPythonRepair -VersionInfo $script:PythonVersionInfo `
+                            -Reason 'No pygame-ce (or classic pygame) wheel for this Python.' `
+                            -ExitAfterRepair
+                    } else {
+                        Write-Info 'Install Python 3.13.x x64, delete venv, re-run Medic_Checker.ps1'
+                        Write-Info 'Download: https://www.python.org/downloads/windows/'
+                        Wait-Key
+                        exit 1
+                    }
+                }
+            }
+
+            Write-Step 'Retrying remaining packages from requirements.txt...'
+            $retryPath = $reqPath
+            $tempReq = $null
+            if ($pygameProvider) {
+                $tempReq = New-RequirementsWithoutPygame -RequirementsPath $reqPath
+                $retryPath = $tempReq
+                Write-Info 'Excluding pygame/pygame-ce pin (audio package already installed).'
+            }
+            $pipOut2 = & $script:VenvPython -m pip install -r $retryPath --disable-pip-version-check 2>&1 | Out-String
+            if ($tempReq) {
+                Remove-Item -LiteralPath $tempReq -Force -ErrorAction SilentlyContinue
+            }
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail 'Package install failed after pygame-ce fallback.'
+                Write-PipFailureTail -PipOutput $pipOut2
+                if ($script:PythonVersionInfo) {
+                    Offer-UnsupportedPythonRepair -VersionInfo $script:PythonVersionInfo `
+                        -Reason 'requirements.txt still failed after pygame-ce fallback.' `
+                        -ExitAfterRepair
+                } else {
+                    Write-Info 'Try manually: pip install pygame-ce && pip install -r requirements.txt'
+                    Write-Info 'Or install Python 3.13.x and rebuild venv.'
+                    Wait-Key
+                    exit 1
+                }
+            }
         }
-        Write-Ok 'Packages installed.'
+
+        $stillMissing = @()
+        foreach ($pkg in $required) {
+            if ($pkg -eq 'pygame-ce') {
+                if (-not (Test-PygameSatisfied -PythonExe $script:VenvPython)) { $stillMissing += $pkg }
+            } else {
+                $null = & $script:VenvPython -m pip show $pkg 2>&1
+                if ($LASTEXITCODE -ne 0) { $stillMissing += $pkg }
+            }
+        }
+        if ($stillMissing.Count -gt 0) {
+            Write-Fail "Still missing after install: $($stillMissing -join ', ')"
+            if ($script:PythonVersionInfo -and ($stillMissing -contains 'pygame-ce')) {
+                Offer-UnsupportedPythonRepair -VersionInfo $script:PythonVersionInfo `
+                    -Reason "Still missing: $($stillMissing -join ', ')" `
+                    -ExitAfterRepair
+            } else {
+                Write-Info 'Run: pip install -r requirements.txt'
+                Wait-Key
+                exit 1
+            }
+        }
+        Write-Ok 'Packages installed (audio via pygame-ce).'
     }
     $null = & $script:VenvPython -m pip show tkextrafont 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -454,6 +739,8 @@ function Invoke-StandardChecks {
     $useLocalStt = (Get-ConfigValue -Key 'USE_LOCAL_STT' -Default 'no') -match '^(?i)yes$'
     $enableDnd = (Get-ConfigValue -Key 'ENABLE_FILE_DRAG_DROP' -Default 'yes') -match '^(?i)yes$'
     $voiceOutputMode = (Get-ConfigValue -Key 'VOICE_OUTPUT_MODE' -Default 'bleeps_only').ToLower()
+    $voiceTtsEngine = (Get-ConfigValue -Key 'VOICE_TTS_ENGINE' -Default 'pyttsx3').ToLower()
+    if ($voiceTtsEngine -notin @('pyttsx3', 'edge_tts', 'kokoro')) { $voiceTtsEngine = 'pyttsx3' }
     $needsTts = $voiceOutputMode -in @('tts_only', 'both')
     $optionalPkgs = @()
     if ($enableVoice) {
@@ -461,7 +748,15 @@ function Invoke-StandardChecks {
         if ($useLocalStt) { $optionalPkgs += 'faster-whisper' }
     }
     if ($enableDnd) { $optionalPkgs += 'tkinterdnd2' }
-    if ($needsTts) { $optionalPkgs += 'pyttsx3' }
+    if ($needsTts) {
+        if ($voiceTtsEngine -eq 'edge_tts') {
+            $optionalPkgs += 'edge-tts'
+        } elseif ($voiceTtsEngine -eq 'kokoro') {
+            $optionalPkgs += 'kokoro', 'soundfile'
+        } else {
+            $optionalPkgs += 'pyttsx3'
+        }
+    }
     # @() keeps a single package as a 1-element array (pipeline unwraps scalars; breaks .Count in StrictMode)
     $optionalPkgs = @($optionalPkgs | Select-Object -Unique)
     if ($optionalPkgs.Count -eq 0) {
@@ -484,7 +779,10 @@ function Invoke-StandardChecks {
                 Write-Info 'Voice: ENABLE_VOICE=yes needs SpeechRecognition + PyAudio'
                 Write-Info 'Local STT: USE_LOCAL_STT=yes needs faster-whisper (~75 MB model on first run)'
                 Write-Info 'Drag-drop: ENABLE_FILE_DRAG_DROP=yes needs tkinterdnd2 (Windows)'
-                Write-Info 'TTS: VOICE_OUTPUT_MODE=tts_only|both needs pyttsx3'
+                Write-Info 'TTS: VOICE_OUTPUT_MODE=tts_only|both needs package for VOICE_TTS_ENGINE'
+                Write-Info '  pyttsx3  -> pip install "pyttsx3>=2.90,<3.0.0"'
+                Write-Info '  edge_tts -> pip install "edge-tts>=6.1.0,<8.0.0"'
+                Write-Info '  kokoro   -> pip install "kokoro>=0.9.4" soundfile  (needs espeak-ng on PATH)'
             }
         } else {
             Write-Warn "Optional missing: $($optMissing -join ', ')"
@@ -493,11 +791,18 @@ function Invoke-StandardChecks {
     }
     if ($needsTts) {
         $ttsStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'tts'
-        if ($ttsStatus -eq 'TTS_OK') {
-            Write-Ok "TTS (pyttsx3) ready for VOICE_OUTPUT_MODE=$voiceOutputMode."
-        } elseif ($ttsStatus -eq 'TTS_MISSING') {
-            Write-Warn "VOICE_OUTPUT_MODE=$voiceOutputMode but pyttsx3 not installed - falls back to bleeps."
-            Write-Info 'Install: pip install "pyttsx3>=2.90,<3.0.0"'
+        if ($ttsStatus -like 'TTS_OK*') {
+            Write-Ok "TTS ($voiceTtsEngine) ready for VOICE_OUTPUT_MODE=$voiceOutputMode."
+        } elseif ($ttsStatus -like 'TTS_MISSING*') {
+            Write-Warn "VOICE_OUTPUT_MODE=$voiceOutputMode VOICE_TTS_ENGINE=$voiceTtsEngine - package missing; falls back to bleeps."
+            if ($voiceTtsEngine -eq 'edge_tts') {
+                Write-Info 'Install: pip install "edge-tts>=6.1.0,<8.0.0"'
+            } elseif ($voiceTtsEngine -eq 'kokoro') {
+                Write-Info 'Install: pip install "kokoro>=0.9.4" soundfile'
+                Write-Info 'Also install espeak-ng and add it to PATH (required by Kokoro).'
+            } else {
+                Write-Info 'Install: pip install "pyttsx3>=2.90,<3.0.0"'
+            }
         } else {
             Write-Info "VOICE_OUTPUT_MODE=$voiceOutputMode (TTS check: $ttsStatus)"
         }
@@ -606,6 +911,11 @@ function Invoke-StandardChecks {
         @{ Name = 'longterm_memory.jsonl'; Label = 'long-term searchable memory' }
         @{ Name = 'companion_stats.json'; Label = 'companion stats (Virus Registry)' }
         @{ Name = 'notepad.txt'; Label = 'dashboard notepad' }
+        @{ Name = 'dreams.jsonl'; Label = 'dream journal (v4 — created on first deep sleep)' }
+        @{ Name = 'tasks.json'; Label = 'task keeper (v4 — created on first add_task)' }
+        @{ Name = 'emotional_state.json'; Label = 'emotion engine state (v5 — created on first event)' }
+        @{ Name = 'emotional_history.jsonl'; Label = 'emotional history (v5 — created on first event)' }
+        @{ Name = 'audit_log.jsonl'; Label = 'system-change audit log (v5 — created on first change)' }
     )
     foreach ($pf in $phase1Files) {
         $p = Join-Path $memoryDir $pf.Name
@@ -651,6 +961,34 @@ function Invoke-StandardChecks {
     $enableCmdExec = (Get-ConfigValue -Key 'ENABLE_COMMAND_EXECUTION' -Default 'yes') -match '^(?i)yes$'
     if (-not $enableCmdExec) {
         Write-Info 'ENABLE_COMMAND_EXECUTION=no - all OS commands blocked (speak/idle still work).'
+    }
+    # v5.0.0 — live "Start Agetha when I sign in" status (read-only; never mutates)
+    $autostartStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'autostart'
+    switch -Regex ($autostartStatus) {
+        '^AUTOSTART_ON$' {
+            Write-Ok 'Start Agetha when I sign in: ON (valid Startup-folder shortcut present).'
+        }
+        '^AUTOSTART_OFF$' {
+            Write-Info 'Start Agetha when I sign in: OFF (no Startup shortcut).'
+        }
+        '^AUTOSTART_MALFORMED$' {
+            Write-Warn 'Start Agetha when I sign in: malformed Agetha.lnk in Startup (left untouched).'
+        }
+        '^AUTOSTART_FOREIGN$' {
+            Write-Warn 'Start Agetha when I sign in: foreign Agetha.lnk in Startup (left untouched).'
+        }
+        '^AUTOSTART_UNAVAILABLE$' {
+            Write-Info 'Start Agetha when I sign in: unavailable (non-Windows).'
+        }
+        default {
+            Write-Info "Start Agetha when I sign in: status check skipped ($autostartStatus)."
+        }
+    }
+    $enableAutostartCtrl = (Get-ConfigValue -Key 'ENABLE_AUTOSTART_CONTROL' -Default 'no') -match '^(?i)yes$'
+    if ($enableAutostartCtrl) {
+        Write-Info 'ENABLE_AUTOSTART_CONTROL=yes - set_autostart command allowed (Danger confirmation still required).'
+    } else {
+        Write-Info 'ENABLE_AUTOSTART_CONTROL=no - set_autostart command disabled (safe default).'
     }
     $conv = Join-Path $Script:Root 'conversation.txt'
     if (-not (Test-Path -LiteralPath $conv)) {
@@ -716,9 +1054,13 @@ function Invoke-StandardChecks {
         'main.py', 'medic_helper.py',
         'agetha\app_config.py', 'agetha\utils.py',
         'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
+        'agetha\core\rhythm.py', 'agetha\core\dreams.py',
+        'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py',
         'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
         'agetha\platform\screen_reader.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
-        'agetha\features\tts_player.py', 'agetha\features\web_rag.py',
+        'agetha\platform\autostart.py', 'agetha\platform\win_integration.py',
+        'agetha\features\tts_player.py', 'agetha\features\web_rag.py', 'agetha\features\tasks.py',
+        'agetha\features\status_providers.py', 'agetha\features\tray_scaffold.py',
         'agetha\ui\dashboard.py', 'agetha\ui\w95_window.py', 'agetha\ui\glitch_overlay.py', 'agetha\ui\virus_trivia.py'
     )
     $compileFail = $false
@@ -736,7 +1078,7 @@ function Invoke-StandardChecks {
     }
     $featStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'features'
     if ($featStatus -eq 'FEATURE_OK') {
-        Write-Ok 'Phase 1-4 modules import cleanly (memory_search, companion_stats, dashboard, tts_player, web_rag, glitch_overlay, virus_trivia, w95_window).'
+        Write-Ok 'Phase 1-6 modules import cleanly (memory_search, companion_stats, rhythm, dreams, tasks, emotion_engine, emotional_history, audit_log, autostart, win_integration, status_providers, tray_scaffold, dashboard, tts_player, web_rag, glitch_overlay, virus_trivia, w95_window).'
     } elseif ($featStatus -match '^FEATURE_FAIL:') {
         Write-Warn "Extension module import issue: $($featStatus.Substring(12))"
     }
@@ -771,9 +1113,13 @@ $coreFiles = @(
     'main.py', 'medic_helper.py', 'requirements.txt',
     'agetha\app_config.py', 'agetha\utils.py',
     'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
+    'agetha\core\rhythm.py', 'agetha\core\dreams.py',
+    'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py',
     'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
     'agetha\platform\screen_reader.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
-    'agetha\features\tts_player.py', 'agetha\features\web_rag.py',
+    'agetha\platform\autostart.py', 'agetha\platform\win_integration.py',
+    'agetha\features\tts_player.py', 'agetha\features\web_rag.py', 'agetha\features\tasks.py',
+    'agetha\features\status_providers.py', 'agetha\features\tray_scaffold.py',
     'agetha\ui\dashboard.py', 'agetha\ui\w95_window.py', 'agetha\ui\glitch_overlay.py', 'agetha\ui\virus_trivia.py'
 )
 $missingCore = $coreFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Script:Root $_)) }
@@ -783,7 +1129,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (v3.7.0 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (v5.0.0 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut

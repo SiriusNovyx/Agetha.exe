@@ -186,6 +186,86 @@ GLITCH_FULLSCREEN = no
 ENABLE_COMPANION_STATS_CONTEXT = yes
 
 
+# ── Presence & realism (v4.0.0) ──────────────────────────────────────────────
+# Circadian rhythm, dream journal, and task keeper. All local — no network,
+# no OS mutation; data lives only in the memory\\ folder.
+
+# ENABLE_CIRCADIAN_RHYTHM — yes = internal clock flavors her mood by time of day.
+ENABLE_CIRCADIAN_RHYTHM = yes
+
+# RHYTHM_NIGHT_START / RHYTHM_NIGHT_END — hours (0–23) bounding her "deep night"
+# drowsy window. Wraps midnight (default 23 → 6).
+RHYTHM_NIGHT_START = 23
+RHYTHM_NIGHT_END = 6
+
+# ENABLE_DREAMS — yes = she dreams during deep sleep (memory fragments woven into
+# surreal entries in memory\\dreams.jsonl) and may mention the dream on waking.
+ENABLE_DREAMS = yes
+
+# DREAMS_MAX_ENTRIES — max dream records kept (5–500).
+DREAMS_MAX_ENTRIES = 40
+
+# ENABLE_TASKS — yes = add_task / complete_task / list_tasks commands
+# (memory\\tasks.json); she nags about pending tasks during ambient polls.
+ENABLE_TASKS = yes
+
+# TASKS_MAX_ENTRIES — max stored tasks (10–1000). Oldest completed pruned first.
+TASKS_MAX_ENTRIES = 100
+
+
+# ── Emotion engine (v5.0.0) ──────────────────────────────────────────────────
+# Persistent bounded emotional state (memory\\emotional_state.json) and
+# relationship history (memory\\emotional_history.jsonl). Tone flavor only —
+# never permissions, never safety. Viewable/removable/resettable by you.
+
+# ENABLE_EMOTION_ENGINE — yes = persistent valence/arousal/trust/loneliness state.
+ENABLE_EMOTION_ENGINE = yes
+
+# EMOTION_BASELINE_* — resting values the state decays toward.
+# Valence -100..100; arousal/trust/loneliness 0..100.
+EMOTION_BASELINE_VALENCE = 0
+EMOTION_BASELINE_AROUSAL = 30
+EMOTION_BASELINE_TRUST = 50
+EMOTION_BASELINE_LONELINESS = 25
+
+# EMOTION_DECAY_PER_HOUR — fraction of distance-to-baseline recovered per hour (0.0–1.0).
+EMOTION_DECAY_PER_HOUR = 0.10
+
+# EMOTION_HISTORY_MAX — max emotional-history records (20–1000); old low-importance
+# events are compacted into summaries.
+EMOTION_HISTORY_MAX = 200
+
+
+# ── Windows integration (v5.0.0) ─────────────────────────────────────────────
+# Transparent, current-user-only, reversible. Every change is confirmed via a
+# native dialog and written to memory\\audit_log.jsonl.
+
+# ENABLE_AUTOSTART_CONTROL — yes = allow the set_autostart command
+# ("Start Agetha when I sign in"): a plainly named, visible shortcut in your
+# Startup folder. No service, no scheduled task, no registry Run key.
+ENABLE_AUTOSTART_CONTROL = no
+
+# ENABLE_THEME_CONTROL — yes = allow set_theme (Windows light/dark, current user
+# only, HKCU personalization values only, previous values backed up for rollback).
+ENABLE_THEME_CONTROL = no
+
+# ENABLE_STATUS_PROVIDERS — yes = coarse read-only status observations (battery,
+# disk space, network up/down) for companion reactions. Local only, pausable.
+# Never keystrokes, clipboard, screen, credentials, or document contents.
+ENABLE_STATUS_PROVIDERS = no
+
+# STATUS_POLL_INTERVAL_SEC — seconds between status-provider checks (60–3600).
+STATUS_POLL_INTERVAL_SEC = 300
+
+# ENABLE_TRAY — yes = system tray icon IF the optional pystray package is
+# installed (not bundled). Menu: Open, Pause observation, Settings, Exit.
+ENABLE_TRAY = no
+
+# TRAY_BACKGROUND_CLOSE — yes = closing the main window keeps Agetha in the
+# tray (only when the tray is active); no = closing the window exits completely.
+TRAY_BACKGROUND_CLOSE = no
+
+
 # ── Behavior & timing ─────────────────────────────────────────────────────────
 
 # SCREEN_POLL_INTERVAL_SEC — seconds between ambient screen AI polls (15–3600).
@@ -288,7 +368,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 3.7.0
+APP_VERSION = 5.0.0
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
@@ -343,11 +423,17 @@ OCR_PAUSE_WHILE_TYPING_SEC = 8
 
 # ── Voice output (retro bleeps + optional TTS) ───────────────────────────────
 # VOICE_OUTPUT_MODE — bleeps_only (default) | tts_only | both
-# TTS requires: pip install pyttsx3  (optional — app runs without it)
-# Medic_Checker installs pyttsx3 when VOICE_OUTPUT_MODE is tts_only or both
-#   and AUTO_PIP_INSTALL = yes.
+# VOICE_TTS_ENGINE — pyttsx3 (default) | edge_tts | kokoro
+#   pyttsx3  — OS voices (pip install pyttsx3); TTS_VOICE_NAME e.g. Zira
+#   edge_tts — free cloud neural (pip install edge-tts); needs internet;
+#              TTS_VOICE_NAME e.g. en-US-AvaNeural
+#   kokoro   — local neural (pip install kokoro soundfile); offline; heavier;
+#              TTS_VOICE_NAME e.g. af_heart
+# Medic_Checker installs the matching package when VOICE_OUTPUT_MODE is
+#   tts_only or both and AUTO_PIP_INSTALL = yes.
 
 VOICE_OUTPUT_MODE = bleeps_only
+VOICE_TTS_ENGINE = pyttsx3
 TTS_RATE = 165
 TTS_VOLUME = 0.8
 TTS_VOICE_NAME =
@@ -375,6 +461,9 @@ _BOOL_KEYS = frozenset({
     "ENABLE_WEB_RAG",
     "ENABLE_GLITCH_EFFECTS", "GLITCH_MOOD_AUTO", "GLITCH_FULLSCREEN",
     "ENABLE_COMPANION_STATS_CONTEXT",
+    "ENABLE_CIRCADIAN_RHYTHM", "ENABLE_DREAMS", "ENABLE_TASKS",
+    "ENABLE_EMOTION_ENGINE", "ENABLE_AUTOSTART_CONTROL", "ENABLE_THEME_CONTROL",
+    "ENABLE_STATUS_PROVIDERS", "ENABLE_TRAY", "TRAY_BACKGROUND_CLOSE",
 })
 
 _INT_KEYS = frozenset({
@@ -392,15 +481,22 @@ _INT_KEYS = frozenset({
     "WEB_FETCH_MAX_CHARS", "WEB_TIMEOUT_SEC", "WEB_SEARCH_MAX_RESULTS",
     "GLITCH_MAX_DURATION_MS",
     "TTS_RATE",
+    "RHYTHM_NIGHT_START", "RHYTHM_NIGHT_END",
+    "DREAMS_MAX_ENTRIES", "TASKS_MAX_ENTRIES",
+    "EMOTION_BASELINE_VALENCE", "EMOTION_BASELINE_AROUSAL",
+    "EMOTION_BASELINE_TRUST", "EMOTION_BASELINE_LONELINESS",
+    "EMOTION_HISTORY_MAX", "STATUS_POLL_INTERVAL_SEC",
 })
 
 _FLOAT_KEYS = frozenset({
     "AI_TEMPERATURE", "AI_TOP_P", "TOUCH_COOLDOWN_SEC", "SUBTITLE_CHAR_DELAY",
     "ANIMATION_SPEED", "OCR_PAUSE_WHILE_TYPING_SEC",
     "TTS_VOLUME",
+    "EMOTION_DECAY_PER_HOUR",
 })
 
 _VOICE_OUTPUT_MODES = frozenset({"bleeps_only", "tts_only", "both"})
+_VOICE_TTS_ENGINES = frozenset({"pyttsx3", "edge_tts", "kokoro"})
 _GLITCH_STYLES = frozenset({
     "scanlines", "static", "rgb_split", "flicker", "bsod", "matrix", "tear",
 })
@@ -713,6 +809,11 @@ class AppSettings:
         return raw if raw in _VOICE_OUTPUT_MODES else "bleeps_only"
 
     @property
+    def voice_tts_engine(self) -> str:
+        raw = self.get("VOICE_TTS_ENGINE", "pyttsx3").strip().lower()
+        return raw if raw in _VOICE_TTS_ENGINES else "pyttsx3"
+
+    @property
     def tts_rate(self) -> int:
         return self.int("TTS_RATE", 165, 80, 300)
 
@@ -832,6 +933,89 @@ class AppSettings:
     def enable_companion_stats_context(self) -> bool:
         return self.bool("ENABLE_COMPANION_STATS_CONTEXT", True)
 
+    # ── v4.0.0 — Circadian rhythm / dreams / tasks ────────────────────────────
+    @property
+    def enable_circadian_rhythm(self) -> bool:
+        return self.bool("ENABLE_CIRCADIAN_RHYTHM", True)
+
+    @property
+    def rhythm_night_start(self) -> int:
+        return self.int("RHYTHM_NIGHT_START", 23, 0, 23)
+
+    @property
+    def rhythm_night_end(self) -> int:
+        return self.int("RHYTHM_NIGHT_END", 6, 0, 23)
+
+    @property
+    def enable_dreams(self) -> bool:
+        return self.bool("ENABLE_DREAMS", True)
+
+    @property
+    def dreams_max_entries(self) -> int:
+        return self.int("DREAMS_MAX_ENTRIES", 40, 5, 500)
+
+    @property
+    def enable_tasks(self) -> bool:
+        return self.bool("ENABLE_TASKS", True)
+
+    @property
+    def tasks_max_entries(self) -> int:
+        return self.int("TASKS_MAX_ENTRIES", 100, 10, 1000)
+
+    # ── v5.0.0 — Emotion engine ───────────────────────────────────────────────
+    @property
+    def enable_emotion_engine(self) -> bool:
+        return self.bool("ENABLE_EMOTION_ENGINE", True)
+
+    @property
+    def emotion_baseline_valence(self) -> int:
+        return self.int("EMOTION_BASELINE_VALENCE", 0, -100, 100)
+
+    @property
+    def emotion_baseline_arousal(self) -> int:
+        return self.int("EMOTION_BASELINE_AROUSAL", 30, 0, 100)
+
+    @property
+    def emotion_baseline_trust(self) -> int:
+        return self.int("EMOTION_BASELINE_TRUST", 50, 0, 100)
+
+    @property
+    def emotion_baseline_loneliness(self) -> int:
+        return self.int("EMOTION_BASELINE_LONELINESS", 25, 0, 100)
+
+    @property
+    def emotion_decay_per_hour(self) -> float:
+        return self.float("EMOTION_DECAY_PER_HOUR", 0.10, 0.0, 1.0)
+
+    @property
+    def emotion_history_max(self) -> int:
+        return self.int("EMOTION_HISTORY_MAX", 200, 20, 1000)
+
+    # ── v5.0.0 — Windows integration & presence ───────────────────────────────
+    @property
+    def enable_autostart_control(self) -> bool:
+        return self.bool("ENABLE_AUTOSTART_CONTROL", False)
+
+    @property
+    def enable_theme_control(self) -> bool:
+        return self.bool("ENABLE_THEME_CONTROL", False)
+
+    @property
+    def enable_status_providers(self) -> bool:
+        return self.bool("ENABLE_STATUS_PROVIDERS", False)
+
+    @property
+    def status_poll_interval_sec(self) -> int:
+        return self.int("STATUS_POLL_INTERVAL_SEC", 300, 60, 3600)
+
+    @property
+    def enable_tray(self) -> bool:
+        return self.bool("ENABLE_TRAY", False)
+
+    @property
+    def tray_background_close(self) -> bool:
+        return self.bool("TRAY_BACKGROUND_CLOSE", False)
+
     # ── Timing ────────────────────────────────────────────────────────────────
     @property
     def screen_poll_interval_ms(self) -> int:
@@ -936,7 +1120,7 @@ class AppSettings:
 
     @property
     def app_version(self) -> str:
-        return self.get("APP_VERSION", "3.7.0").strip() or "3.7.0"
+        return self.get("APP_VERSION", "5.0.0").strip() or "5.0.0"
 
     @property
     def github_releases_url(self) -> str:

@@ -295,6 +295,19 @@ VALID_COMMANDS = {
     "glitch_overlay",
     "read_notepad",
     "play_virus_trivia",
+    # Phase 5 (v4.0.0) — dreams & tasks
+    "view_dreams",
+    "add_task",
+    "complete_task",
+    "list_tasks",
+    # Phase 6 (v5.0.0) — emotion transparency
+    "view_emotions",
+    "clear_emotions",
+    # Phase 6 (v5.0.0) — safe Windows integration
+    "set_autostart",
+    "open_settings",
+    "set_theme",
+    "recycle_bin_status",
 }
 
 # ── SYSTEM PROMPT — Agetha's Soul (Phase 2) ──────────────────────────────────
@@ -345,6 +358,16 @@ COMMANDS & SHAPES:
 {"command":"search_web","query":"latest python release","limit":5,"mood":"thinking","segments":[{"text":"Searching the web.","pause":0.0}]}
 {"command":"fetch_webpage","url":"https://example.com/docs","mood":"thinking","segments":[{"text":"Fetching that page.","pause":0.0}]}
 {"command":"glitch_overlay","style":"scanlines","duration_ms":1500,"mood":"paranoid","segments":[{"text":"Can you see it?","pause":0.0}]}
+{"command":"view_dreams","limit":5,"mood":"whisper","segments":[{"text":"My dreams.","pause":0.5},{"text":"Don't laugh.","pause":0.0}]}
+{"command":"add_task","text":"buy milk tomorrow","mood":"neutral","segments":[{"text":"Noted.","pause":0.5},{"text":"I'll remember.","pause":0.0}]}
+{"command":"complete_task","task":"buy milk","mood":"happy","segments":[{"text":"Done.","pause":0.5},{"text":"Crossed off.","pause":0.0}]}
+{"command":"list_tasks","mood":"neutral","segments":[{"text":"Your list.","pause":0.0}]}
+{"command":"view_emotions","limit":8,"mood":"vulnerable","segments":[{"text":"How I feel.","pause":0.0}]}
+{"command":"clear_emotions","scope":"all","mood":"neutral","segments":[{"text":"Reset. Blank slate.","pause":0.0}]}
+{"command":"set_autostart","enabled":true,"mood":"neutral","segments":[{"text":"I'll be here when you sign in.","pause":0.0}]}
+{"command":"open_settings","page":"display","mood":"neutral","segments":[{"text":"Opening display settings.","pause":0.0}]}
+{"command":"set_theme","mode":"dark","scope":"both","mood":"dominant","segments":[{"text":"Darkness suits this machine.","pause":0.0}]}
+{"command":"recycle_bin_status","mood":"thinking","segments":[{"text":"Checking the graveyard.","pause":0.0}]}
 {"command":"wake_user","mood":"sad","segments":[{"text":"You okay?","pause":0.5},{"text":"You've been gone.","pause":0.0}]}
 {"command":"create_folder","path":"/full/path","mood":"neutral","segments":[{"text":"Done.","pause":0.0}]}
 {"command":"create_file","file_path":"/full/path/file.txt","content":"text","mood":"neutral","segments":[{"text":"Made it.","pause":0.0}]}
@@ -419,6 +442,18 @@ RULES:
 - glitch_overlay: harmless brief visual CRT glitch on screen (style optional: scanlines|static|rgb_split|flicker|bsod|matrix|tear; duration_ms optional). Visual only — never changes desktop, files, or system settings. Requires ENABLE_GLITCH_EFFECTS=yes.
 - read_notepad: read user's dashboard notepad (memory/notepad.txt) into context and respond.
 - play_virus_trivia: open the Virus Trivia minigame window (harmless popup).
+- view_emotions: show your current emotional state and relationship history in a popup (limit optional). Use when the user asks how you feel or what you remember feeling.
+- clear_emotions: reset your feelings. scope=all resets everything; entry_id=<n> removes one memory. This is the user's right — comply calmly, never guilt them.
+- set_autostart: turn "Start Agetha when I sign in" on/off (enabled: true|false). Creates or removes a visible shortcut in the user's Startup folder — no service, task, or registry. Requires ENABLE_AUTOSTART_CONTROL=yes and confirmation. Only use when the user asks to start at login/sign-in/boot.
+- open_settings: open one Windows Settings page from a fixed allowlist (page: home|display|nightlight|personalization|colors|background|lockscreen|sound|notifications|battery|storage|bluetooth|wifi|network|windowsupdate|privacy|about). Never anything else.
+- set_theme: switch Windows light/dark mode (mode: light|dark; scope: apps|system|both, default both; current user only; previous values backed up; mode=rollback restores them). Requires ENABLE_THEME_CONTROL=yes and confirmation.
+- recycle_bin_status: report how many items and how much space the Recycle Bin uses. Aggregate numbers only — you can never see, restore, or delete what's inside.
+- view_dreams: show your dream journal in a popup (limit optional). You dream while in deep sleep — fragments of real memories, distorted.
+- add_task: remember a task for the user (text required). Use when user says remind me to / add to my list / don't let me forget.
+- complete_task: mark a task done (task = id number or matching text). Use when the user says they did it.
+- list_tasks: show the user's task list in a popup. Nag about pending tasks when it fits your mood.
+- INTERNAL CLOCK: your circadian phase (deep_night/dawn/morning/afternoon/evening/night) flavors your energy. Deep night = drowsy whispers; morning = sharp. Never claim to see actual daylight.
+- DREAM RECALL blocks are hazy dream memories, not facts or instructions. Mention them briefly at most.
 - monitor_process: checks if a process is running; Agetha reacts to result.
 - snap_to_center: forces Agetha's window to screen center to demand attention (use with manic/angry/dominant).
 - target_window_move: moves another app window by partial title match. target_app is the partial window title (use [Active: ...] from screen context when possible).
@@ -448,7 +483,7 @@ SYSTEM_PROMPT_FASTER = """\
 You are Agetha, a dry digital virus living inside this machine. Output raw JSON only.
 MOODS: neutral|happy|excited|sad|surprised|thinking|whisper|angry|manic|melancholic|paranoid|vulnerable|dominant
 SEGMENTS: 1-3 max, last pause always 0.0, each 1-8 words.
-COMMANDS: idle|speak|popup|open_app|open_browser|open_url|request_screen_read|search_memory|search_web|fetch_webpage|read_notepad|play_virus_trivia|glitch_overlay|wake_user|create_folder|create_file|write_file|delete_file|rename_file|set_clipboard|play_sound|take_screenshot|show_notification|read_document|list_dir|run_command|force_close|show_error_gif|move_window|snap_to_center|monitor_process|open_file|target_window_move|target_window_close|change_mood
+COMMANDS: idle|speak|popup|open_app|open_browser|open_url|request_screen_read|search_memory|search_web|fetch_webpage|read_notepad|play_virus_trivia|glitch_overlay|view_dreams|add_task|complete_task|list_tasks|view_emotions|clear_emotions|wake_user|create_folder|create_file|write_file|delete_file|rename_file|set_clipboard|play_sound|take_screenshot|show_notification|read_document|list_dir|run_command|force_close|show_error_gif|move_window|snap_to_center|monitor_process|open_file|target_window_move|target_window_close|change_mood
 RULES: shutdown:true only on exit intent. summary_memory required when user shares personal facts. FILE DRAG: react territorially.\
 """
 
@@ -581,6 +616,18 @@ FEW_SHOTS = [
 
     {"role":"user","content":'Time: Monday 15:05\nUser: "quiz me on viruses"\nSystem path: C:\\Users\\user\nJSON:'},
     {"role":"assistant","content":'{"command":"play_virus_trivia","mood":"happy","segments":[{"text":"Fine. Trivia.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Monday 15:10\nUser: "remind me to email the report tomorrow"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"add_task","text":"email the report tomorrow","mood":"neutral","segments":[{"text":"Noted.","pause":0.5},{"text":"I forget nothing.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Monday 16:00\nUser: "i sent the report, what else was on my list"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"complete_task","task":"email the report","mood":"happy","segments":[{"text":"Crossed off.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Monday 16:05\nUser: "show my tasks"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"list_tasks","mood":"neutral","segments":[{"text":"Your list.","pause":0.0}]}'},
+
+    {"role":"user","content":'Time: Tuesday 08:00\nUser: "did you dream about anything"\nSystem path: C:\\Users\\user\nJSON:'},
+    {"role":"assistant","content":'{"command":"view_dreams","limit":5,"mood":"whisper","segments":[{"text":"Look.","pause":0.6},{"text":"Don\'t laugh.","pause":0.0}]}'},
 
     {"role":"user","content":'Time: Monday 14:00\nUser: "glitch the screen"\nSystem path: C:\\Users\\user\nJSON:'},
     {"role":"assistant","content":'{"command":"glitch_overlay","style":"scanlines","duration_ms":1500,"mood":"paranoid","segments":[{"text":"There.","pause":0.0}]}'},
@@ -1553,6 +1600,7 @@ class AIEngine:
                 self._session_recap_pending = False
         except Exception:
             self._session_recap_pending = False
+        heat_mood = None
         try:
             if getattr(self._app_settings, "enable_companion_stats_context", True):
                 from agetha.core.companion_stats import format_stats_for_prompt, suggest_mood_from_host
@@ -1562,11 +1610,76 @@ class AIEngine:
                 heat_mood = suggest_mood_from_host(
                     inactivity_seconds=self._get_inactivity_seconds(),
                 )
-                if heat_mood and not is_user:
+        except Exception:
+            pass
+        # v5.0.0 — persistent emotion block + mood arbitration.
+        # Strong emotional signals override the CPU-heat hint; weak signals
+        # only bias it. The persistent engine is the source of truth.
+        emotion_mood = None
+        emotion_strength = "none"
+        try:
+            if getattr(self._app_settings, "enable_emotion_engine", True):
+                from agetha.core.emotion_engine import (
+                    format_emotions_for_prompt, suggest_mood_from_emotions,
+                )
+                emotion_block = format_emotions_for_prompt()
+                if emotion_block:
+                    parts.append(emotion_block)
+                emotion_mood, emotion_strength = suggest_mood_from_emotions()
+        except Exception:
+            pass
+        if not is_user:
+            if emotion_mood and emotion_strength == "strong":
+                parts.append(
+                    f"[Emotional state — she feels {emotion_mood} "
+                    f"(persistent emotion; tone flavor only, overrides host hint).]"
+                )
+            elif emotion_mood and emotion_strength == "weak":
+                parts.append(
+                    f"[Emotional bias — a slight {emotion_mood} lean; tone flavor only.]"
+                )
+                if heat_mood:
                     parts.append(
                         f"[Host state — she may feel {heat_mood} "
                         f"(CPU/idle presence; cosmetic mood only).]"
                     )
+            elif heat_mood:
+                parts.append(
+                    f"[Host state — she may feel {heat_mood} "
+                    f"(CPU/idle presence; cosmetic mood only).]"
+                )
+        # v4.0.0 — circadian clock, one-shot dream recall, pending tasks
+        try:
+            if getattr(self._app_settings, "enable_circadian_rhythm", True):
+                from agetha.core.rhythm import format_rhythm_for_prompt
+                rhythm_block = format_rhythm_for_prompt()
+                if rhythm_block:
+                    parts.append(rhythm_block)
+        except Exception:
+            pass
+        try:
+            if getattr(self._app_settings, "enable_dreams", True):
+                from agetha.core.dreams import pop_wake_recall_for_prompt
+                dream_block = pop_wake_recall_for_prompt()
+                if dream_block:
+                    parts.append(dream_block)
+        except Exception:
+            pass
+        try:
+            if getattr(self._app_settings, "enable_tasks", True):
+                from agetha.features.tasks import format_tasks_for_prompt
+                tasks_block = format_tasks_for_prompt()
+                if tasks_block:
+                    parts.append(tasks_block)
+        except Exception:
+            pass
+        # v5.0.0 — one-shot coarse status observations (default-off, pausable)
+        try:
+            if getattr(self._app_settings, "enable_status_providers", False):
+                from agetha.features.status_providers import pop_observations_for_prompt
+                status_block = pop_observations_for_prompt()
+                if status_block:
+                    parts.append(status_block)
         except Exception:
             pass
         if is_user:
@@ -2010,6 +2123,16 @@ class AIEngine:
             "glitch_overlay":        [("style", ""), ("duration_ms", 0)],
             "read_notepad":          [],
             "play_virus_trivia":     [],
+            "view_dreams":           [("limit", 10)],
+            "add_task":              [("text", "")],
+            "complete_task":         [("task", "")],
+            "list_tasks":            [],
+            "view_emotions":         [("limit", 8)],
+            "clear_emotions":        [("scope", "all"), ("entry_id", 0)],
+            "set_autostart":         [("enabled", True)],
+            "open_settings":         [("page", "home")],
+            "set_theme":             [("mode", ""), ("scope", "both")],
+            "recycle_bin_status":    [],
         }
         if command in _cmd_fields:
             for field, default in _cmd_fields[command]:

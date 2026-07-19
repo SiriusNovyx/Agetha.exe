@@ -368,9 +368,13 @@ try {{
 }}
 """
             encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
+            # Prefer CREATE_NO_WINDOW over -WindowStyle Hidden (latter can minimize caller console).
+            popen_kw: dict = {"shell": False}
+            if IS_WINDOWS:
+                popen_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
             subprocess.Popen(
-                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
-                shell=False,
+                ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                **popen_kw,
             )
             return "[notification sent]"
         if IS_MACOS:

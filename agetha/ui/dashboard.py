@@ -27,6 +27,80 @@ NOTEPAD_FILE = BASE_DIR / "memory" / "notepad.txt"
 
 _POLL_MS = 2000
 
+# Curated voice ids shown in Settings for each VOICE_TTS_ENGINE.
+_EDGE_TTS_VOICES: tuple[str, ...] = (
+    "en-US-AvaNeural",
+    "en-US-JennyNeural",
+    "en-US-GuyNeural",
+    "en-US-AriaNeural",
+    "en-US-ChristopherNeural",
+    "en-US-EricNeural",
+    "en-US-MichelleNeural",
+    "en-US-RogerNeural",
+    "en-GB-SoniaNeural",
+    "en-GB-RyanNeural",
+    "en-AU-NatashaNeural",
+    "en-AU-WilliamNeural",
+)
+_KOKORO_VOICES: tuple[str, ...] = (
+    "af_heart",
+    "af_bella",
+    "af_nicole",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_michael",
+    "bf_emma",
+    "bf_isabella",
+    "bm_george",
+    "bm_lewis",
+)
+_PYTTSX3_FALLBACK_VOICES: tuple[str, ...] = ("Zira", "David", "Hazel", "Mark")
+
+
+def _list_pyttsx3_voices() -> tuple[str, ...]:
+    """Installed OS TTS short names; falls back to common Windows voices."""
+    try:
+        import pyttsx3  # type: ignore[import-untyped]
+
+        engine = pyttsx3.init()
+        found: list[str] = []
+        seen: set[str] = set()
+        for voice in engine.getProperty("voices") or []:
+            name = str(getattr(voice, "name", "") or "").strip()
+            if not name:
+                continue
+            # Prefer a short token the existing substring matcher can use (e.g. Zira).
+            short = name
+            for token in ("Zira", "David", "Hazel", "Mark", "Susan", "George"):
+                if token.lower() in name.lower():
+                    short = token
+                    break
+            if short.lower() not in seen:
+                seen.add(short.lower())
+                found.append(short)
+        if found:
+            return tuple(found)
+    except Exception:
+        pass
+    return _PYTTSX3_FALLBACK_VOICES
+
+
+def _tts_voice_choices(engine: str) -> tuple[str, ...]:
+    """Voice dropdown options for the selected TTS engine."""
+    name = (engine or "pyttsx3").strip().lower()
+    if name == "edge_tts":
+        return _EDGE_TTS_VOICES
+    if name == "kokoro":
+        return _KOKORO_VOICES
+    return _list_pyttsx3_voices()
+
+
+def _default_tts_voice(engine: str) -> str:
+    choices = _tts_voice_choices(engine)
+    return choices[0] if choices else ""
+
+
 # kind: "bool" | "text" | "choice"
 # needs_restart: True = Agetha must restart for full effect
 # launcher_only: True = Medic_Checker only (no Agetha restart warning)
@@ -154,9 +228,11 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
             ("ENABLE_VOICE", "bool", True, ()),
             ("USE_LOCAL_STT", "bool", True, ()),
             ("VOICE_OUTPUT_MODE", "choice", True, ("bleeps_only", "tts_only", "both")),
+            ("VOICE_TTS_ENGINE", "choice", True, ("pyttsx3", "edge_tts", "kokoro")),
             ("TTS_RATE", "text", True, ()),
             ("TTS_VOLUME", "text", True, ()),
-            ("TTS_VOICE_NAME", "text", True, ()),
+            # Choices filled dynamically from VOICE_TTS_ENGINE (see settings UI).
+            ("TTS_VOICE_NAME", "choice", True, ()),
         ),
     ),
     (
@@ -573,6 +649,30 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         text="* = requires restarting Agetha   ·   Medic section applies on next Medic_Checker run",
         bg=W95_BG, fg=W95_WARN, font=W95_FONT, anchor="w",
     ).pack(fill="x", pady=(2, 0))
+    # v5.0.0 — live read-only status lines (never fail, never mutate state)
+    _live_lines: list[str] = []
+    try:
+        from agetha.platform.autostart import status_line as _autostart_status
+        _live_lines.append(_autostart_status())
+    except Exception:
+        pass
+    try:
+        from agetha.features.status_providers import status_summary as _status_sum
+        _live_lines.append(_status_sum())
+    except Exception:
+        pass
+    try:
+        from agetha.features.tray_scaffold import tray_summary as _tray_sum
+        _live_lines.append(_tray_sum())
+    except Exception:
+        pass
+    for _line in _live_lines:
+        tk.Label(
+            header,
+            text=_line,
+            bg=W95_BG, fg=W95_TEXT, font=W95_FONT, anchor="w",
+            wraplength=500, justify="left",
+        ).pack(fill="x", pady=(2, 0))
 
     canvas_host = tk.Frame(settings_frame, bg=W95_BG)
     canvas_host.pack(fill="both", expand=True, padx=8, pady=4)
@@ -621,6 +721,9 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     def _mark_dirty(_key: str | None = None) -> None:
         status_var.set("Unsaved changes — click Apply settings.")
 
+    voice_menu_ref: dict[str, Any] = {}
+    voice_hint_var = tk.StringVar(value="")
+
     for section_title, items in _SETTING_SECTIONS:
         tk.Label(
             settings_inner, text=section_title,
@@ -640,15 +743,37 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
                 editors[key] = ("bool", var)
             elif kind == "choice":
                 tk.Label(row, text=label, width=28, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
-                current = str(raw_cfg.get(key, choices[0] if choices else "")).strip()
-                if current not in choices and choices:
-                    current = choices[0]
+                effective_choices = choices
+                if key == "TTS_VOICE_NAME":
+                    engine_now = str(raw_cfg.get("VOICE_TTS_ENGINE", "pyttsx3")).strip().lower()
+                    if "VOICE_TTS_ENGINE" in editors:
+                        engine_now = str(editors["VOICE_TTS_ENGINE"][1].get()).strip().lower()
+                    effective_choices = _tts_voice_choices(engine_now)
+                current = str(raw_cfg.get(key, effective_choices[0] if effective_choices else "")).strip()
+                if effective_choices and current not in effective_choices:
+                    # Keep custom/config value visible if possible by prepending it.
+                    if key == "TTS_VOICE_NAME" and current:
+                        effective_choices = (current, *effective_choices)
+                    else:
+                        current = effective_choices[0] if effective_choices else current
+                if not effective_choices:
+                    effective_choices = (current or _default_tts_voice("pyttsx3"),)
                 var = tk.StringVar(value=current)
-                om = tk.OptionMenu(row, var, *choices)
+                om = tk.OptionMenu(row, var, *effective_choices)
                 om.configure(bg=W95_BTN_BG, fg=W95_TEXT, font=W95_FONT, activebackground=W95_BTN_BG)
                 om.pack(side="left", fill="x", expand=True)
                 var.trace_add("write", lambda *_a, k=key: _mark_dirty(k))
                 editors[key] = ("choice", var)
+                if key == "TTS_VOICE_NAME":
+                    voice_menu_ref["menu"] = om
+                    voice_menu_ref["var"] = var
+                    voice_hint_var.set(
+                        f"Voices for {str(raw_cfg.get('VOICE_TTS_ENGINE', 'pyttsx3')).strip().lower() or 'pyttsx3'}"
+                    )
+                    tk.Label(
+                        settings_inner, textvariable=voice_hint_var,
+                        bg=W95_BG, fg=W95_SHADOW, font=W95_FONT, anchor="w",
+                    ).pack(fill="x", padx=(4, 0), pady=(0, 2))
             else:
                 tk.Label(row, text=label, width=28, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
                 var = tk.StringVar(value=str(raw_cfg.get(key, "")))
@@ -656,6 +781,43 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
                 entry.pack(side="left", fill="x", expand=True)
                 var.trace_add("write", lambda *_a, k=key: _mark_dirty(k))
                 editors[key] = ("text", var)
+
+    def _sync_tts_voice_options(*_args: Any, mark_dirty: bool = True) -> None:
+        """When VOICE_TTS_ENGINE changes, refresh TTS_VOICE_NAME dropdown choices."""
+        try:
+            if "VOICE_TTS_ENGINE" not in editors or "menu" not in voice_menu_ref:
+                return
+            engine = str(editors["VOICE_TTS_ENGINE"][1].get()).strip().lower() or "pyttsx3"
+            choices = list(_tts_voice_choices(engine))
+            if not choices:
+                choices = [_default_tts_voice(engine)]
+            voice_var: tk.StringVar = voice_menu_ref["var"]
+            om: tk.OptionMenu = voice_menu_ref["menu"]
+            prev = str(voice_var.get()).strip()
+            menu = om["menu"]
+            menu.delete(0, "end")
+            for choice in choices:
+                menu.add_command(
+                    label=choice,
+                    command=lambda value=choice, v=voice_var: v.set(value),
+                )
+            # Keep current voice only if it belongs to the new engine; else pick default.
+            if prev in choices:
+                voice_var.set(prev)
+            else:
+                voice_var.set(choices[0])
+            voice_hint_var.set(f"Voices for {engine}")
+            if mark_dirty:
+                _mark_dirty("TTS_VOICE_NAME")
+        except Exception as exc:
+            logger.warning(f"dashboard: TTS voice options sync failed: {exc}")
+
+    if "VOICE_TTS_ENGINE" in editors:
+        editors["VOICE_TTS_ENGINE"][1].trace_add(
+            "write",
+            lambda *_a: _sync_tts_voice_options(mark_dirty=True),
+        )
+        _sync_tts_voice_options(mark_dirty=False)
 
     footer = tk.Frame(settings_frame, bg=W95_BG)
     footer.pack(fill="x", padx=8, pady=(0, 8))

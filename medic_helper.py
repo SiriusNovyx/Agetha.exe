@@ -157,19 +157,35 @@ def cmd_tts_deps() -> None:
     if mode not in ("tts_only", "both"):
         print("TTS_SKIP")
         return
+    engine = _config_flag("VOICE_TTS_ENGINE", "pyttsx3")
     try:
-        import pyttsx3  # noqa: F401
-        print("TTS_OK")
+        if engine == "edge_tts":
+            import edge_tts  # noqa: F401
+        elif engine == "kokoro":
+            from kokoro import KPipeline  # noqa: F401
+        else:
+            import pyttsx3  # noqa: F401
+        print(f"TTS_OK:{engine}")
     except ImportError:
-        print("TTS_MISSING")
+        print(f"TTS_MISSING:{engine}")
 
 
 def cmd_feature_modules() -> None:
-    """Verify Phase 1–4 extension modules import (no Tk mainloop)."""
+    """Verify Phase 1–6 extension modules import (no Tk mainloop)."""
     failures: list[str] = []
     for mod in (
         "agetha.core.memory_search",
         "agetha.core.companion_stats",
+        "agetha.core.rhythm",
+        "agetha.core.dreams",
+        "agetha.core.emotion_engine",
+        "agetha.core.emotional_history",
+        "agetha.core.audit_log",
+        "agetha.platform.autostart",
+        "agetha.platform.win_integration",
+        "agetha.features.tasks",
+        "agetha.features.status_providers",
+        "agetha.features.tray_scaffold",
         "agetha.ui.dashboard",
         "agetha.features.tts_player",
         "agetha.features.web_rag",
@@ -216,6 +232,30 @@ def cmd_realism_apis() -> None:
             failures.append("ai_engine._screen_has_error_pattern")
     except Exception as exc:
         failures.append(f"ai_engine:{exc}")
+
+    # v4.0.0 — circadian rhythm, dream journal, task keeper
+    try:
+        from agetha.core import rhythm as rh
+        if not callable(getattr(rh, "format_rhythm_for_prompt", None)):
+            failures.append("rhythm.format_rhythm_for_prompt")
+    except Exception as exc:
+        failures.append(f"rhythm:{exc}")
+
+    try:
+        from agetha.core import dreams as dr
+        for fn in ("generate_dream", "pop_wake_recall_for_prompt", "get_recent_dreams"):
+            if not callable(getattr(dr, fn, None)):
+                failures.append(f"dreams.{fn}")
+    except Exception as exc:
+        failures.append(f"dreams:{exc}")
+
+    try:
+        from agetha.features import tasks as tk
+        for fn in ("add_task", "complete_task", "get_tasks", "format_tasks_for_prompt"):
+            if not callable(getattr(tk, fn, None)):
+                failures.append(f"tasks.{fn}")
+    except Exception as exc:
+        failures.append(f"tasks:{exc}")
 
     if failures:
         print("REALISM_FAIL:" + ";".join(failures))
@@ -311,6 +351,37 @@ def cmd_toast_shortcut() -> None:
         print(f"TOAST_FAIL:{exc}")
 
 
+def cmd_autostart_status() -> None:
+    """Read-only Startup-folder status. Never creates, removes, or rewrites shortcuts.
+
+    Prints one of:
+      AUTOSTART_ON
+      AUTOSTART_OFF
+      AUTOSTART_MALFORMED
+      AUTOSTART_FOREIGN
+      AUTOSTART_UNAVAILABLE
+      AUTOSTART_ERROR:<msg>
+    """
+    if sys.platform != "win32":
+        print("AUTOSTART_UNAVAILABLE")
+        return
+    try:
+        from agetha.platform import autostart
+        status = autostart.validate()
+        if status == autostart.STATUS_VALID:
+            print("AUTOSTART_ON")
+        elif status == autostart.STATUS_MISSING:
+            print("AUTOSTART_OFF")
+        elif status == autostart.STATUS_MALFORMED:
+            print("AUTOSTART_MALFORMED")
+        elif status == autostart.STATUS_FOREIGN:
+            print("AUTOSTART_FOREIGN")
+        else:
+            print(f"AUTOSTART_ERROR:unknown_status:{status}")
+    except Exception as exc:
+        print(f"AUTOSTART_ERROR:{exc}")
+
+
 _COMMANDS = {
     "platform": cmd_platform,
     "env": cmd_env_status,
@@ -323,6 +394,7 @@ _COMMANDS = {
     "realism": cmd_realism_apis,
     "openrouter": cmd_openrouter_module,
     "toast_shortcut": cmd_toast_shortcut,
+    "autostart": cmd_autostart_status,
 }
 
 

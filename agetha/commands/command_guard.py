@@ -57,6 +57,17 @@ class CommandGuard:
         "view_memory": SAFE, "search_memory": SAFE,
         "glitch_overlay": SAFE,
         "read_notepad": SAFE, "play_virus_trivia": SAFE,
+        # v4.0.0 — dreams & tasks live only in the app's memory/ folder
+        "view_dreams": SAFE, "add_task": SAFE, "complete_task": SAFE,
+        "list_tasks": SAFE,
+        # v5.0.0 — emotion transparency (memory/ only). Reset is confirmed.
+        "view_emotions": SAFE, "clear_emotions": CAUTION,
+        # v5.0.0 — sign-in startup: changes a visible Startup-folder shortcut.
+        "set_autostart": DANGER,
+        # v5.0.0 — safe Windows integration
+        "open_settings": CAUTION,        # allowlisted ms-settings pages only
+        "set_theme": DANGER,             # HKCU registry write (reversible)
+        "recycle_bin_status": SAFE,      # aggregate read only
         "search_web": CAUTION, "fetch_webpage": CAUTION,
         "read_document": SAFE, "get_clipboard": SAFE, "open_folder": SAFE,
         "clear_memory": CAUTION,
@@ -282,6 +293,41 @@ class CommandGuard:
             logger.error(f"Tk fallback dialog failed: {exc}")
             return not default_no
 
+    @staticmethod
+    def parse_enabled(response: dict) -> bool:
+        """Interpret the set_autostart 'enabled' flag (default True)."""
+        val = response.get("enabled", True)
+        if isinstance(val, bool):
+            return val
+        return str(val).strip().lower() in ("1", "yes", "true", "on")
+
+    @staticmethod
+    def _describe_theme(response: dict) -> str:
+        mode = (response.get("mode") or "").strip().lower()
+        scope = (response.get("scope") or "both").strip().lower()
+        if mode == "rollback":
+            return ("Roll back the last Windows theme change "
+                    "(restore the previously saved registry values).")
+        try:
+            from agetha.platform.win_integration import describe_theme_change
+            return describe_theme_change(mode, scope=scope)
+        except Exception:
+            return (
+                f"Switch Windows to {mode or '?'} mode "
+                f"(scope: {scope or 'both'}, current user, reversible)."
+            )
+
+    @staticmethod
+    def _describe_autostart(response: dict) -> str:
+        try:
+            from agetha.platform import autostart
+            return autostart.describe_change(
+                "enable" if CommandGuard.parse_enabled(response) else "disable"
+            )
+        except Exception:
+            action = "enable" if CommandGuard.parse_enabled(response) else "disable"
+            return f"{action} 'Start Agetha when I sign in' (Startup-folder shortcut)."
+
     def _format_details(self, command: str, response: dict) -> str:
         formatters: dict[str, Callable[[dict], str]] = {
             "run_command": lambda r: (
@@ -329,6 +375,18 @@ class CommandGuard:
                 f" (scope: {r.get('memory_scope', 'all') or 'all'})."
                 f" Soul.md is kept."
             ),
+            "clear_emotions": lambda r: (
+                f"Reset Agetha's emotional state/history"
+                f" (scope: {r.get('scope', 'all') or 'all'}"
+                + (f", entry #{r.get('entry_id')}" if r.get('entry_id') else "")
+                + "). This cannot be undone."
+            ),
+            "set_autostart": lambda r: CommandGuard._describe_autostart(r),
+            "open_settings": lambda r: (
+                f"Open the Windows Settings page: {r.get('page', 'home') or 'home'}"
+                f" (allowlisted ms-settings page; nothing else is launched)."
+            ),
+            "set_theme": lambda r: CommandGuard._describe_theme(r),
             "search_web": lambda r: (
                 f"Search the web for:\n\n  {(r.get('query', '???'))[:200]}"
             ),
