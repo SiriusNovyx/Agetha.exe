@@ -229,20 +229,27 @@ def _compact_unlocked(
     now: datetime,
     max_entries: int,
 ) -> list[dict[str, Any]]:
-    """Merge oldest low-importance events into summary records when over limit."""
+    """Merge oldest low-importance events into summary records when over limit.
+
+    Intent (fable): anything removed should be represented in a summary so the
+    hard cap never silently drops unsummarized history. Fold ``overflow + 1``
+    entries — room for the replacement summary — not every faded candidate and
+    not raw overflow alone (which leaves the list still over after append).
+    """
     if len(entries) <= max_entries:
         return entries
     # Oldest first; pick faded / low-importance entries to fold away
     entries.sort(key=lambda e: str(e.get("ts", "")))
     overflow = len(entries) - max_entries
+    # +1: the summary we append must fit under the cap without a silent trim.
+    need = overflow + 1
     candidates = [e for e in entries if e.get("category") != "summary"
                   and entry_weight(e, now) <= _COMPACT_WEIGHT_THRESHOLD]
-    if len(candidates) < overflow:
+    if len(candidates) < need:
         # Not enough faded ones — take the oldest non-summary events too
         extras = [e for e in entries if e.get("category") != "summary" and e not in candidates]
-        candidates.extend(extras[: overflow - len(candidates)])
-    # Fold only enough entries to clear the overflow — never every faded candidate.
-    to_fold = candidates[:overflow] if overflow > 0 else []
+        candidates.extend(extras[: need - len(candidates)])
+    to_fold = candidates[:need] if need > 0 else []
     if not to_fold:
         return entries[-max_entries:]
     fold_ids = {e.get("id") for e in to_fold}
@@ -263,6 +270,7 @@ def _compact_unlocked(
         ),
     }
     kept.append(summary_record)
+    # After folding ``need`` and appending one summary, length is exactly max.
     return kept[-max_entries:]
 
 
