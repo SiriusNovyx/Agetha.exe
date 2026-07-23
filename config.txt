@@ -7,8 +7,8 @@
 #   • Comments start with #
 #   • Booleans: yes / no  (also: true, false, 1, 0, on, off)
 #   • If a line is missing, corrupt, or has an invalid value → built-in default
-#   • Secrets: prefer .env for API keys (copy .env.example → .env)
-#             .env overrides the same key here when non-empty
+#   • Secrets: API keys go in .env ONLY (copy .env.example → .env)
+#             Never put GROQ_API_KEY* or OPENROUTER_API_KEY in this file
 #
 # After editing, restart Agetha (or re-run Medic_Checker.bat).
 # =============================================================================
@@ -16,8 +16,9 @@
 
 # ── AI Backend ───────────────────────────────────────────────────────────────
 # Priority: local Ollama > Groq / OpenRouter (cloud).
-# With both Groq + OpenRouter on, Agetha asks which to use at startup (Yes=Groq, No=OpenRouter).
-# If you pick Groq, OpenRouter still auto-starts when Groq tokens run out.
+# With both Groq + OpenRouter enabled, Agetha asks which to use at startup
+# (Yes=Groq, No=OpenRouter). If Groq is chosen, OpenRouter auto-starts when
+# Groq tokens/keys run out.
 
 # USE_LOCAL_AI — yes = use Ollama on this PC; no = use cloud APIs below.
 USE_LOCAL_AI = no
@@ -25,18 +26,25 @@ USE_LOCAL_AI = no
 # ENABLE_GROQ — yes = allow Groq API (ignored when USE_LOCAL_AI = yes).
 ENABLE_GROQ = yes
 
-# ENABLE_OPENROUTER — yes = OpenRouter fallback after Groq, or solo if Groq off.
+# ENABLE_OPENROUTER — yes = enable OpenRouter (fallback after Groq, or solo if Groq off).
 # Ignored when USE_LOCAL_AI = yes. Get a key: https://openrouter.ai/keys
 # Put OPENROUTER_API_KEY in .env only (never in this file).
+# Tip: keep ENABLE_GROQ=yes for free tier first; use OpenRouter when Groq is exhausted.
 ENABLE_OPENROUTER = no
 
 # OPENROUTER_MODEL — model slug from openrouter.ai/models
 # Use exact IDs from https://openrouter.ai/models (many ":free" variants are retired).
 # Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
-OPENROUTER_MODEL = google/gemini-2.5-flash
+OPENROUTER_MODEL = google/gemma-4-31b-it:free
 
 # FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
-FASTER_MODE = no
+FASTER_MODE = yes
+
+
+# ── Groq (API keys in .env only) ──────────────────────────────────────────────
+# Get free keys: https://console.groq.com
+# Copy .env.example → .env and set GROQ_API_KEY_1=… (up to _10 for rotation).
+# Do not put GROQ_API_KEY* lines in this file — they are ignored.
 
 # GROQ_MODEL — model name from Groq console (default: llama-3.3-70b-versatile).
 GROQ_MODEL = llama-3.3-70b-versatile
@@ -56,7 +64,7 @@ LOCAL_AI_TIMEOUT = 30
 # Controls how Agetha's brain writes replies (Groq and Ollama).
 
 # AI_TEMPERATURE — randomness (0.0 = stiff, 2.0 = chaotic). Default 0.85.
-AI_TEMPERATURE = 0.95
+AI_TEMPERATURE = 0.85
 
 # AI_MAX_TOKENS — max length of each AI reply (64–8192). Default 400.
 AI_MAX_TOKENS = 400
@@ -113,7 +121,7 @@ EPISODIC_ENTRY_MAX_CHARS = 300
 EPISODIC_MAX_ENTRIES = 50
 
 # ENABLE_LONGTERM_MEMORY — yes = dual-write summary_memory to memory/longterm_memory.jsonl.
-# Medic_Checker reports this and memory\ file status in step [6/7].
+# Medic_Checker reports this and memory/ file status in step [6/7].
 ENABLE_LONGTERM_MEMORY = yes
 
 # LONGTERM_MEMORY_MAX_RESULTS — max BM25 hits returned by search_memory command.
@@ -123,7 +131,7 @@ LONGTERM_MEMORY_MAX_RESULTS = 5
 LONGTERM_MEMORY_MAX_CHARS = 2500
 
 # ENABLE_WEB_RAG — yes = allow search_web / fetch_webpage commands (network).
-ENABLE_WEB_RAG = yes
+ENABLE_WEB_RAG = no
 
 # WEB_FETCH_MAX_CHARS — max chars of fetched page text injected into AI prompt.
 WEB_FETCH_MAX_CHARS = 8000
@@ -135,19 +143,19 @@ WEB_TIMEOUT_SEC = 10
 WEB_SEARCH_MAX_RESULTS = 5
 
 # ENABLE_GLITCH_EFFECTS — yes = allow harmless visual glitch_overlay command.
-ENABLE_GLITCH_EFFECTS = yes
+ENABLE_GLITCH_EFFECTS = no
 
 # GLITCH_MAX_DURATION_MS — max overlay lifetime (200–5000 ms).
-GLITCH_MAX_DURATION_MS = 5000
+GLITCH_MAX_DURATION_MS = 2000
 
 # GLITCH_DEFAULT_STYLE — scanlines|static|rgb_split|flicker|bsod|matrix|tear
-GLITCH_DEFAULT_STYLE = static
+GLITCH_DEFAULT_STYLE = scanlines
 
 # GLITCH_MOOD_AUTO — yes = rare mood-themed glitch on manic/angry/dominant (needs ENABLE_GLITCH_EFFECTS=yes).
-GLITCH_MOOD_AUTO = yes
+GLITCH_MOOD_AUTO = no
 
 # GLITCH_FULLSCREEN — yes = brief fullscreen overlay; no = small corner panel (safer default).
-GLITCH_FULLSCREEN = yes
+GLITCH_FULLSCREEN = no
 
 # ENABLE_COMPANION_STATS_CONTEXT — yes = inject virus-registry stats into AI prompts.
 ENABLE_COMPANION_STATS_CONTEXT = yes
@@ -155,7 +163,7 @@ ENABLE_COMPANION_STATS_CONTEXT = yes
 
 # ── Presence & realism (v4.0.0) ──────────────────────────────────────────────
 # Circadian rhythm, dream journal, and task keeper. All local — no network,
-# no OS mutation; data lives only in the memory\ folder.
+# no OS mutation; data lives only in the memory\\ folder.
 
 # ENABLE_CIRCADIAN_RHYTHM — yes = internal clock flavors her mood by time of day.
 ENABLE_CIRCADIAN_RHYTHM = yes
@@ -166,14 +174,14 @@ RHYTHM_NIGHT_START = 23
 RHYTHM_NIGHT_END = 6
 
 # ENABLE_DREAMS — yes = she dreams during deep sleep (memory fragments woven into
-# surreal entries in memory\dreams.jsonl) and may mention the dream on waking.
+# surreal entries in memory\\dreams.jsonl) and may mention the dream on waking.
 ENABLE_DREAMS = yes
 
 # DREAMS_MAX_ENTRIES — max dream records kept (5–500).
 DREAMS_MAX_ENTRIES = 40
 
 # ENABLE_TASKS — yes = add_task / complete_task / list_tasks commands
-# (memory\tasks.json); she nags about pending tasks during ambient polls.
+# (memory\\tasks.json); she nags about pending tasks during ambient polls.
 ENABLE_TASKS = yes
 
 # TASKS_MAX_ENTRIES — max stored tasks (10–1000). Oldest completed pruned first.
@@ -181,8 +189,8 @@ TASKS_MAX_ENTRIES = 100
 
 
 # ── Emotion engine (v5.0.0) ──────────────────────────────────────────────────
-# Persistent bounded emotional state (memory\emotional_state.json) and
-# relationship history (memory\emotional_history.jsonl). Tone flavor only —
+# Persistent bounded emotional state (memory\\emotional_state.json) and
+# relationship history (memory\\emotional_history.jsonl). Tone flavor only —
 # never permissions, never safety. Viewable/removable/resettable by you.
 
 # ENABLE_EMOTION_ENGINE — yes = persistent valence/arousal/trust/loneliness state.
@@ -205,7 +213,7 @@ EMOTION_HISTORY_MAX = 200
 
 # ── Windows integration (v5.0.0) ─────────────────────────────────────────────
 # Transparent, current-user-only, reversible. Every change is confirmed via a
-# native dialog and written to memory\audit_log.jsonl.
+# native dialog and written to memory\\audit_log.jsonl.
 
 # ENABLE_AUTOSTART_CONTROL — yes = allow the set_autostart command
 # ("Start Agetha when I sign in"): a plainly named, visible shortcut in your
@@ -326,7 +334,7 @@ SKIP_ASSET_CHECK = no
 AUTO_PIP_INSTALL = yes
 
 # CREATE_DESKTOP_SHORTCUT — yes = create Desktop\\Agetha.lnk on each Medic_Checker run.
-CREATE_DESKTOP_SHORTCUT = yes
+CREATE_DESKTOP_SHORTCUT = no
 
 # CHECK_FOR_UPDATES — yes = compare APP_VERSION to GITHUB_RELEASES_URL (needs URL below).
 CHECK_FOR_UPDATES = yes
@@ -339,7 +347,7 @@ APP_VERSION = 5.0.0
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
-GITHUB_RELEASES_URL = https://api.github.com/repos/SiriusNovyx/Agetha.exe/releases/latest
+GITHUB_RELEASES_URL =
 
 
 # ── Window control ────────────────────────────────────────────────────────────
@@ -363,7 +371,7 @@ DRY_RUN_MODE = no
 # Requires: SpeechRecognition, pyaudio (Medic_Checker installs when ENABLE_VOICE=yes).
 
 # ENABLE_VOICE — yes = show microphone button in UI.
-ENABLE_VOICE = yes
+ENABLE_VOICE = no
 
 # USE_LOCAL_STT — yes = faster-whisper (offline); no = Google Speech Recognition (online).
 # Local STT needs: pip install faster-whisper numpy (~75 MB model on first run).
@@ -391,9 +399,11 @@ OCR_PAUSE_WHILE_TYPING_SEC = 8
 # ── Voice output (retro bleeps + optional TTS) ───────────────────────────────
 # VOICE_OUTPUT_MODE — bleeps_only (default) | tts_only | both
 # VOICE_TTS_ENGINE — pyttsx3 (default) | edge_tts | kokoro
-#   pyttsx3  — OS voices; TTS_VOICE_NAME e.g. Zira
-#   edge_tts — free cloud neural (needs internet); TTS_VOICE_NAME e.g. en-US-AvaNeural
-#   kokoro   — local neural offline (heavier); TTS_VOICE_NAME e.g. af_heart
+#   pyttsx3  — OS voices (pip install pyttsx3); TTS_VOICE_NAME e.g. Zira
+#   edge_tts — free cloud neural (pip install edge-tts); needs internet;
+#              TTS_VOICE_NAME e.g. en-US-AvaNeural
+#   kokoro   — local neural (pip install kokoro soundfile); offline; heavier;
+#              TTS_VOICE_NAME e.g. af_heart
 # Medic_Checker installs the matching package when VOICE_OUTPUT_MODE is
 #   tts_only or both and AUTO_PIP_INSTALL = yes.
 
@@ -401,4 +411,4 @@ VOICE_OUTPUT_MODE = bleeps_only
 VOICE_TTS_ENGINE = pyttsx3
 TTS_RATE = 165
 TTS_VOLUME = 0.8
-TTS_VOICE_NAME = David
+TTS_VOICE_NAME =
