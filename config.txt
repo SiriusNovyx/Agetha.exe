@@ -28,7 +28,7 @@ ENABLE_GROQ = yes
 # ENABLE_OPENROUTER — yes = OpenRouter fallback after Groq, or solo if Groq off.
 # Ignored when USE_LOCAL_AI = yes. Get a key: https://openrouter.ai/keys
 # Put OPENROUTER_API_KEY in .env only (never in this file).
-ENABLE_OPENROUTER = yes
+ENABLE_OPENROUTER = no
 
 # OPENROUTER_MODEL — model slug from openrouter.ai/models
 # Use exact IDs from https://openrouter.ai/models (many ":free" variants are retired).
