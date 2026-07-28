@@ -53,6 +53,7 @@ class CommandGuard:
         "system_info": SAFE, "take_screenshot": SAFE, "set_reminder": SAFE,
         "show_notification": SAFE, "snap_to_center": SAFE, "move_window": SAFE,
         "request_screen_read": SAFE, "request_path": SAFE, "show_error_gif": SAFE,
+        "analyze_screen_deep": CAUTION,
         "wake_user": SAFE, "play_emotion_sound": SAFE, "monitor_process": SAFE,
         "view_memory": SAFE, "search_memory": SAFE,
         "glitch_overlay": SAFE,
@@ -392,6 +393,11 @@ class CommandGuard:
             ),
             "fetch_webpage": lambda r: (
                 f"Fetch webpage content from:\n\n  {(r.get('url', '???'))[:500]}"
+            ),
+            "analyze_screen_deep": lambda r: (
+                "Send a screenshot of the "
+                + ("focused window" if CommandGuard.parse_enabled({"enabled": r.get("focused_only", True)}) else "full screen")
+                + " to the configured Unlimited-OCR service for read-only analysis."
             ),
             "open_app": lambda r: f"Launch: {r.get('app', '') or r.get('app_name', '???')}",
             "open_file": lambda r: f"Open file: {r.get('path', '???')}",

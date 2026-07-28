@@ -25,6 +25,9 @@ import platform
 import re
 import subprocess
 import tempfile
+import hashlib
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 import sys
@@ -50,6 +53,18 @@ def _setup_dpi_awareness() -> None:
 _setup_dpi_awareness()
 
 from agetha.utils import logger
+from agetha.platform.ocr_backends.base import OCRLine, OCRResult
+from agetha.platform.ocr_backends.tesseract_backend import TesseractOCRBackend
+from agetha.platform.screen_monitoring import (
+    CapturedFrame,
+    PatternEventTracker,
+    ScreenChangeDetector,
+    compile_title_exclusions,
+    is_capture_excluded,
+    parse_csv_values,
+    preprocess_ocr_image,
+    redact_sensitive_text,
+)
 ctypes = None
 if IS_WINDOWS:
     import ctypes
@@ -117,6 +132,11 @@ class PatternDef:
     mood:     str        # mood to suggest (angry / thinking / manic / paranoid)
     label:    str        # injected into AI context: "[label: snippet]"
     pattern:  re.Pattern
+    severity: str = "error"
+    app_names: tuple[str, ...] = ()
+    window_title_tokens: tuple[str, ...] = ()
+    cooldown_seconds: float | None = None
+    minimum_confidence: float = 0.0
 
 
 PATTERN_REGISTRY: list[PatternDef] = [
@@ -195,12 +215,13 @@ PATTERN_REGISTRY: list[PatternDef] = [
                    r"you have been banned|account suspended|unauthorized access"
                    r"|suspicious activity|your account has",
                    re.I
-               )),
+               ), minimum_confidence=65),
 
     PatternDef("security_access",
                "angry",
                "Access denied",
-               re.compile(r"access denied|403 Forbidden|401 Unauthorized", re.I)),
+               re.compile(r"access denied|403 Forbidden|401 Unauthorized", re.I),
+               minimum_confidence=60),
 
     PatternDef("virus_alert",
                "paranoid",
@@ -209,7 +230,7 @@ PATTERN_REGISTRY: list[PatternDef] = [
                    r"virus detected|malware detected|threat detected"
                    r"|quarantined|real-time protection blocked",
                    re.I
-               )),
+               ), minimum_confidence=65),
 
     # ── System Crash ──────────────────────────────────────────────────────────
     PatternDef("crash_bsod",
@@ -219,7 +240,7 @@ PATTERN_REGISTRY: list[PatternDef] = [
                    r"PAGE_FAULT_IN_NONPAGED_AREA|IRQL_NOT_LESS_OR_EQUAL"
                    r"|CRITICAL_PROCESS_DIED|STOP:\s*0x[0-9A-Fa-f]+",
                    re.I
-               )),
+               ), minimum_confidence=30),
 
     PatternDef("fatal_error",
                "manic",
@@ -228,7 +249,74 @@ PATTERN_REGISTRY: list[PatternDef] = [
                    r"FATAL ERROR|CRITICAL FAILURE|EXCEPTION_ACCESS_VIOLATION"
                    r"|Unhandled exception|Application crash",
                    re.I
-               )),
+               ), severity="critical", cooldown_seconds=120,
+               minimum_confidence=30),
+
+    # Roblox/Luau patterns are title-scoped to avoid generic "nil" false alarms.
+    PatternDef(
+        "luau_runtime", "angry", "Roblox Luau runtime error",
+        re.compile(
+            r"attempt to (?:index|call|perform arithmetic on).*nil"
+            r"|is not a valid member of|stack begin|stack end",
+            re.I,
+        ),
+        app_names=("Roblox Studio", "Roblox"),
+        severity="error",
+        minimum_confidence=35,
+    ),
+    PatternDef(
+        "luau_infinite_yield", "thinking", "Roblox infinite yield warning",
+        re.compile(r"Infinite yield possible on", re.I),
+        app_names=("Roblox Studio", "Roblox"),
+        severity="warning",
+        cooldown_seconds=120,
+    ),
+    PatternDef(
+        "luau_script_location", "thinking", "Roblox script error location",
+        re.compile(r"Script ['\"].+['\"], Line \d+|\b\w+\.lua:\d+", re.I),
+        app_names=("Roblox Studio", "Roblox"),
+        severity="error",
+    ),
+
+    # A deliberately small set of high-signal developer/system failures.
+    PatternDef(
+        "git_failure", "thinking", "Git operation failure",
+        re.compile(
+            r"fatal: not a git repository|CONFLICT \(.+\):|non-fast-forward"
+            r"|failed to push some refs",
+            re.I,
+        ),
+        severity="error",
+    ),
+    PatternDef(
+        "docker_failure", "thinking", "Docker operation failure",
+        re.compile(
+            r"Cannot connect to the Docker daemon|pull access denied"
+            r"|container .* is unhealthy|docker: Error response from daemon",
+            re.I,
+        ),
+        severity="error",
+    ),
+    PatternDef(
+        "network_failure", "thinking", "Network connection failure",
+        re.compile(
+            r"connection (?:refused|timed out|reset by peer)"
+            r"|temporary failure in name resolution|ERR_NAME_NOT_RESOLVED",
+            re.I,
+        ),
+        severity="warning",
+        cooldown_seconds=120,
+    ),
+    PatternDef(
+        "windows_application_error", "angry", "Windows application error",
+        re.compile(
+            r"The application was unable to start correctly \(0x[0-9a-f]+\)"
+            r"|Windows protected your PC|has stopped working",
+            re.I,
+        ),
+        severity="critical",
+        cooldown_seconds=120,
+    ),
 ]
 
 
@@ -239,6 +327,11 @@ class PatternMatch:
     mood:     str
     label:    str
     snippet:  str   # the matching line, capped at 120 chars
+    severity: str = "error"
+    confidence: float | None = None
+    screen_x: int | None = None
+    screen_y: int | None = None
+    cooldown_seconds: float | None = None
 
 
 _custom_patterns_loaded = False
@@ -263,21 +356,60 @@ def _ensure_custom_patterns() -> None:
     _custom_patterns_loaded = True
 
 
-def _scan_patterns(text: str) -> list[PatternMatch]:
-    """Run every PatternDef against text. Returns one match per unique category."""
+def _scan_patterns(
+    text: str,
+    ocr_lines: list[OCRLine] | None = None,
+    *,
+    window_title: str = "",
+    process_name: str = "",
+    minimum_confidence: float = 0.0,
+) -> list[PatternMatch]:
+    """Match structured OCR lines, preserving confidence and desktop position."""
     seen:    set[str]         = set()
     results: list[PatternMatch] = []
-    lines = text.splitlines()
+    candidates: list[tuple[str, OCRLine | None]] = (
+        [(line.text, line) for line in ocr_lines]
+        if ocr_lines else [(line, None) for line in text.splitlines()]
+    )
+    app_context = f"{window_title} {process_name}".strip().casefold()
     for pdef in PATTERN_REGISTRY:
         if pdef.category in seen:
             continue
-        for line in lines:
-            if pdef.pattern.search(line):
+        title_scopes = (*pdef.app_names, *pdef.window_title_tokens)
+        if title_scopes and app_context and not any(
+            token.casefold() in app_context for token in title_scopes
+        ):
+            continue
+        for line_text, line in candidates:
+            match = pdef.pattern.search(line_text)
+            if match:
+                confidence = (
+                    float(line.average_confidence) if line is not None else None
+                )
+                required = (
+                    pdef.minimum_confidence
+                    if pdef.minimum_confidence > 0
+                    else float(minimum_confidence)
+                )
+                if confidence is not None and confidence < required:
+                    continue
+                snippet_start = max(0, match.start() - 50)
+                snippet_end = min(len(line_text), match.end() + 50)
+                snippet = line_text[snippet_start:snippet_end].strip()[:120]
                 results.append(PatternMatch(
                     category = pdef.category,
                     mood     = pdef.mood,
                     label    = pdef.label,
-                    snippet  = line.strip()[:120],
+                    snippet  = snippet,
+                    severity = pdef.severity,
+                    confidence = confidence,
+                    screen_x = (
+                        line.x + line.width // 2 if line is not None else None
+                    ),
+                    screen_y = (
+                        line.y + line.height // 2 if line is not None else None
+                    ),
+                    cooldown_seconds = pdef.cooldown_seconds,
                 ))
                 seen.add(pdef.category)
                 break
@@ -285,6 +417,37 @@ def _scan_patterns(text: str) -> list[PatternMatch]:
 
 
 # ── 1. Foreground-window + 4. Multi-monitor helpers (Windows) ─────────────────
+
+def _get_window_process_name(hwnd: int) -> str:
+    if not IS_WINDOWS or not hwnd:
+        return ""
+    handle = None
+    try:
+        process_id = ctypes.wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(
+            hwnd, ctypes.byref(process_id),
+        )
+        if not process_id.value:
+            return ""
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, process_id.value)
+        if not handle:
+            return ""
+        size = ctypes.wintypes.DWORD(1024)
+        path_buffer = ctypes.create_unicode_buffer(size.value)
+        if not ctypes.windll.kernel32.QueryFullProcessImageNameW(
+            handle, 0, path_buffer, ctypes.byref(size),
+        ):
+            return ""
+        return Path(path_buffer.value).name[:120]
+    except Exception:
+        return ""
+    finally:
+        if handle:
+            try:
+                ctypes.windll.kernel32.CloseHandle(handle)
+            except Exception:
+                pass
+
 
 def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
     """Return mss-compatible capture dict + metadata for the focused window.
@@ -331,9 +494,10 @@ def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
             "height": h,
             "title":  title,
             "hwnd":   hwnd,
+            "process_name": _get_window_process_name(hwnd),
         }
     except Exception as e:
-        print(f"[ScreenReader] _get_foreground_window_info: {e}")
+        logger.debug(f"Foreground-window lookup failed: {type(e).__name__}")
         return None
 
 
@@ -378,7 +542,7 @@ def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | No
                             "hwnd": window_id,
                         }
     except Exception as e:
-        print(f"[ScreenReader] xdotool failed: {e}")
+        logger.debug(f"xdotool foreground lookup failed: {type(e).__name__}")
 
     # 2. Fallback to wmctrl + xprop
     try:
@@ -416,10 +580,10 @@ def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | No
                                     "hwnd": active_dec,
                                 }
     except Exception as e:
-        print(f"[ScreenReader] wmctrl fallback failed: {e}")
+        logger.debug(f"wmctrl foreground lookup failed: {type(e).__name__}")
 
     # Log non-blocking warning and fall back to full screen
-    print("[ScreenReader] WARNING: Active window scanning failed or tools are missing on Linux. Falling back to full desktop capture.")
+    logger.debug("Linux active-window tools unavailable; full capture may be used")
     return None
 
 
@@ -454,7 +618,7 @@ def _find_monitor_for_window(hwnd: int) -> dict | None:
                 "height": r.bottom - r.top,
             }
     except Exception as e:
-        print(f"[ScreenReader] _find_monitor_for_window: {e}")
+        logger.debug(f"Monitor lookup failed: {type(e).__name__}")
     return None
 
 
@@ -485,17 +649,41 @@ def _is_wayland() -> bool:
             os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland")
 
 
-def _grab_mss(monitor_dict: dict | None = None) -> "Image.Image | None":
+def _grab_mss_frame(
+    monitor_dict: dict | None = None,
+    *,
+    title: str = "",
+    hwnd: int | None = None,
+    scope: str = "virtual_desktop",
+    process_name: str = "",
+) -> CapturedFrame | None:
+    """Capture through mss and retain the exact desktop origin used."""
     if not PIL_OK:
         return None
     try:
         import mss
         with mss.mss() as sct:
-            target = monitor_dict if monitor_dict else sct.monitors[0]
+            target = dict(monitor_dict) if monitor_dict else dict(sct.monitors[0])
             raw = sct.grab(target)
-            return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-    except Exception:
+            image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            return CapturedFrame(
+                image=image,
+                left=int(target.get("left", 0)),
+                top=int(target.get("top", 0)),
+                title=str(title or "")[:120],
+                hwnd=int(hwnd) if hwnd is not None else None,
+                scope=scope,
+                process_name=str(process_name or "")[:120],
+            )
+    except Exception as exc:
+        logger.debug(f"mss capture failed ({scope}): {type(exc).__name__}")
         return None
+
+
+def _grab_mss(monitor_dict: dict | None = None) -> "Image.Image | None":
+    """Backward-compatible image-only wrapper used by older callers/tests."""
+    frame = _grab_mss_frame(monitor_dict)
+    return frame.image if frame is not None else None
 
 
 def _grab_imagegrab(bbox: tuple | None = None) -> "Image.Image | None":
@@ -612,6 +800,11 @@ class ScreenReader:
         self._system    = platform.system()
         self._own_root  = own_tk_root
         self._own_hwnd: int | None = None
+        self._capture_lock = threading.RLock()
+        self._standard_scan_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._stopped = False
+        self._clock = time.monotonic
 
         # Capture origin — used to translate Tesseract pixel coords → screen coords
         self._capture_left: int = 0
@@ -620,13 +813,51 @@ class ScreenReader:
         # Public state (consumed by main.py after each scan)
         self.last_angry_keywords:     list[str]          = []
         self.last_pattern_matches:    list[PatternMatch]  = []
+        self.last_new_pattern_events: list[PatternMatch]  = []
         self.last_word_positions:     list[dict]          = []
         self.last_active_window_title: str               = ""
+        self.last_capture_metadata: CapturedFrame | None = None
+        self.last_monitor_status: str = "initializing"
 
         # Tesseract path (Windows)
         from agetha.app_config import get_settings
         _cfg = get_settings()
         self._ocr_max_dimension = _cfg.ocr_max_dimension
+        self._ocr_preprocessing = _cfg.ocr_preprocessing
+        self._ocr_languages = _cfg.ocr_languages
+        self._effective_ocr_languages = self._ocr_languages
+        self._ocr_psm = _cfg.ocr_psm
+        self._ocr_min_word_confidence = _cfg.ocr_min_word_confidence
+        self._ocr_min_pattern_confidence = _cfg.ocr_min_pattern_confidence
+        self._pattern_cooldown_seconds = _cfg.ocr_pattern_cooldown_seconds
+        self._pattern_confirm_scans = _cfg.ocr_pattern_confirm_scans
+        self._low_confidence_confirm_scans = _cfg.ocr_low_confidence_confirm_scans
+        self._pattern_clear_scans = _cfg.ocr_pattern_clear_scans
+        self._redact_sensitive_context = _cfg.ocr_redact_sensitive_text
+        self._excluded_apps = parse_csv_values(_cfg.ocr_excluded_apps)
+        self._title_exclusions = compile_title_exclusions(
+            _cfg.ocr_excluded_title_patterns,
+        )
+        self._change_detector = ScreenChangeDetector(
+            enabled=_cfg.ocr_change_detection,
+            threshold=_cfg.ocr_change_threshold,
+            force_refresh_seconds=_cfg.ocr_force_refresh_seconds,
+            state_expiry_seconds=_cfg.ocr_state_expiry_seconds,
+        )
+        self._event_tracker = PatternEventTracker()
+        self._standard_ocr_backend = TesseractOCRBackend(
+            pytesseract if TESSERACT_OK else None,
+        )
+        self._deep_backend_name = _cfg.deep_ocr_backend
+        self._deep_ocr_backend = None
+        self._deep_ocr_options = {
+            "server_url": _cfg.unlimited_ocr_server_url,
+            "model": _cfg.unlimited_ocr_model,
+            "timeout_seconds": _cfg.unlimited_ocr_timeout_seconds,
+            "allow_remote": _cfg.unlimited_ocr_allow_remote,
+            "max_output_chars": _cfg.deep_ocr_max_output_chars,
+            "api_key": _cfg.unlimited_ocr_api_key,
+        }
 
         if self._system == "Windows" and TESSERACT_OK and _cfg.enable_screen_reader:
             custom_tess = _cfg.tesseract_path
@@ -637,22 +868,22 @@ class ScreenReader:
                 if tess:
                     pytesseract.pytesseract.tesseract_cmd = tess
                 else:
-                    print("[ScreenReader] WARNING: Tesseract not found in standard paths.")
+                    logger.warning("Tesseract was not found in standard Windows paths")
 
         self._backend_name = "lazy"
         self._backend_fn = None
         self._backend_candidates = self._ordered_backends()
-        if not _cfg.enable_screen_reader:
-            self._available = False
-        else:
-            self._available = TESSERACT_OK and _has_display()
+        self._capture_available = _cfg.enable_screen_reader and _has_display()
+        self._available = self._capture_available and TESSERACT_OK
+        self._tesseract_checked = False
+        self._tesseract_ready = False
 
         if not self._available:
             reasons = []
             if not _cfg.enable_screen_reader:
                 reasons.append("ENABLE_SCREEN_READER=no")
             if not TESSERACT_OK:
-                reasons.append("pytesseract/tesseract missing")
+                reasons.append("pytesseract package missing")
             if not _has_display():
                 reasons.append("no display")
             logger.warning(f"Screen capture disabled: {', '.join(reasons)}")
@@ -660,6 +891,9 @@ class ScreenReader:
             logger.info("[ScreenReader] Phase 3 ready — backend: lazy (first capture)")
 
         _ensure_custom_patterns()
+        # Resolve Tk's native handle while construction is still on its UI thread.
+        if self._own_root is not None:
+            self._get_own_hwnd()
 
     def get_active_window_title(self, skip_hwnd: int | None = None) -> str:
         """Lightweight foreground title (no OCR)."""
@@ -674,28 +908,102 @@ class ScreenReader:
             pass
         return getattr(self, "last_active_window_title", "") or ""
 
-    def _ensure_backend(self) -> bool:
-        """Lazy-test screenshot backends on first capture call."""
-        if self._backend_fn is not None:
+    def _ensure_tesseract(self) -> bool:
+        """Validate the executable and configured languages once, at first OCR."""
+        if not hasattr(self, "_tesseract_checked"):
+            return True  # compatibility for lightweight test doubles
+        if self._tesseract_checked:
+            return self._tesseract_ready
+        self._tesseract_checked = True
+        if not TESSERACT_OK:
+            self.last_monitor_status = "ocr_package_unavailable"
+            return False
+        try:
+            pytesseract.get_tesseract_version()
+            requested = [
+                item for item in self._ocr_languages.split("+") if item
+            ] or ["eng"]
+            try:
+                installed = set(pytesseract.get_languages(config=""))
+            except Exception:
+                self._effective_ocr_languages = "+".join(requested)
+                self._tesseract_ready = True
+                logger.warning(
+                    "Tesseract language metadata unavailable; using configured languages"
+                )
+                return True
+            available = [item for item in requested if item in installed]
+            if not available and "eng" in installed:
+                available = ["eng"]
+            if not available:
+                self.last_monitor_status = "ocr_language_unavailable"
+                logger.warning("No requested Tesseract OCR language is installed")
+                return False
+            self._effective_ocr_languages = "+".join(available)
+            missing = sorted(set(requested) - set(available))
+            if missing:
+                logger.warning("Some configured Tesseract languages are unavailable")
+            self._tesseract_ready = True
             return True
+        except Exception as exc:
+            self.last_monitor_status = "ocr_executable_unavailable"
+            logger.warning(
+                f"Tesseract executable unavailable: {type(exc).__name__}"
+            )
+            return False
+
+    @staticmethod
+    def _as_frame(capture, *, backend_name: str) -> CapturedFrame | None:
+        if capture is None:
+            return None
+        if isinstance(capture, CapturedFrame):
+            return capture
+        return CapturedFrame(
+            image=capture,
+            left=0,
+            top=0,
+            title="",
+            hwnd=None,
+            scope="primary_monitor",
+            process_name="",
+        )
+
+    def _capture_with_backend(self) -> CapturedFrame | None:
+        """Select a screenshot backend without throwing away its first frame."""
+        pending = getattr(self, "_pending_backend_frame", None)
+        if pending is not None:
+            self._pending_backend_frame = None
+            return pending
+        if self._backend_fn is not None:
+            return self._as_frame(
+                self._backend_fn(), backend_name=self._backend_name,
+            )
         for name, fn in self._backend_candidates:
             try:
-                img = fn()
-                if img is not None:
+                frame = self._as_frame(fn(), backend_name=name)
+                if frame is not None:
                     self._backend_name = name
                     self._backend_fn = fn
                     logger.info(f"[ScreenReader] Selected backend: {name}")
-                    return True
+                    return frame
             except Exception as exc:
-                logger.debug(f"Backend {name} failed: {exc}")
-        self._available = False
-        return False
+                logger.debug(f"Backend {name} failed: {type(exc).__name__}")
+        self.last_monitor_status = "capture_backend_unavailable"
+        return None
+
+    def _ensure_backend(self) -> bool:
+        """Compatibility helper that preserves the frame used during probing."""
+        if self._backend_fn is not None:
+            return True
+        frame = self._capture_with_backend()
+        self._pending_backend_frame = frame
+        return frame is not None
 
     # ── Backend selection ─────────────────────────────────────────────────────
 
     def _ordered_backends(self) -> list[tuple]:
         # mss is always first on Windows — it supports partial capture dicts
-        head = [("mss", lambda: _grab_mss())]
+        head = [("mss", lambda: _grab_mss_frame(scope="virtual_desktop"))]
         if self._system == "Windows":
             return head
         elif self._system == "Darwin":
@@ -712,6 +1020,8 @@ class ScreenReader:
         """Cache and return Agetha's own top-level window HWND."""
         if self._own_hwnd:
             return self._own_hwnd
+        if threading.current_thread() is not threading.main_thread():
+            return None
         if self._own_root:
             if IS_WINDOWS:
                 try:
@@ -730,144 +1040,379 @@ class ScreenReader:
 
     # ── 1 + 4. Focused capture ────────────────────────────────────────────────
 
-    def capture_image(self, focused_only: bool = True) -> "Image.Image | None":
-        """Capture a screenshot.
+    def _foreground_info(self) -> dict | None:
+        if self._system == "Windows":
+            return _get_foreground_window_info(skip_hwnd=None)
+        if self._system == "Linux":
+            return _get_foreground_window_info_linux(skip_hwnd=None)
+        return None
 
-        focused_only=True  — Windows/Linux: grabs only the active foreground window.
-                             Falls back to full-monitor if window can't be resolved.
-        focused_only=False — Always captures the full primary monitor.
-        """
-        self._capture_left = 0
-        self._capture_top  = 0
-
-        if focused_only:
-            win = None
-            if IS_WINDOWS:
-                win = _get_foreground_window_info(skip_hwnd=self._get_own_hwnd())
-            elif IS_LINUX:
-                win = _get_foreground_window_info_linux(skip_hwnd=self._get_own_hwnd())
-
-            if win:
-                self.last_active_window_title = win["title"]
-                self._capture_left = win["left"]
-                self._capture_top  = win["top"]
-                img = _grab_mss({
-                    "left":   win["left"],
-                    "top":    win["top"],
-                    "width":  win["width"],
-                    "height": win["height"],
-                })
-                if img:
-                    print(f"[ScreenReader] Focused: '{win['title']}' "
-                          f"({win['width']}×{win['height']} px)")
-                    return img
-                # mss failed for the focused rect — fall through to full monitor
-
-        # Full-monitor fallback
-        self.last_active_window_title = ""
-        if not self._ensure_backend():
+    def _capture_frame(
+        self,
+        *,
+        focused_only: bool = True,
+        automatic: bool = True,
+    ) -> CapturedFrame | None:
+        """Return an immutable image/origin/title snapshot for one operation."""
+        with self._capture_lock:
+            if self._stopped or not self._capture_available:
+                self.last_monitor_status = "capture_disabled"
+                return None
+            if focused_only:
+                win = self._foreground_info()
+                if win is not None:
+                    hwnd = win.get("hwnd")
+                    if automatic and hwnd is not None and hwnd == self._get_own_hwnd():
+                        self.last_monitor_status = "skipped_own_window"
+                        return None
+                    if automatic and is_capture_excluded(
+                        title=win.get("title", ""),
+                        process_name=win.get("process_name", ""),
+                        excluded_apps=self._excluded_apps,
+                        title_exclusions=self._title_exclusions,
+                    ):
+                        self.last_monitor_status = "skipped_excluded_window"
+                        return None
+                    frame = _grab_mss_frame(
+                        {
+                            "left": int(win["left"]),
+                            "top": int(win["top"]),
+                            "width": int(win["width"]),
+                            "height": int(win["height"]),
+                        },
+                        title=win.get("title", ""),
+                        hwnd=hwnd,
+                        scope="focused_window",
+                        process_name=win.get("process_name", ""),
+                    )
+                    if frame is not None:
+                        self.last_monitor_status = "captured_focused_window"
+                        return frame
+                    logger.debug("Focused capture failed; trying a full-display backend")
+                    if IS_WINDOWS and hwnd is not None:
+                        monitor = _find_monitor_for_window(int(hwnd))
+                        if monitor is not None:
+                            frame = _grab_mss_frame(
+                                monitor,
+                                title=win.get("title", ""),
+                                hwnd=hwnd,
+                                scope="active_monitor",
+                                process_name=win.get("process_name", ""),
+                            )
+                            if frame is not None:
+                                self.last_monitor_status = "captured_active_monitor"
+                                return frame
+            frame = self._capture_with_backend()
+            if frame is not None:
+                self.last_monitor_status = f"captured_{frame.scope}"
+                return frame
+            self.last_monitor_status = "capture_failed"
             return None
-        return self._backend_fn() if self._backend_fn else None
 
-    # ── 2 + 3. Main OCR entry point ───────────────────────────────────────────
+    def _commit_capture_metadata(self, frame: CapturedFrame) -> None:
+        with self._state_lock:
+            self._capture_left = frame.left
+            self._capture_top = frame.top
+            self.last_active_window_title = frame.title
+            self.last_capture_metadata = frame
+
+    def capture_image(self, focused_only: bool = True) -> "Image.Image | None":
+        """Compatibility image API; metadata is committed only after success."""
+        frame = self._capture_frame(
+            focused_only=bool(focused_only), automatic=False,
+        )
+        if frame is None:
+            return None
+        self._commit_capture_metadata(frame)
+        return frame.image
+
+    def _focused_target_is_current(self, frame: CapturedFrame) -> bool:
+        if frame.scope not in {"focused_window", "active_monitor"} or frame.hwnd is None:
+            return True
+        current = self._foreground_info()
+        return current is not None and current.get("hwnd") == frame.hwnd
+
+    def _selected_psm(self, frame: CapturedFrame) -> int:
+        configured = getattr(self, "_ocr_psm", "auto")
+        if configured != "auto":
+            return int(configured)
+        context = f"{frame.title} {frame.process_name}".casefold()
+        editor_tokens = (
+            "terminal", "powershell", "command prompt", "cmd.exe", "console",
+            "visual studio", "code", "pycharm", "intellij", "roblox studio",
+        )
+        if any(token in context for token in editor_tokens):
+            return 6
+        if frame.scope in {"virtual_desktop", "primary_monitor", "active_monitor"}:
+            return 11
+        return 3
 
     def capture_text(self, max_chars: int = 3000, focused_only: bool = True) -> str:
-        """Capture screen text, run pattern matching, populate word positions.
+        """Capture and OCR one stable frame, then atomically publish its state."""
+        scan_lock = getattr(self, "_standard_scan_lock", None)
+        if scan_lock is None:
+            scan_lock = threading.Lock()
+            self._standard_scan_lock = scan_lock
+        with scan_lock:
+            if not getattr(self, "_available", False):
+                return ""
+            if not self._ensure_tesseract():
+                return ""
+            try:
+                modern_capture = hasattr(self, "_capture_lock")
+                if modern_capture:
+                    frame = self._capture_frame(
+                        focused_only=bool(focused_only), automatic=True,
+                    )
+                else:
+                    if not self._ensure_backend():
+                        return ""
+                    screenshot = self.capture_image(focused_only=focused_only)
+                    frame = None if screenshot is None else CapturedFrame(
+                        image=screenshot,
+                        left=int(getattr(self, "_capture_left", 0)),
+                        top=int(getattr(self, "_capture_top", 0)),
+                        title=str(getattr(self, "last_active_window_title", "")),
+                        hwnd=None,
+                        scope="focused_window" if focused_only else "primary_monitor",
+                    )
+                if frame is None:
+                    return ""
 
-        Returns: plain OCR text string.
-        Side-effects (read by main.py after this call):
-            self.last_angry_keywords      — legacy flat-keyword hits
-            self.last_pattern_matches     — regex pattern matches with mood hints
-            self.last_word_positions      — every word's (screen_x, screen_y, w, h)
-            self.last_active_window_title — title of the captured window
-        """
-        self.last_angry_keywords  = []
-        self.last_pattern_matches = []
-        self.last_word_positions  = []
+                now = getattr(self, "_clock", time.monotonic)()
+                detector = getattr(self, "_change_detector", None)
+                thumbnail = None
+                cached_state = None
+                if detector is not None:
+                    should_scan, reason, thumbnail, cached_state = detector.should_scan(
+                        frame, now,
+                    )
+                    if not should_scan and cached_state is not None:
+                        with self._state_lock:
+                            self.last_new_pattern_events = []
+                            self.last_monitor_status = reason
+                        return cached_state.last_text
 
-        if not self._available:
-            return ""
-        if not self._ensure_backend():
-            return ""
-        try:
-            screenshot = self.capture_image(focused_only=focused_only)
-            if screenshot is None:
+                processed = preprocess_ocr_image(
+                    frame.image,
+                    max_dimension=int(getattr(self, "_ocr_max_dimension", 2560)),
+                    mode=getattr(self, "_ocr_preprocessing", "basic"),
+                )
+                ocr_result = self._standard_ocr_backend.analyze(
+                    processed.image,
+                    capture_left=frame.left,
+                    capture_top=frame.top,
+                    processing_scale_x=processed.scale_x,
+                    processing_scale_y=processed.scale_y,
+                    max_chars=max_chars,
+                    min_word_confidence=float(
+                        getattr(self, "_ocr_min_word_confidence", 30.0)
+                    ),
+                    languages=getattr(self, "_effective_ocr_languages", "eng"),
+                    psm=(self._selected_psm(frame) if modern_capture else 3),
+                )
+                result = "\n".join(
+                    line.strip() for line in ocr_result.text.splitlines()
+                    if line.strip()
+                )[:max_chars]
+
+                if modern_capture and self._stopped:
+                    self.last_monitor_status = "discarded_during_shutdown"
+                    return ""
+                if modern_capture and not self._focused_target_is_current(frame):
+                    self.last_monitor_status = "discarded_stale_window"
+                    logger.debug("Discarded OCR result because the focused window changed")
+                    return ""
+
+                matches = _scan_patterns(
+                    result,
+                    ocr_result.lines,
+                    window_title=frame.title,
+                    process_name=frame.process_name,
+                    minimum_confidence=float(
+                        getattr(self, "_ocr_min_pattern_confidence", 0.0)
+                    ),
+                )
+                low = result.casefold()
+                angry_keywords = [kw for kw in ANGRY_KEYWORDS if kw in low]
+                positions = [{
+                    "text": word.text,
+                    "screen_x": word.x,
+                    "screen_y": word.y,
+                    "w": word.width,
+                    "h": word.height,
+                    "conf": int(word.confidence or 0),
+                } for word in ocr_result.words]
+
+                tracker = getattr(self, "_event_tracker", None)
+                if tracker is None:
+                    new_events = list(matches)
+                else:
+                    minimum = float(self._ocr_min_pattern_confidence)
+                    new_events = tracker.update(
+                        matches,
+                        window_key=frame.key,
+                        now=now,
+                        cooldown_seconds=self._pattern_cooldown_seconds,
+                        confirm_scans=self._pattern_confirm_scans,
+                        low_confidence_confirm_scans=(
+                            self._low_confidence_confirm_scans
+                        ),
+                        clear_scans=self._pattern_clear_scans,
+                        minimum_confidence=min(100.0, minimum + 20.0),
+                    )
+
+                if (
+                    detector is not None
+                    and thumbnail is not None
+                    and (result or cached_state is None)
+                ):
+                    detector.record(
+                        frame,
+                        thumbnail=thumbnail,
+                        text=result,
+                        text_hash=hashlib.sha256(
+                            result.encode("utf-8", errors="replace")
+                        ).hexdigest(),
+                        now=now,
+                    )
+
+                state_lock = getattr(self, "_state_lock", None)
+                if state_lock is None:
+                    state_lock = threading.RLock()
+                    self._state_lock = state_lock
+                with state_lock:
+                    self._capture_left = frame.left
+                    self._capture_top = frame.top
+                    self.last_active_window_title = frame.title
+                    self.last_capture_metadata = frame
+                    self.last_angry_keywords = angry_keywords
+                    self.last_pattern_matches = matches
+                    self.last_new_pattern_events = new_events
+                    self.last_word_positions = positions
+                    self.last_monitor_status = (
+                        "ocr_complete" if result else "ocr_empty"
+                    )
+
+                logger.debug(
+                    f"OCR complete: {len(result)} chars, {len(positions)} words, "
+                    f"{len(matches)} current patterns, {len(new_events)} new events"
+                )
+                return result
+            except Exception as exc:
+                self.last_monitor_status = "ocr_failed"
+                logger.warning(f"OCR failed safely: {type(exc).__name__}")
                 return ""
 
-            # 2× upscale → greyscale  (same as Phase 1 — improves Tesseract accuracy)
-            scale = 2
-            w, h = screenshot.size
-            max_dim = getattr(self, "_ocr_max_dimension", 2560)
-            if max(w, h) > max_dim:
-                ratio = max_dim / max(w, h)
-                screenshot = screenshot.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
-                w, h = screenshot.size
-            upscaled = screenshot.resize((w * scale, h * scale), Image.LANCZOS).convert("L")
+    def redact_for_external_context(self, value: str) -> str:
+        if not getattr(self, "_redact_sensitive_context", True):
+            return str(value or "")
+        return redact_sensitive_text(value)
 
-            # ── 2. image_to_data: words + bounding boxes ───────────────────────
-            plain_text = ""
-            try:
-                data = pytesseract.image_to_data(
-                    upscaled,
-                    lang="eng",
-                    config="--psm 3",
-                    output_type=pytesseract.Output.DICT,
+    def _deep_error(self, code: str, message: str) -> OCRResult:
+        return OCRResult(
+            text=message,
+            words=[],
+            backend="unlimited_ocr",
+            metadata={"status": "error", "error": code},
+        )
+
+    def _get_deep_backend(self):
+        if self._deep_ocr_backend is None and self._deep_backend_name == "unlimited_ocr":
+            from agetha.platform.ocr_backends.unlimited_ocr_backend import UnlimitedOCRBackend
+            self._deep_ocr_backend = UnlimitedOCRBackend(**self._deep_ocr_options)
+        return self._deep_ocr_backend
+
+    def capture_deep_text(
+        self,
+        focused_only: bool = True,
+        prompt: str = "<image>document parsing.",
+    ) -> OCRResult:
+        """Run the configured deep backend only for an explicit caller request."""
+        if getattr(self, "_deep_backend_name", "none") != "unlimited_ocr":
+            return self._deep_error(
+                "disabled",
+                "Deep OCR is not configured. Standard Tesseract OCR is still available. "
+                "Set DEEP_OCR_BACKEND = unlimited_ocr and configure "
+                "UNLIMITED_OCR_SERVER_URL to enable it.",
+            )
+
+        try:
+            backend = self._get_deep_backend()
+        except Exception:
+            backend = None
+        if backend is None:
+            return self._deep_error(
+                "unavailable",
+                "Deep OCR is unavailable. Standard Tesseract OCR is still available.",
+            )
+        problem = backend.configuration_error()
+        if problem:
+            return self._deep_error(*problem)
+
+        # Deep OCR owns only its immutable frame and never mutates standard state.
+        try:
+            if hasattr(self, "_capture_lock"):
+                frame = self._capture_frame(
+                    focused_only=bool(focused_only), automatic=False,
                 )
-                words: list[str]  = []
-                positions: list[dict] = []
-                for i in range(len(data["text"])):
-                    txt  = str(data["text"][i]).strip()
-                    conf = int(data["conf"][i])
-                    if not txt or conf <= 0:
-                        continue
-                    words.append(txt)
-                    if conf > 30:          # only store high-confidence positions
-                        # Divide by scale to convert upscaled-image pixels → original
-                        # then add capture offset to get desktop screen coordinates.
-                        positions.append({
-                            "text":     txt,
-                            "screen_x": self._capture_left + int(data["left"][i])  // scale,
-                            "screen_y": self._capture_top  + int(data["top"][i])   // scale,
-                            "w":        int(data["width"][i])  // scale,
-                            "h":        int(data["height"][i]) // scale,
-                            "conf":     conf,
-                        })
-                plain_text = " ".join(words)
-                self.last_word_positions = positions
-
-            except Exception as e:
-                # image_to_data may fail on older pytesseract builds; fall back
-                print(f"[ScreenReader] image_to_data failed ({e}), using image_to_string")
-                raw = pytesseract.image_to_string(upscaled, lang="eng", config="--psm 3")
-                plain_text = raw
-                self.last_word_positions = []
-
-            # Normalise & cap
-            lines  = [ln.strip() for ln in plain_text.splitlines() if ln.strip()]
-            result = "\n".join(lines)[:max_chars]
-
-            # ── 3. Pattern scan ────────────────────────────────────────────────
-            self.last_pattern_matches = _scan_patterns(result)
-            if self.last_pattern_matches:
-                cats = [m.category for m in self.last_pattern_matches]
-                print(f"[ScreenReader] Patterns: {cats}")
-
-            # Legacy keyword scan (backward compat)
-            low = result.lower()
-            self.last_angry_keywords = [kw for kw in ANGRY_KEYWORDS if kw in low]
-            if self.last_angry_keywords:
-                print(f"[ScreenReader] Angry keywords: {self.last_angry_keywords}")
-
-            print(f"[ScreenReader] {len(result)} chars | "
-                  f"{len(self.last_word_positions)} words | "
-                  f"{len(self.last_pattern_matches)} patterns")
+            else:
+                legacy_state = (
+                    getattr(self, "_capture_left", 0),
+                    getattr(self, "_capture_top", 0),
+                    getattr(self, "last_active_window_title", ""),
+                    getattr(self, "last_angry_keywords", []),
+                    getattr(self, "last_pattern_matches", []),
+                    getattr(self, "last_word_positions", []),
+                )
+                screenshot = self.capture_image(focused_only=bool(focused_only))
+                frame = None if screenshot is None else CapturedFrame(
+                    screenshot,
+                    int(getattr(self, "_capture_left", 0)),
+                    int(getattr(self, "_capture_top", 0)),
+                    str(getattr(self, "last_active_window_title", "")),
+                    None,
+                    "focused_window" if focused_only else "primary_monitor",
+                )
+                (
+                    self._capture_left,
+                    self._capture_top,
+                    self.last_active_window_title,
+                    self.last_angry_keywords,
+                    self.last_pattern_matches,
+                    self.last_word_positions,
+                ) = legacy_state
+            if frame is None:
+                return self._deep_error("capture_failed", "Deep OCR could not capture the screen.")
+            result = backend.analyze(
+                frame.image,
+                prompt=str(prompt or "<image>document parsing.")[:2000],
+            )
+            result.metadata = dict(result.metadata)
+            result.metadata.setdefault("focused_only", bool(focused_only))
+            result.metadata.setdefault("capture_scope", frame.scope)
+            result.metadata.setdefault("capture_left", frame.left)
+            result.metadata.setdefault("capture_top", frame.top)
+            if frame.title:
+                result.metadata.setdefault("active_window_title", frame.title)
             return result
+        except Exception:
+            return self._deep_error(
+                "request_failed",
+                "Deep OCR failed safely. Standard Tesseract OCR is still working.",
+            )
 
-        except Exception as e:
-            print(f"[ScreenReader] OCR error: {e}")
-            return ""
-
-    # ── Convenience properties ─────────────────────────────────────────────────
+    def stop(self) -> None:
+        """Release the optional reusable HTTP session during app shutdown."""
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
+        backend = getattr(self, "_deep_ocr_backend", None)
+        if backend is not None:
+            try:
+                backend.close()
+            except Exception:
+                pass
 
     @property
     def has_angry_trigger(self) -> bool:

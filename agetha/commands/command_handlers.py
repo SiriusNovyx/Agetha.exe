@@ -79,6 +79,15 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
         app._reschedule_screen_poll()
         return
 
+    # Defense in depth: an ambient model turn must not even open a confirmation
+    # dialog for deep OCR, let alone capture or transmit a screenshot.
+    if command == "analyze_screen_deep" and (
+        not user_message or user_message == "__touch__"
+    ):
+        logger.info("analyze_screen_deep ignored during an ambient turn")
+        app.root.after(0, app._reschedule_screen_poll)
+        return
+
     if not user_message and ctx.mood in app._ATTENTION_MOODS:
         app._maybe_snap_to_center(ctx.mood)
     elif hasattr(app, "_play_response_motion"):
@@ -1349,6 +1358,67 @@ def handle_request_screen_read(app, response, ctx):
 
     app._defer_after_ai_tick(
         lambda: threading.Thread(target=_requery, daemon=True).start()
+    )
+    return True
+
+
+@register("analyze_screen_deep")
+def handle_analyze_screen_deep(app, response, ctx):
+    """Run optional deep OCR only after a direct user-triggered AI turn."""
+    if not ctx.user_message or ctx.user_message == "__touch__":
+        logger.info("analyze_screen_deep ignored without an explicit user request")
+        app.root.after(0, lambda: app._subtitle.show_message(
+            "Deep OCR only runs after you ask for it.", "#ff6600",
+        ))
+        app.root.after(0, app._reschedule_screen_poll)
+        return True
+    if not app._screen:
+        app.root.after(0, lambda: app._subtitle.show_message(
+            "Screen capture is unavailable.", "#ff4444",
+        ))
+        app.root.after(0, app._reschedule_screen_poll)
+        return True
+
+    raw_focused = response.get("focused_only", True)
+    focused_only = (
+        raw_focused if isinstance(raw_focused, bool)
+        else str(raw_focused).strip().lower() not in {"0", "no", "false", "off"}
+    )
+    prompt = str(response.get("prompt", "") or "<image>document parsing.")[:2000]
+    if ctx.segments:
+        first = str(ctx.segments[0].get("text", "Analyzing…"))[:120]
+        app.root.after(0, lambda text=first: app._subtitle.show_message(text, "#888888"))
+
+    def _analyze_and_requery():
+        from agetha.platform.ocr_backends.base import format_deep_ocr_for_prompt
+
+        result = app._screen.capture_deep_text(
+            focused_only=focused_only,
+            prompt=prompt,
+        )
+        if not result.ok:
+            message = result.text[:300]
+            app.root.after(0, lambda text=message: app._subtitle.show_message(text, "#ff6600"))
+            app.root.after(0, lambda: app._set_state(app.STATE_IDLE, "neutral"))
+            app.root.after(0, app._reschedule_screen_poll)
+            return
+
+        wrapped = format_deep_ocr_for_prompt(
+            result,
+            max_chars=get_settings().deep_ocr_max_output_chars,
+        )
+        follow = app._ai_query(
+            ctx.user_message or "",
+            screen_context="",
+            doc_content=wrapped,
+        )
+        if follow:
+            app._dispatch_response(follow, ctx.user_message)
+        else:
+            app.root.after(0, app._reschedule_screen_poll)
+
+    app._defer_after_ai_tick(
+        lambda: threading.Thread(target=_analyze_and_requery, daemon=True).start()
     )
     return True
 

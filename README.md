@@ -2,9 +2,14 @@
 
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
-**Version:** Overhaul v5.0.0 · **Medic_Checker:** v5.0 · **Original author:** @tomiszivacs
+**Version:** Overhaul v5.5.1 · **Medic_Checker:** v5.5.1 · **Original author:** @tomiszivacs
 
 ---
+
+## Developer documentation
+
+For a code-map-first view of the architecture, runtime flows, module ownership,
+configuration, and focused tests, start with [`docs/README.md`](docs/README.md).
 
 ## About
 
@@ -22,6 +27,58 @@ This fork makes Agetha feel sharper, more autonomous, and more integrated with y
 - **Spatial mapping** — maps words to desktop coordinates (e.g. `TypeError@(320,458)`); Agetha can move her window next to an on-screen error
 - **Pattern registry** — regex detection for Python tracebacks, PowerShell errors, build failures, npm errors, security alerts, and more
 - **Multi-monitor & DPI** — per-monitor DPI awareness and correct physical pixel coordinates
+
+### Optional Deep OCR
+
+Tesseract remains Agetha's standard, default OCR backend for foreground scanning,
+ambient polling, pattern detection, and word coordinates. Advanced users can opt
+into `analyze_screen_deep`, which sends one explicitly requested capture to a
+separately hosted [Baidu Unlimited-OCR](https://github.com/baidu/Unlimited-OCR)
+OpenAI-compatible service for complex documents, tables, layouts, and long text.
+
+Deep OCR is disabled by default and is never used by automatic polling. If its
+server is disabled or offline, standard Tesseract OCR continues normally. The
+official Unlimited-OCR setup primarily targets NVIDIA CUDA environments; Windows
+ARM/Snapdragon users should normally keep Tesseract local and connect to another
+machine only when deep OCR is needed. A remote service receives screenshot
+content, so remote URLs require explicit configuration and opt-in. See
+[`docs/unlimited_ocr_server.md`](docs/unlimited_ocr_server.md).
+
+### Screen Monitoring Reliability
+
+Automatic monitoring uses one immutable capture record containing the image,
+desktop origin, window title, window identity, and capture scope. This keeps
+spatial word coordinates correct after high-resolution downscaling and on
+multi-monitor desktops with negative origins. Standard scans are serialized;
+explicit deep OCR holds the capture lock only while taking its own screenshot
+and cannot overwrite or restore standard OCR state.
+
+The local monitor skips Agetha's own window and configured exclusions, rejects
+OCR results if the foreground window changes during recognition, and avoids
+rerunning Tesseract for visually unchanged frames. A periodic forced refresh
+and per-window state expiry prevent stale caches. Pattern events preserve OCR
+line coordinates/confidence and are deduplicated separately from the compatible
+`last_pattern_matches` current-state list. An active event does not retrigger
+until it clears for the configured number of clean scans and its cooldown has
+elapsed; a changed normalized snippet is a distinct event.
+
+Sensitive-looking tokens, bearer credentials, private keys, passwords, session
+values, and recovery-code forms are redacted only when screen text is prepared
+for Groq, OpenRouter, or Ollama context. Local pattern matching still uses the
+original OCR text. Use `OCR_EXCLUDED_APPS` and
+`OCR_EXCLUDED_TITLE_PATTERNS` for windows that should never be captured
+automatically; title exclusions accept plain text or a bounded `re:` prefix.
+
+On Windows, focused capture and process names use Win32 APIs and MSS. Linux/X11
+focused-window metadata uses `xdotool` or `wmctrl`; when those utilities are not
+available, capture may fall back to the selected full-display backend. Wayland
+support depends on an available portal-compatible capture tool such as
+Spectacle, Grim, or GNOME Screenshot. These fallbacks report status and do not
+reuse a stale focused-window origin.
+
+Tesseract remains the default real-time backend; Unlimited-OCR is still used
+only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported
+after both matching Tesseract language-data packages are installed locally.
 
 ### Dual-Layer Memory
 
@@ -222,6 +279,7 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 | `play_sound` / `play_emotion_sound` | Play sound or OS emotion sound |
 | `show_error_gif` | Show error animation |
 | `request_screen_read` | Force immediate OCR capture |
+| `analyze_screen_deep` | Explicit complex screenshot/document analysis through optional Unlimited-OCR ⚠ |
 | `search_memory` | BM25 search of long-term memory archive (`query`, optional `limit`) |
 | `search_web` | DuckDuckGo web search (`query`, optional `limit`) — requires `ENABLE_WEB_RAG=yes` ⚠ |
 | `fetch_webpage` | Fetch visible text from a URL (`url`) — requires `ENABLE_WEB_RAG=yes` ⚠ |
@@ -285,6 +343,9 @@ GROQ_API_KEY_2=
 
 # Optional — only if ENABLE_OPENROUTER = yes in config.txt
 OPENROUTER_API_KEY=sk-or-v1-...
+
+# Optional — only if the configured Unlimited-OCR server requires a key
+UNLIMITED_OCR_API_KEY=
 ```
 
 - Groq keys: [console.groq.com](https://console.groq.com)
@@ -309,7 +370,7 @@ All **non-secret** settings live in `config.txt` and are loaded by `app_config.p
 | `LOCAL_AI_MODEL` | *(empty)* | Ollama model (`ollama list`) |
 | `LOCAL_AI_TIMEOUT` | `30` | Ollama request timeout (seconds) |
 
-API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `config.txt`.
+API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`, `UNLIMITED_OCR_API_KEY`) → **`.env` only**, not `config.txt`.
 
 #### AI tuning
 
@@ -431,8 +492,30 @@ The glitch effect is **disabled by default** (`ENABLE_GLITCH_EFFECTS = no`). Whe
 | `ENABLE_SCREEN_READER` | `yes` | Enable OCR screen context |
 | `OCR_MAX_DIMENSION` | `2560` | Max capture dimension (px) |
 | `OCR_FOCUSED_WINDOW_ONLY` | `yes` | OCR focused window only |
+| `OCR_CHANGE_DETECTION` | `yes` | Skip Tesseract while the captured target is visually unchanged |
+| `OCR_CHANGE_THRESHOLD` | `0.025` | Normalized thumbnail-difference threshold (clamped 0-1) |
+| `OCR_FORCE_REFRESH_SECONDS` | `20` | Re-run OCR periodically even without visible change |
+| `OCR_STATE_EXPIRY_SECONDS` | `300` | Expire inactive per-window change state |
+| `OCR_PATTERN_COOLDOWN_SECONDS` | `60` | Suppress repeated notifications for the same normalized event |
+| `OCR_PATTERN_CONFIRM_SCANS` | `1` | Matching scans required before a normal-confidence event |
+| `OCR_LOW_CONFIDENCE_CONFIRM_SCANS` | `2` | Matching scans required for lower-confidence OCR events |
+| `OCR_PATTERN_CLEAR_SCANS` | `2` | Clean scans required before an event becomes inactive |
+| `OCR_MIN_WORD_CONFIDENCE` | `30` | Minimum Tesseract confidence for spatial word output |
+| `OCR_MIN_PATTERN_CONFIDENCE` | `45` | Minimum structured-line confidence for pattern matching |
+| `OCR_PREPROCESSING` | `auto` | `basic` grayscale scaling or adaptive local preprocessing |
+| `OCR_LANGUAGES` | `eng` | Installed Tesseract language codes, joined with `+` |
+| `OCR_PSM` | `auto` | Tesseract page segmentation: `auto`, `3`, `6`, or `11` |
+| `OCR_EXCLUDED_APPS` | *(empty)* | Comma-separated application names excluded from automatic capture |
+| `OCR_EXCLUDED_TITLE_PATTERNS` | *(empty)* | Comma-separated title text or `re:regex` exclusions |
+| `OCR_REDACT_SENSITIVE_TEXT` | `yes` | Redact common keys, tokens, and passwords before AI context |
 | `INCLUDE_WINDOW_TITLE_IN_CONTEXT` | `yes` | Add window title to AI context |
 | `TESSERACT_PATH` | *(empty)* | Custom path to `tesseract.exe` |
+| `DEEP_OCR_BACKEND` | `none` | Optional explicit backend: `none` or `unlimited_ocr` |
+| `UNLIMITED_OCR_SERVER_URL` | `http://127.0.0.1:10000` | Separate OpenAI-compatible service root |
+| `UNLIMITED_OCR_MODEL` | `Unlimited-OCR` | Served model name |
+| `UNLIMITED_OCR_TIMEOUT_SECONDS` | `180` | Explicit deep-analysis timeout (clamped 10–1200 seconds) |
+| `UNLIMITED_OCR_ALLOW_REMOTE` | `no` | Allow a non-loopback service; screenshots may leave this PC |
+| `DEEP_OCR_MAX_OUTPUT_CHARS` | `12000` | Maximum OCR text returned to AI context (clamped 1000–50000) |
 
 #### UI
 
@@ -462,7 +545,7 @@ Click the **📊** button in the title bar (beside minimize) to open the **Dashb
 | `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
 | `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
 | `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
-| `APP_VERSION` | `5.0.0` | Shown in window title |
+| `APP_VERSION` | `5.5.1` | Shown in window title |
 | `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
 | `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
 | `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |
@@ -544,21 +627,21 @@ Run **Medic_Checker** after enabling — it installs the package for `VOICE_TTS_
 
 ---
 
-## Medic_Checker v4.0 (PowerShell)
+## Medic_Checker v5.5.1 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
 | Step | Check |
 |------|-------|
-| Pre-flight | All 23 core modules + `requirements.txt` present |
+| Pre-flight | Current core modules + `requirements.txt` present |
 | [A–D] | ARM64/Snapdragon x64 Python detection & auto-install |
 | [1/7] | Python installed |
 | [2/7] | Virtual environment create/activate |
 | [3/7] | Packages from `requirements.txt`; optional voice/STT/DnD/**TTS** when enabled in `config.txt` |
-| [4/7] | Tesseract OCR (optional — enables screen reading) |
-| [5/7] | All 20 assets in `assets\` |
+| [4/7] | Tesseract OCR plus non-fatal optional deep-OCR configuration status |
+| [5/7] | All 21 required assets in `assets\` |
 | [6/7] | Config, `.env`, `memory\` (`soul.md`, episodic, long-term JSONL, stats, notepad); reports `ENABLE_LONGTERM_MEMORY` and `VOICE_OUTPUT_MODE` |
-| [7/7] | `py_compile` all 23 Python modules; import check for Phase 1–5 extensions |
+| [7/7] | `py_compile` all 35 checked Python modules; feature and reliability import checks |
 
 **Color codes:** `[ OK ]` green · `[WARN]` yellow · `[FAIL]` red
 
@@ -624,6 +707,24 @@ command_handlers.py → Execute action + update UI
 
 ## Changelog (Overhaul)
 
+### v5.5.1 — Reliability, Windows ARM, high-DPI UI, and lifecycle polish
+
+- Reliable focused-window OCR with immutable capture metadata, exact desktop
+  coordinates, change detection, event deduplication, exclusions, redaction,
+  and stale-window result rejection.
+- Optional explicit Unlimited-OCR integration for complex layouts; Tesseract
+  remains the automatic local backend and ambient turns cannot invoke deep OCR.
+- Correct x64 Python detection and selection on ARM64/Snapdragon Windows hosts,
+  including Prism-aware architecture reporting and virtual-environment repair.
+- Resolution/DPI-aware companion and dashboard scaling for Surface-class
+  2880x1920 displays.
+- Compact local weekday/date/time/timezone prompt context across Groq,
+  OpenRouter, and Ollama modes.
+- Cancellable CRT shutdown, optional mood glow, centralized guarded mood motion,
+  and idempotent graceful cleanup.
+- Repository-wide architecture, runtime-flow, module, configuration, Windows ARM,
+  and testing documentation under `docs/`.
+
 ### v5.0.0 — Emotion Engine & Transparent Windows Integration (Phase 6)
 
 - **`emotion_engine.py`** — four-dimension persistent state with inertia, decay, milestone-based `long_absence` (once per stage), injectable UTC clock, RLock-guarded RMW
@@ -677,6 +778,22 @@ command_handlers.py → Execute action + update UI
 ### Phase 1 — Foundation
 
 - Core command dispatch, OCR loop, Groq integration, memory system
+
+### Screen-monitoring validation
+
+The mock-based reliability suite does not need a display, Tesseract executable,
+network service, CUDA, or platform desktop utilities:
+
+```powershell
+python -m unittest tests.test_screen_monitoring_reliability -v
+python -m unittest discover -s tests
+```
+
+For manual acceptance, verify focused capture and coordinate placement on every
+monitor; own-window and configured-exclusion skips; unchanged, forced-refresh,
+and changed-frame statuses; repeated/cleared error events; rapid standard/deep
+requests; shutdown during OCR; and external-context redaction. On Linux, test
+both the available focused-window utility path and its full-display fallback.
 
 ---
 

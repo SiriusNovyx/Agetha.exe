@@ -2469,13 +2469,38 @@ class CompanionApp:
                 screen_text = self._screen.capture_text(
                     focused_only=_SETTINGS.ocr_focused_window_only,
                 )
-                self._last_screen_text = screen_text
+                monitor_status = getattr(self._screen, "last_monitor_status", "")
+                preserve_previous_context = False
+                if monitor_status == "skipped_excluded_window":
+                    active_title = ""
+                    screen_text = "[Screen OCR skipped for an excluded window.]"
+                    preserve_previous_context = True
+                elif monitor_status == "skipped_own_window":
+                    active_title = ""
+                    screen_text = "[Screen OCR skipped while Agetha has focus.]"
+                    preserve_previous_context = True
+                elif monitor_status == "ocr_empty":
+                    screen_text = "[Screen OCR found no readable text.]"
+                    preserve_previous_context = True
+                elif monitor_status == "unchanged" and not is_user:
+                    screen_text = "[Screen unchanged; no new OCR event.]"
+                    preserve_previous_context = True
+                if screen_text and not preserve_previous_context:
+                    self._last_screen_text = screen_text
 
-                _matches = getattr(self._screen, "last_pattern_matches", [])
+                _matches = getattr(
+                    self._screen,
+                    "last_pattern_matches" if is_user else "last_new_pattern_events",
+                    [],
+                )
+                _current_matches = getattr(self._screen, "last_pattern_matches", [])
+                if not is_user and _current_matches and not _matches:
+                    screen_text = "[Repeated screen event suppressed; no new OCR event.]"
+                    preserve_previous_context = True
                 if _matches:
                     tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
                     screen_text = tags + "\n" + screen_text
-                elif getattr(self._screen, "has_angry_trigger", False):
+                elif is_user and getattr(self._screen, "has_angry_trigger", False):
                     kws = ", ".join(self._screen.last_angry_keywords[:3])
                     screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
 
@@ -2488,7 +2513,7 @@ class CompanionApp:
                 }
                 _positions = getattr(self._screen, "last_word_positions", [])
                 _important = [p for p in _positions if p.get("text", "").lower() in _KEY_WORDS][:5]
-                if _important:
+                if _important and (is_user or bool(_matches)) and not preserve_previous_context:
                     pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
                     screen_text = f"[Error positions: {pos_str}]\n" + screen_text
             elif active_title:
@@ -2496,6 +2521,10 @@ class CompanionApp:
                 self._last_screen_text = screen_text
 
         ai_screen_context = screen_text or self._last_screen_text
+        if self._screen:
+            ai_screen_context = self._screen.redact_for_external_context(
+                ai_screen_context,
+            )
 
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
@@ -2825,9 +2854,16 @@ class CompanionApp:
                 self.root.after(0, lambda r=raw: self._subtitle.show_thinking(r))
 
         try:
+            selected_screen_context = (
+                self._last_screen_text if screen_context is None else screen_context
+            )
+            if self._screen:
+                selected_screen_context = self._screen.redact_for_external_context(
+                    selected_screen_context,
+                )
             if _SETTINGS.enable_streaming:
                 return self._ai.query_streaming(
-                    screen_context=self._last_screen_text if screen_context is None else screen_context,
+                    screen_context=selected_screen_context,
                     user_message=user_message,
                     doc_content=doc_content,
                     memory_search_context=memory_search_context,
@@ -2835,7 +2871,7 @@ class CompanionApp:
                     on_token=_on_token,
                 )
             return self._ai.query(
-                screen_context=self._last_screen_text if screen_context is None else screen_context,
+                screen_context=selected_screen_context,
                 user_message=user_message,
                 doc_content=doc_content,
                 memory_search_context=memory_search_context,
@@ -2999,7 +3035,9 @@ class CompanionApp:
                 player.stop()
             except Exception:
                 pass
-        for resource in (self._voice, self._voice_out, self._bleep):
+        for resource in (
+            self._voice, self._voice_out, self._bleep, getattr(self, "_screen", None),
+        ):
             if resource is not None:
                 try:
                     resource.stop()

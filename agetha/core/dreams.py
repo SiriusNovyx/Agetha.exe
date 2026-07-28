@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agetha.utils import logger
+from agetha.utils import logger, write_atomic
 from agetha.app_config import BASE_DIR
 
 MEMORY_DIR = BASE_DIR / "memory"
@@ -110,7 +110,7 @@ def _save_entries_unlocked(entries: list[dict[str, Any]]) -> None:
     """Rewrite the dream file; caller must hold `_lock`."""
     try:
         lines = [json.dumps(e, ensure_ascii=False) for e in entries]
-        DREAMS_FILE.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        write_atomic(DREAMS_FILE, "\n".join(lines) + ("\n" if lines else ""))
     except Exception as exc:
         logger.warning(f"dreams: write failed: {exc}")
 

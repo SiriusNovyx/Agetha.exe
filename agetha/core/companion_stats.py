@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agetha.utils import logger
+from agetha.utils import logger, write_atomic
 
 from agetha.app_config import BASE_DIR
 
@@ -115,21 +115,24 @@ def _coerce_stats(raw: dict[str, Any] | None) -> dict[str, Any]:
         out["last_updated"] = raw["last_updated"]
     return out
 
-
 def _load_stats_unlocked() -> dict[str, Any]:
     """Load stats; caller must hold `_lock`."""
     global _cached_stats
     if _cached_stats is not None:
         return dict(_cached_stats)
     try:
-        if STATS_FILE.exists():
-            raw = json.loads(STATS_FILE.read_text(encoding="utf-8", errors="replace"))
-            if isinstance(raw, dict):
-                _cached_stats = _coerce_stats(raw)
-                return dict(_cached_stats)
+        if not STATS_FILE.exists():
+            return dict(_DEFAULTS)
+        raw = json.loads(STATS_FILE.read_text(encoding="utf-8", errors="replace"))
+        if not isinstance(raw, dict):
+            raise ValueError("expected a JSON object")
+        _cached_stats = _coerce_stats(raw)
+        return dict(_cached_stats)
     except Exception as exc:
         logger.warning(f"companion_stats: load failed: {exc}")
-    return dict(_DEFAULTS)
+        repaired = dict(_DEFAULTS)
+        _save_stats_unlocked(repaired)
+        return dict(_cached_stats or repaired)
 
 
 def _save_stats_unlocked(stats: dict[str, Any]) -> None:
@@ -138,10 +141,7 @@ def _save_stats_unlocked(stats: dict[str, Any]) -> None:
     payload = _coerce_stats(stats)
     payload["last_updated"] = datetime.now(timezone.utc).isoformat()
     try:
-        STATS_FILE.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_atomic(STATS_FILE, json.dumps(payload, indent=2, ensure_ascii=False))
         _cached_stats = dict(payload)
     except Exception as exc:
         logger.warning(f"companion_stats: save failed: {exc}")
