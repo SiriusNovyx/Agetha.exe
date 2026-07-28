@@ -5,6 +5,7 @@ dashboard.py — Win95-style companion dashboard (no main.py import).
 from __future__ import annotations
 
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox, ttk
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,25 @@ W95_FONT_BOLD = ("MS Sans Serif", 8, "bold")
 W95_WARN = "#800000"
 
 NOTEPAD_FILE = BASE_DIR / "memory" / "notepad.txt"
+
+PROJECT_LINKS: dict[str, str] = {
+    "Fork repository": "https://github.com/SiriusNovyx/Agetha.exe",
+    "Report a fork issue": "https://github.com/SiriusNovyx/Agetha.exe/issues",
+    "Fork documentation": "https://github.com/SiriusNovyx/Agetha.exe#readme",
+    "Original upstream": "https://github.com/tamsamas/Agetha.exe",
+    "GNU GPLv3 license": "https://github.com/SiriusNovyx/Agetha.exe/blob/main/LICENSE",
+}
+
+
+def open_project_link(label: str) -> bool:
+    """Open only a hardcoded project HTTPS URL after an explicit user click."""
+    url = PROJECT_LINKS.get(label)
+    if not url or not url.startswith("https://"):
+        return False
+    try:
+        return bool(webbrowser.open_new_tab(url))
+    except Exception:
+        return False
 
 _POLL_MS = 2000
 
@@ -148,6 +168,9 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
             ("AI_MAX_TOKENS", "text", True, ()),
             ("AI_TOP_P", "text", True, ()),
             ("ENABLE_STREAMING", "bool", True, ()),
+            ("ENABLE_DATETIME_CONTEXT", "bool", True, ()),
+            ("DATETIME_INCLUDE_SECONDS", "bool", True, ()),
+            ("DATETIME_INCLUDE_TIMEZONE", "bool", True, ()),
         ),
     ),
     (
@@ -247,12 +270,20 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
         "UI — restart required",
         (
             ("WINDOW_TOPMOST", "bool", True, ()),
+            ("UI_SCALE", "text", True, ()),
             ("WINDOW_START_X", "text", True, ()),
             ("WINDOW_START_Y", "text", True, ()),
             ("SUBTITLE_CHAR_DELAY", "text", True, ()),
             ("ANIMATION_SPEED", "text", True, ()),
             ("WINDOW_MOVE_SMOOTH", "bool", True, ()),
             ("WINDOW_MOVE_DURATION_MS", "text", True, ()),
+            ("ENABLE_CRT_CLOSE_ANIMATION", "bool", True, ()),
+            ("REDUCED_MOTION", "bool", True, ()),
+            ("ENABLE_MOOD_GLOW", "bool", True, ()),
+            ("MOOD_GLOW_ANIMATED", "bool", True, ()),
+            ("MOOD_GLOW_INTERVAL_MS", "text", True, ()),
+            ("ENABLE_MOOD_MOTION", "bool", True, ()),
+            ("MOOD_MOTION_COOLDOWN_SECONDS", "text", True, ()),
             ("ENABLE_FILE_DRAG_DROP", "bool", True, ()),
             ("APP_VERSION", "text", True, ()),
             ("GITHUB_RELEASES_URL", "text", True, ()),
@@ -378,6 +409,14 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     import sys
     from agetha.ui.w95_window import apply_borderless_win95, refresh_borderless, show_borderless
 
+    try:
+        ui_scale = float(getattr(parent, "_agetha_ui_scale", 1.0))
+    except (TypeError, ValueError):
+        ui_scale = 1.0
+
+    def _px(value: int) -> int:
+        return max(1, int(round(value * ui_scale)))
+
     win = tk.Toplevel(parent)
     apply_borderless_win95(win, parent, topmost=True)
     try:
@@ -391,8 +430,8 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         except Exception:
             pass
     win.configure(bg=W95_BG)
-    win.geometry("560x480")
-    win.minsize(460, 360)
+    win.geometry(f"{_px(560)}x{_px(480)}")
+    win.minsize(_px(460), _px(360))
 
     _closing = False
     _after_jobs: list[str] = []
@@ -416,7 +455,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     outer.pack(fill="both", expand=True)
 
     # ── Win95 title bar ─────────────────────────────────────────────────────
-    title_bar = tk.Frame(outer, bg=W95_TITLE_BG, height=18)
+    title_bar = tk.Frame(outer, bg=W95_TITLE_BG, height=_px(18))
     title_bar.pack(fill="x", padx=2, pady=(2, 0))
     title_bar.pack_propagate(False)
 
@@ -661,6 +700,33 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     ).pack(side="right", padx=(0, 4))
 
     # ── Settings (full config editor, apply once) ─────────────────────────────
+    about_frame = tk.Frame(notebook, bg=W95_BG)
+    notebook.add(about_frame, text="About")
+    tk.Label(
+        about_frame,
+        text=(
+            "Agetha Mod by SiriusNovyx\n"
+            "Based on Agetha.exe by tamsamas\n"
+            "Licensed under GNU GPLv3"
+        ),
+        bg=W95_BG, fg=W95_TEXT, font=W95_FONT_BOLD,
+        justify="left", anchor="w",
+    ).pack(fill="x", padx=14, pady=(16, 10))
+    tk.Label(
+        about_frame,
+        text=(
+            "Fork support and issue reporting belong to SiriusNovyx. "
+            "The original upstream project does not maintain or support this fork."
+        ),
+        bg=W95_BG, fg=W95_WARN, font=W95_FONT,
+        justify="left", anchor="w", wraplength=_px(500),
+    ).pack(fill="x", padx=14, pady=(0, 10))
+    for link_label in PROJECT_LINKS:
+        tk.Button(
+            about_frame, text=link_label, font=W95_FONT, bg=W95_BTN_BG,
+            command=lambda label=link_label: open_project_link(label),
+        ).pack(anchor="w", padx=14, pady=2)
+
     settings_frame = tk.Frame(notebook, bg=W95_BG)
     notebook.add(settings_frame, text="Settings")
 
@@ -678,12 +744,13 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     tk.Label(
         header,
         text="All config.txt settings (API keys stay in .env). Changes apply only when you click Apply.",
-        bg=W95_BG, fg=W95_TEXT, font=W95_FONT, anchor="w", wraplength=500, justify="left",
+        bg=W95_BG, fg=W95_TEXT, font=W95_FONT, anchor="w", wraplength=_px(500), justify="left",
     ).pack(fill="x")
     tk.Label(
         header,
         text="* = requires restarting Agetha   ·   Medic section applies on next Medic_Checker run",
         bg=W95_BG, fg=W95_WARN, font=W95_FONT, anchor="w",
+        wraplength=_px(500), justify="left",
     ).pack(fill="x", pady=(2, 0))
     # v5.0.0 — live read-only status lines (never fail, never mutate state)
     _live_lines: list[str] = []
@@ -707,7 +774,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
             header,
             text=_line,
             bg=W95_BG, fg=W95_TEXT, font=W95_FONT, anchor="w",
-            wraplength=500, justify="left",
+            wraplength=_px(500), justify="left",
         ).pack(fill="x", pady=(2, 0))
 
     canvas_host = tk.Frame(settings_frame, bg=W95_BG)

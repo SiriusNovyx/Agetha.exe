@@ -320,6 +320,9 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`) → **`.env` only**, not `conf
 | `AI_TOP_P` | `0.95` | Nucleus sampling (0–1) |
 | `ENABLE_STREAMING` | `yes` | Stream Groq responses to UI |
 | `ENABLE_AMBIENT_POLLS` | `yes` | Periodic screen-context AI polls |
+| `ENABLE_DATETIME_CONTEXT` | `yes` | Include compact local weekday/date/time in every AI prompt |
+| `DATETIME_INCLUDE_SECONDS` | `no` | Include seconds in datetime context |
+| `DATETIME_INCLUDE_TIMEZONE` | `yes` | Include local zone name and UTC offset |
 
 #### OS permissions
 
@@ -436,9 +439,17 @@ The glitch effect is **disabled by default** (`ENABLE_GLITCH_EFFECTS = no`). Whe
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `WINDOW_TOPMOST` | `yes` | Keep Agetha above other windows |
+| `UI_SCALE` | `auto` | Scale the UI from display resolution, or set a manual value from `0.75` to `2.50` |
 | `WINDOW_START_X` / `Y` | `80` | Initial window position |
 | `SUBTITLE_CHAR_DELAY` | `0.035` | Typewriter subtitle speed (seconds) |
 | `ANIMATION_SPEED` | `0.6` | GIF speed multiplier |
+| `ENABLE_CRT_CLOSE_ANIMATION` | `yes` | Brief CRT collapse before graceful application exit |
+| `REDUCED_MOTION` | `no` | Disable decorative window movement and animated glow |
+| `ENABLE_MOOD_GLOW` | `no` | Enable a subtle mood-coloured GIF border |
+| `MOOD_GLOW_ANIMATED` | `yes` | Pulse the enabled mood border; reduced motion makes it static |
+| `MOOD_GLOW_INTERVAL_MS` | `150` | Glow refresh interval (clamped to 100-1000 ms) |
+| `ENABLE_MOOD_MOTION` | `yes` | Allow guarded motion once per completed response |
+| `MOOD_MOTION_COOLDOWN_SECONDS` | `4` | Motion cooldown (clamped to 1-60 seconds) |
 
 Click the **📊** button in the title bar (beside minimize) to open the **Dashboard** — retro progress bars for CPU/RAM/disk/core heat, virus registry stats, notepad, and limited config toggles (safe yes/no keys).
 
@@ -689,8 +700,10 @@ By using this software you accept full responsibility for any outcome. The autho
 **License:** GNU General Public License v3.0 (GPL-3.0) — see `LICENSE`
 
 **Credits:**
-- **Original Agetha.exe** — @tomiszivacs
-- **Fork / Overhaul** — SiriusNovyx
+- **Agetha Mod** — [SiriusNovyx](https://github.com/SiriusNovyx/Agetha.exe)
+- **Original Agetha.exe** — [tamsamas](https://github.com/tamsamas/Agetha.exe)
+
+Fork support and [issue reports](https://github.com/SiriusNovyx/Agetha.exe/issues) belong to SiriusNovyx. The original upstream project does not maintain or support this fork.
 
 Feedback, bug reports, and pull requests welcome.
 

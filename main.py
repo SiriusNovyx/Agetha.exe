@@ -58,6 +58,10 @@ from agetha.utils import (
 from agetha.app_config import get_settings
 from agetha.platform.window_control import ease_out_cubic
 from agetha.features.tts_player import VoiceOutputCoordinator
+from agetha.ui.mood_effects import MoodGlowController
+from agetha.ui.motion_effects import MoodMotionController
+from agetha.ui.window_effects import CRTCloseController
+from agetha.ui.display_scale import resolve_ui_scale, scale_px
 
 _SETTINGS = get_settings()
 
@@ -65,8 +69,17 @@ ASSETS      = BASE_DIR / "assets"
 FONT_PATH   = ASSETS / "barrio.ttf"
 
 
-GIF_W    = 340
-GIF_H    = 300
+BASE_WINDOW_W = WINDOW_W
+BASE_WINDOW_H = WINDOW_H
+BASE_GIF_W = 340
+BASE_GIF_H = 300
+_UI_SCALE = 1.0
+GIF_W = BASE_GIF_W
+GIF_H = BASE_GIF_H
+
+
+def _px(value: int | float) -> int:
+    return scale_px(value, _UI_SCALE)
 
 # Phase 2: Attention-snap system
 # Moods that qualify to trigger a center-snap during ambient polls
@@ -545,7 +558,7 @@ class SubtitleRenderer:
         self._voice_out = voice_out
 
         self._canvas_w = WINDOW_W
-        self._canvas_h = 130
+        self._canvas_h = _px(130)
         self._shadow_id: int | None = None
         self._text_id: int | None = None
         self._last_layout: dict | None = None
@@ -683,7 +696,7 @@ class SubtitleRenderer:
     def _compute_layout(self, text: str, color: str) -> dict | None:
         cw = self._canvas_w
         ch = self._canvas_h
-        max_w = max(40, cw - 24)
+        max_w = max(_px(40), cw - _px(24))
         max_lines = 3
         min_font_size = 8
 
@@ -730,7 +743,7 @@ class SubtitleRenderer:
 
         candidate = " ".join(candidate_words)
         x = cw // 2
-        y = 6
+        y = _px(6)
 
         while font_size >= min_font_size:
             try:
@@ -742,8 +755,8 @@ class SubtitleRenderer:
                 self._canvas.delete(tid)
                 if bbox:
                     height = bbox[3] - bbox[1]
-                    if height <= ch - 12:
-                        y = max(6, (ch - height) // 2)
+                    if height <= ch - _px(12):
+                        y = max(_px(6), (ch - height) // 2)
                         break
                     font_size -= 1
                     font = self._load_font(font_size)
@@ -831,7 +844,7 @@ class AgethaPopup:
         outer.pack(fill="both", expand=True)
 
         # ── Title bar ─────────────────────────────────────────────────────
-        title_bar = tk.Frame(outer, bg=W95_TITLE_BG, height=18)
+        title_bar = tk.Frame(outer, bg=W95_TITLE_BG, height=_px(18))
         title_bar.pack(fill="x", padx=2, pady=(2, 0))
         title_bar.pack_propagate(False)
 
@@ -1038,6 +1051,34 @@ class CompanionApp:
             self.root = tk.Tk()
             logger.info("[DnD] tkinterdnd2 not installed — drag-and-drop disabled")
 
+        try:
+            # Tk already scales point-sized fonts for the active Windows DPI.
+            # Use that DPI only for pixel geometry; applying it to ``tk scaling``
+            # again makes text oversized relative to the window on Surface PCs.
+            display_dpi_scale = float(self.root.winfo_fpixels("1i")) / 96.0
+        except Exception:
+            display_dpi_scale = None
+
+        global WINDOW_W, WINDOW_H, GIF_W, GIF_H, _UI_SCALE
+        _UI_SCALE = resolve_ui_scale(
+            self.root.winfo_screenwidth(),
+            self.root.winfo_screenheight(),
+            _SETTINGS.ui_scale,
+            dpi_scale=display_dpi_scale,
+        )
+        WINDOW_W = scale_px(BASE_WINDOW_W, _UI_SCALE)
+        WINDOW_H = scale_px(BASE_WINDOW_H, _UI_SCALE)
+        GIF_W = scale_px(BASE_GIF_W, _UI_SCALE)
+        GIF_H = scale_px(BASE_GIF_H, _UI_SCALE)
+        self.WINDOW_W, self.WINDOW_H = WINDOW_W, WINDOW_H
+        self._ui_scale = _UI_SCALE
+        setattr(self.root, "_agetha_ui_scale", _UI_SCALE)
+        logger.info(
+            f"[UI] scale={_UI_SCALE:.2f} display="
+            f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()} "
+            f"dpi_scale={display_dpi_scale or 1.0:.2f}"
+        )
+
         self.root.title(f"Agetha.exe v{_SETTINGS.app_version}")
         self.root.geometry(
             f"{WINDOW_W}x{WINDOW_H}+{_SETTINGS.window_start_x}+{_SETTINGS.window_start_y}"
@@ -1057,7 +1098,12 @@ class CompanionApp:
         self._gif_cache: dict[str, GifPlayer] = {}
         self._talking_rotate_job = None
         self._poll_job = None
+        self._placeholder_refresh_job = None
+        self._restore_job = None
+        self._wake_job = None
+        self._motion_request_job = None
         self._persistent_mood: str | None = None  # holds sad/angry across speech→idle
+        self._current_display_mood = "sleeping"
 
         # Defer heavy initialization to background thread so the window shows immediately
         self._bleep  = None
@@ -1083,8 +1129,42 @@ class CompanionApp:
         self._mic_active = False
         self._dragging_file = False
         self._last_dragged_file = ""
+        self._closing = False
+        self._shutdown_complete = False
+        self._is_dragging = False
+        self._is_minimized = False
+        self._drag_x = self._drag_y = 0
+        self._win_x, self._win_y = _SETTINGS.window_start_x, _SETTINGS.window_start_y
+        self._geom_anim_job = None
 
         self._build_ui()
+        self._mood_glow = MoodGlowController(
+            self.root,
+            self._gif_border,
+            enabled=_SETTINGS.enable_mood_glow,
+            animated=_SETTINGS.mood_glow_animated,
+            interval_ms=_SETTINGS.mood_glow_interval_ms,
+            reduced_motion=_SETTINGS.reduced_motion,
+        )
+        self._motion = MoodMotionController(
+            self.root,
+            enabled=_SETTINGS.enable_mood_motion,
+            reduced_motion=_SETTINGS.reduced_motion,
+            cooldown_seconds=_SETTINGS.mood_motion_cooldown_seconds,
+            is_dragging=lambda: self._is_dragging,
+            is_closing=lambda: self._closing,
+            is_minimized=lambda: self._is_minimized,
+            geometry_busy=lambda: self._geom_anim_job is not None,
+        )
+        self._close_effect = CRTCloseController(
+            self.root,
+            self._graceful_shutdown,
+            enabled=_SETTINGS.enable_crt_close_animation,
+            reduced_motion=_SETTINGS.reduced_motion,
+            cancel_geometry=self._cancel_geometry_animation,
+            disable_input=self._disable_input_for_close,
+        )
+        self.root.protocol("WM_DELETE_WINDOW", self._request_close)
         self._bind_keystroke_tracking()   # Phase 2: track any key as direct interaction
 
         # Simple loading label — no progress bar, no multi-phase preloading
@@ -1112,11 +1192,6 @@ class CompanionApp:
         # Start heavy init (audio, screen reader, AI) on a background thread
         threading.Thread(target=self._init_background, daemon=True).start()
 
-        self._drag_x = self._drag_y = 0
-        self._win_x, self._win_y = _SETTINGS.window_start_x, _SETTINGS.window_start_y
-        self._geom_anim_job = None
-        self._is_minimized = False
-
     def _build_ui(self):
         # Patch font constants now that Tk is alive and tkfont.families() is valid
         global W95_FONT, W95_FONT_BOLD
@@ -1128,7 +1203,7 @@ class CompanionApp:
         self._outer.pack(fill="both", expand=True)
 
         # ── Win95 Title bar ───────────────────────────────────────────────────
-        title_bar = tk.Frame(self._outer, bg=W95_TITLE_BG, height=18)
+        title_bar = tk.Frame(self._outer, bg=W95_TITLE_BG, height=_px(18))
         title_bar.pack(fill="x", padx=2, pady=(2, 0))
         title_bar.pack_propagate(False)
 
@@ -1153,7 +1228,7 @@ class CompanionApp:
             font=("MS Sans Serif", 7, "bold"),
             relief="raised", bd=2, width=2,
             activebackground=W95_BTN_BG, activeforeground=W95_TEXT,
-            command=self.root.quit,
+            command=self._request_close,
         )
         close_btn.pack(side="right", padx=(0, 2), pady=1)
 
@@ -1194,13 +1269,14 @@ class CompanionApp:
         for w in (title_bar, title_lbl):
             w.bind("<ButtonPress-1>", self._drag_start)
             w.bind("<B1-Motion>",     self._drag_motion)
+            w.bind("<ButtonRelease-1>", self._drag_end)
 
 
         # ── GIF display area — black background, raised border ───────────────
-        gif_border = tk.Frame(self._outer, bg="#000000", relief="raised", bd=2)
-        gif_border.pack(fill="x", padx=4, pady=(4, 0))
+        self._gif_border = tk.Frame(self._outer, bg="#000000", relief="raised", bd=2)
+        self._gif_border.pack(fill="x", padx=4, pady=(4, 0))
 
-        self._gif_label = tk.Label(gif_border, bg="#000000", bd=0,
+        self._gif_label = tk.Label(self._gif_border, bg="#000000", bd=0,
                                    width=GIF_W, height=GIF_H,
                                    anchor="center")
         self._gif_label.pack(fill="both", expand=True)
@@ -1224,7 +1300,7 @@ class CompanionApp:
                  font=W95_FONT, anchor="w").pack(side="left", padx=4, pady=1)
 
         # ── Subtitle canvas — dark gray, no border ────────────────────────────
-        self._sub_canvas = tk.Canvas(self._outer, width=WINDOW_W, height=130,
+        self._sub_canvas = tk.Canvas(self._outer, width=WINDOW_W, height=_px(130),
                                      bg="#a0a0a0", bd=2, relief="sunken",
                                      highlightthickness=0)
         self._sub_canvas.pack(fill="x", padx=4, pady=(4, 0))
@@ -1253,7 +1329,7 @@ class CompanionApp:
             insertbackground=W95_TEXT,
             relief="flat", bd=0,
         )
-        self._input_box.pack(fill="both", expand=True, ipady=6, padx=2)
+        self._input_box.pack(fill="both", expand=True, ipady=_px(6), padx=_px(2))
 
         placeholder_font = tkfont.Font(family="MS Sans Serif", size=7)
         self._placeholder_lbl = tk.Label(
@@ -1326,13 +1402,21 @@ class CompanionApp:
             self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
 
     def _start_placeholder_refresh(self) -> None:
+        if self._closing or self._placeholder_refresh_job is not None:
+            return
+
         def _tick():
+            self._placeholder_refresh_job = None
+            if self._closing:
+                return
             try:
                 self._update_placeholder(focused=self._input_has_focus())
             except Exception:
                 pass
-            self.root.after(10000, _tick)
-        self.root.after(10000, _tick)
+            if not self._closing:
+                self._placeholder_refresh_job = self.root.after(10000, _tick)
+
+        self._placeholder_refresh_job = self.root.after(10000, _tick)
 
     def _reset_mic_button(self) -> None:
         self._mic_active = False
@@ -1488,14 +1572,27 @@ class CompanionApp:
             logger.debug(f"Token status update failed: {exc}")
 
     def _drag_start(self, e):
+        if self._closing:
+            return
+        self._is_dragging = True
+        if hasattr(self, "_motion"):
+            self._motion.cancel_motion(restore=True)
+        self._cancel_geometry_animation()
+        self._drag_x, self._drag_y = e.x_root, e.y_root
+        self._win_x, self._win_y = self.root.winfo_x(), self.root.winfo_y()
+
+    def _drag_end(self, _event=None):
+        self._is_dragging = False
+
+    def _cancel_geometry_animation(self) -> None:
         if self._geom_anim_job is not None:
             try:
                 self.root.after_cancel(self._geom_anim_job)
             except Exception:
                 pass
             self._geom_anim_job = None
-        self._drag_x, self._drag_y = e.x_root, e.y_root
-        self._win_x, self._win_y = self.root.winfo_x(), self.root.winfo_y()
+        if hasattr(self, "_motion"):
+            self._motion.cancel_motion(restore=True)
 
     def animate_geometry(
         self,
@@ -1506,18 +1603,15 @@ class CompanionApp:
         on_done: Callable[[], None] | None = None,
     ) -> None:
         """Smooth move for Agetha's window — measure once, then only geometry writes."""
+        if self._closing or self._is_dragging or self._is_minimized:
+            return
         smooth = _SETTINGS.window_move_smooth
         if duration_ms is None:
             duration_ms = _SETTINGS.window_move_duration_ms
 
         target_x, target_y = int(target_x), int(target_y)
 
-        if self._geom_anim_job is not None:
-            try:
-                self.root.after_cancel(self._geom_anim_job)
-            except Exception:
-                pass
-            self._geom_anim_job = None
+        self._cancel_geometry_animation()
 
         if not smooth or duration_ms <= 0:
             self._win_x, self._win_y = target_x, target_y
@@ -1553,7 +1647,7 @@ class CompanionApp:
             self._win_x, self._win_y = nx, ny
             self.root.geometry(f"+{nx}+{ny}")
             if t < 1.0:
-                self._geom_anim_job = self.root.after(16, _tick)
+                self._geom_anim_job = self.root.after(50, _tick)
             else:
                 self._geom_anim_job = None
                 self._win_x, self._win_y = target_x, target_y
@@ -1564,6 +1658,8 @@ class CompanionApp:
         _tick()
 
     def _drag_motion(self, e):
+        if self._closing:
+            return
         dx = e.x_root - self._drag_x
         dy = e.y_root - self._drag_y
         self._win_x += dx
@@ -1582,7 +1678,12 @@ class CompanionApp:
     def _minimize(self):
         """Minimize the overrideredirect window.
         Handles Windows and Linux (compositors/window managers) safely."""
+        if self._closing:
+            return
         self._is_minimized = True
+        self._cancel_geometry_animation()
+        if hasattr(self, "_mood_glow"):
+            self._mood_glow.cancel(reset=False)
         self._pause_gif_playback()
         if IS_WINDOWS:
             try:
@@ -1591,6 +1692,7 @@ class CompanionApp:
             except Exception:
                 return
             def _bind_restore():
+                self._restore_job = None
                 def _on_map(event):
                     try:
                         if self.root.state() != "iconic":
@@ -1602,11 +1704,12 @@ class CompanionApp:
                             self.root.lift()
                             self._is_minimized = False
                             self._resume_gif_playback()
+                            self._refresh_mood_glow()
                             self.root.unbind("<Map>")
                     except Exception:
                         pass
                 self.root.bind("<Map>", _on_map)
-            self.root.after(250, _bind_restore)
+            self._restore_job = self.root.after(250, _bind_restore)
         else:
             try:
                 self.root.overrideredirect(False)
@@ -1614,6 +1717,7 @@ class CompanionApp:
             except Exception:
                 pass
             def _bind_restore_linux():
+                self._restore_job = None
                 def _on_map(event):
                     try:
                         if self.root.state() != "iconic":
@@ -1621,11 +1725,12 @@ class CompanionApp:
                             self.root.lift()
                             self._is_minimized = False
                             self._resume_gif_playback()
+                            self._refresh_mood_glow()
                             self.root.unbind("<Map>")
                     except Exception:
                         pass
                 self.root.bind("<Map>", _on_map)
-            self.root.after(250, _bind_restore_linux)
+            self._restore_job = self.root.after(250, _bind_restore_linux)
 
     def _on_gif_click(self, event=None):
         """Handle a click on the Agetha gif — sends a hidden touch message to the AI.
@@ -1675,6 +1780,8 @@ class CompanionApp:
         threading.Thread(target=self._ai_tick, kwargs={"user_message": text}, daemon=True).start()
 
     def _re_enable_input(self):
+        if self._closing:
+            return
         self._input_box.config(state="normal")
         self._input_box.focus_set()
         try:
@@ -1707,10 +1814,14 @@ class CompanionApp:
         """
         if mood not in _ATTENTION_MOODS or not _SETTINGS.enable_attention_snap:
             return
+        if self._closing or self._is_minimized or self._is_dragging:
+            return
         threshold  = _MOOD_SNAP_THRESHOLDS.get(mood, 600)
         inactivity = time.time() - self._last_direct_interaction_time
 
         def _do_position():
+            if self._closing or self._is_minimized or self._is_dragging:
+                return
             try:
                 sw = self.root.winfo_screenwidth()
                 sh = self.root.winfo_screenheight()
@@ -1840,6 +1951,13 @@ class CompanionApp:
 
             # Apply the results on the main thread (UI-safe operations there)
             def _finish():
+                if self._closing:
+                    try:
+                        if bleep:
+                            bleep.stop()
+                    except Exception:
+                        pass
+                    return
                 try:
                     self._bleep = bleep
                     self._screen = screen
@@ -1872,7 +1990,12 @@ class CompanionApp:
             try:
                 self.root.after(0, _finish)
             except Exception:
-                _finish()
+                # Tk may already be closing; never run this UI handoff on the worker.
+                try:
+                    if bleep:
+                        bleep.stop()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[BackgroundInit] Unexpected error: {e}")
             native_error_popup("Agetha — Unexpected Error", f"Unexpected startup error:\n{e}")
@@ -2005,7 +2128,32 @@ class CompanionApp:
             self.root.after_cancel(self._talking_rotate_job)
             self._talking_rotate_job = None
 
+    def _refresh_mood_glow(self) -> None:
+        if self._closing or self._is_minimized or not hasattr(self, "_mood_glow"):
+            return
+        self._mood_glow.set_mood(getattr(self, "_current_display_mood", "neutral"))
+
+    def _set_display_mood(self, mood: str) -> None:
+        self._current_display_mood = mood or "neutral"
+        self._refresh_mood_glow()
+
+    def _play_response_motion(self, mood: str) -> None:
+        """Schedule at most one motion for this completed response."""
+        if self._closing or not hasattr(self, "_motion"):
+            return
+        if self._motion_request_job is not None:
+            return
+
+        def _play() -> None:
+            self._motion_request_job = None
+            if not self._closing:
+                self._motion.play_mood(mood)
+
+        self._motion_request_job = self.root.after(0, _play)
+
     def _set_state(self, state: str, mood: str = "neutral"):
+        if self._closing:
+            return
         if threading.current_thread() is not threading.main_thread():
             self.root.after(0, lambda s=state, m=mood: self._set_state(s, m))
             return
@@ -2058,10 +2206,12 @@ class CompanionApp:
         if state == self.STATE_SLEEPING:
             self._persistent_mood = None
             self._play_gif("sleeping.gif")
+            self._set_display_mood("sleeping")
         elif state == self.STATE_THINKING:
             self._persistent_mood = None
             self._play_gif_once_then("thinking.gif", "thinking-static.gif",
                                      guard=lambda: self._state == self.STATE_THINKING)
+            self._set_display_mood("thinking")
         elif state == self.STATE_IDLE:
             # If we have a sticky mood carry it forward; a new response will clear it
             effective_mood = self._persistent_mood if self._persistent_mood else mood
@@ -2080,6 +2230,7 @@ class CompanionApp:
                     self._play_gif(mood_gif)
                 else:
                     self._play_gif(self._pick_idle_gif())
+            self._set_display_mood(effective_mood)
             # Schedule loaf.gif after idle; sleep follows another idle period
             try:
                 self._loaf_job = self.root.after(LOAF_TIMER_MS, self._enter_loaf)
@@ -2107,6 +2258,7 @@ class CompanionApp:
                     self._play_gif(talk_gif)
             else:
                 self._start_talking_rotation(mood)
+            self._set_display_mood(mood)
             # Speech bleeps/TTS are started from _speak_and_continue / _try_short_mood_speak
 
     def _enter_loaf(self):
@@ -2173,13 +2325,23 @@ class CompanionApp:
 
     def _start_wake_sequence(self):
         self._set_state(self.STATE_SLEEPING)
-        self.root.after(WAKE_DELAY_MS, self._finish_wake)
+        if self._wake_job is not None:
+            try:
+                self.root.after_cancel(self._wake_job)
+            except Exception:
+                pass
+        self._wake_job = self.root.after(WAKE_DELAY_MS, self._finish_wake)
 
     def _finish_wake(self):
+        self._wake_job = None
+        if self._closing:
+            return
         self._set_state(self.STATE_IDLE, "neutral")
         self.root.after(1000, self._schedule_screen_poll)
 
     def _schedule_screen_poll(self):
+        if self._closing:
+            return
         if not get_settings().enable_ambient_polls:
             return
         if self._poll_job:
@@ -2188,6 +2350,8 @@ class CompanionApp:
         threading.Thread(target=self._ai_tick, daemon=True).start()
 
     def _reschedule_screen_poll(self):
+        if self._closing:
+            return
         if not get_settings().enable_ambient_polls:
             if self._poll_job:
                 self.root.after_cancel(self._poll_job)
@@ -2228,6 +2392,8 @@ class CompanionApp:
         self.root.after(0, lambda: self._subtitle.show_message("Cancelled.", "#888888"))
 
     def _ai_tick(self, user_message: str | None = None):
+        if self._closing:
+            return
         is_user = user_message is not None
 
         # Deep sleep: skip ambient polls (presence rest). User interaction still wakes her.
@@ -2247,11 +2413,14 @@ class CompanionApp:
 
         if not self._ai:
             self._ai_busy = False
-            self._re_enable_input()
+            self.root.after(0, self._re_enable_input)
             self._reschedule_screen_poll()
             self._drain_pending_user_message()
             return
 
+        if self._closing:
+            self._ai_busy = False
+            return
         self._cancel_event.clear()
 
         if is_user:
@@ -2347,6 +2516,9 @@ class CompanionApp:
                     user_message=user_message or "",
                 )
         except Exception as exc:
+            if self._closing:
+                self._ai_busy = False
+                return
             err_str = str(exc)
             logger.error(f"AI tick failed: {err_str}")
             _groq_limit_keywords = ("rate_limit", "rate limit", "429", "quota", "groq_exhausted")
@@ -2386,6 +2558,9 @@ class CompanionApp:
         self._post_ai_tick_callbacks.append(callback)
 
     def _run_deferred_ai_tick_callbacks(self) -> None:
+        if self._closing:
+            self._post_ai_tick_callbacks.clear()
+            return
         callbacks = self._post_ai_tick_callbacks[:]
         self._post_ai_tick_callbacks.clear()
         for cb in callbacks:
@@ -2395,6 +2570,10 @@ class CompanionApp:
                 logger.debug(f"deferred ai tick callback failed: {exc}")
 
     def _drain_pending_user_message(self) -> None:
+        if self._closing:
+            with self._ai_tick_lock:
+                self._pending_user_message = None
+            return
         pending: str | None
         with self._ai_tick_lock:
             pending = self._pending_user_message
@@ -2549,7 +2728,7 @@ class CompanionApp:
         outer = tk.Frame(dlg, bg=W95_BG, relief="raised", bd=2)
         outer.pack(fill="both", expand=True)
 
-        title_bar = tk.Frame(outer, bg=W95_TITLE_BG, height=18)
+        title_bar = tk.Frame(outer, bg=W95_TITLE_BG, height=_px(18))
         title_bar.pack(fill="x", padx=2, pady=(2, 0))
         title_bar.pack_propagate(False)
         tk.Label(
@@ -2728,40 +2907,123 @@ class CompanionApp:
         else:
             self.root.after(0, self._reschedule_screen_poll)
 
-    def _shutdown(self):
-        # v5.0.0 — hide to tray instead of exiting ONLY when the tray icon is
-        # actually running and TRAY_BACKGROUND_CLOSE=yes. Never silently stays
-        # in the background otherwise. The tray's own Exit stops the tray
-        # first, so it always reaches the full shutdown below.
+    def _restore_from_tray(self) -> None:
+        if self._closing:
+            return
+        try:
+            self.root.deiconify()
+            self.root.lift()
+        except Exception:
+            return
+        self._resume_gif_playback()
+        self._refresh_mood_glow()
+
+    def _disable_input_for_close(self) -> None:
+        self._closing = True
+        self._cancel_event.set()
+        try:
+            self._input_box.config(state="disabled")
+        except Exception:
+            pass
+
+    def _request_close(self) -> None:
+        if self._closing or self._shutdown_complete:
+            return
         try:
             from agetha.features.tray_scaffold import should_background_close
             if should_background_close():
+                self._cancel_geometry_animation()
+                self._mood_glow.cancel(reset=False)
+                self._pause_gif_playback()
                 self.root.withdraw()
                 return
         except Exception:
             pass
+        self._close_effect.request_close()
+
+    def _shutdown(self):
+        """Compatibility entry point used by tray and AI-requested app exits."""
+        self._request_close()
+
+    def _cancel_all_after_jobs(self) -> None:
+        try:
+            job_ids = tuple(self.root.tk.call("after", "info"))
+        except Exception:
+            job_ids = ()
+        for job_id in job_ids:
+            try:
+                self.root.after_cancel(job_id)
+            except Exception:
+                pass
+
+    def _graceful_shutdown(self) -> None:
+        """Idempotently stop workers, timers, child UI, audio, and then destroy Tk."""
+        if self._shutdown_complete:
+            return
+        self._shutdown_complete = True
+        self._closing = True
+        self._cancel_event.set()
+
+        for controller, method, kwargs in (
+            (getattr(self, "_close_effect", None), "cancel", {}),
+            (getattr(self, "_mood_glow", None), "close", {}),
+            (getattr(self, "_motion", None), "cancel_motion", {"restore": False}),
+        ):
+            if controller is not None:
+                try:
+                    getattr(controller, method)(**kwargs)
+                except Exception:
+                    pass
+        self._cancel_geometry_animation()
+        self._stop_talking_rotation()
+        for attr in (
+            "_poll_job", "_placeholder_refresh_job", "_restore_job", "_wake_job",
+            "_motion_request_job", "_loaf_job", "_sleep_job",
+        ):
+            job_id = getattr(self, attr, None)
+            if job_id is not None:
+                try:
+                    self.root.after_cancel(job_id)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self._cancel_all_after_jobs()
+
+        try:
+            if self._subtitle:
+                self._subtitle.stop()
+        except Exception:
+            pass
+        for player in tuple(getattr(self, "_gif_cache", {}).values()):
+            try:
+                player.stop()
+            except Exception:
+                pass
+        for resource in (self._voice, self._voice_out, self._bleep):
+            if resource is not None:
+                try:
+                    resource.stop()
+                except Exception:
+                    pass
         try:
             from agetha.features.tray_scaffold import stop_tray
             stop_tray()
         except Exception:
             pass
-        self._stop_talking_rotation()
-        if self._voice_out:
+        if PYGAME_OK:
             try:
-                self._voice_out.stop()
+                if pygame.mixer.get_init():
+                    pygame.mixer.stop()
+                    pygame.mixer.quit()
             except Exception:
                 pass
-        if self._bleep:
-            try:
-                self._bleep.stop()
-            except Exception:
-                pass
-        if self._poll_job:
-            self.root.after_cancel(self._poll_job)
-            self._poll_job = None
-        if self._voice:
-            self._voice.stop()
-        self.root.quit()
+
+        # Memory and emotional history are persisted atomically when changed.
+        self._cancel_all_after_jobs()
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def run(self):
         # v5.0.0 — optional tray icon (compatibility scaffold: silent no-op
@@ -2774,23 +3036,7 @@ class CompanionApp:
         try:
             self.root.mainloop()
         finally:
-            try:
-                from agetha.features.tray_scaffold import stop_tray
-                stop_tray()
-            except Exception:
-                pass
-            if self._voice_out:
-                try:
-                    self._voice_out.stop()
-                except Exception:
-                    pass
-            if self._bleep:
-                try:
-                    self._bleep.stop()
-                except Exception:
-                    pass
-            if self._voice:
-                self._voice.stop()
+            self._graceful_shutdown()
 
 
 def _warn_if_no_api_key():

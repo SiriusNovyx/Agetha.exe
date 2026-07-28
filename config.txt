@@ -78,6 +78,11 @@ ENABLE_STREAMING = yes
 # ENABLE_AMBIENT_POLLS — yes = periodic background screen checks when idle; no = only when you chat.
 ENABLE_AMBIENT_POLLS = yes
 
+# Compact local weekday/date/time context sent with direct and ambient AI prompts.
+ENABLE_DATETIME_CONTEXT = yes
+DATETIME_INCLUDE_SECONDS = no
+DATETIME_INCLUDE_TIMEZONE = yes
+
 
 # ── OS Permissions ────────────────────────────────────────────────────────────
 # Master switches for commands that touch files, apps, or other windows.
@@ -304,6 +309,9 @@ TESSERACT_PATH =
 # WINDOW_TOPMOST — yes = Agetha stays above other windows.
 WINDOW_TOPMOST = yes
 
+# auto scales from display resolution and system DPI; use 0.75-2.50 for a manual override.
+UI_SCALE = auto
+
 # WINDOW_START_X / Y — pixel position when Agetha first opens.
 WINDOW_START_X = 80
 WINDOW_START_Y = 80
@@ -319,6 +327,15 @@ WINDOW_MOVE_SMOOTH = yes
 
 # WINDOW_MOVE_DURATION_MS — animation length in ms (0 = instant, max 2000).
 WINDOW_MOVE_DURATION_MS = 280
+
+# Optional UI effects. REDUCED_MOTION makes glow static and skips all window motion.
+ENABLE_CRT_CLOSE_ANIMATION = yes
+REDUCED_MOTION = no
+ENABLE_MOOD_GLOW = no
+MOOD_GLOW_ANIMATED = yes
+MOOD_GLOW_INTERVAL_MS = 150
+ENABLE_MOOD_MOTION = yes
+MOOD_MOTION_COOLDOWN_SECONDS = 4
 
 
 # ── Medic_Checker (launcher) ────────────────────────────────────────────────
