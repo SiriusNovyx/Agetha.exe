@@ -92,7 +92,8 @@ def start_tray(app: Any) -> bool:
 
         def _open(_icon=None, _item=None) -> None:
             try:
-                app.root.after(0, app.root.deiconify)
+                restore = getattr(app, "_restore_from_tray", app.root.deiconify)
+                app.root.after(0, restore)
                 app.root.after(0, lambda: app.root.attributes("-topmost", True))
             except Exception:
                 pass

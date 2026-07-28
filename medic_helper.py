@@ -1,14 +1,110 @@
 """Small helpers for Medic_Checker.ps1 / Medic_Checker.bat launcher."""
 from __future__ import annotations
 
+import ctypes
+import json
 import platform
 import re
+import struct
 import sys
+import sysconfig
 from pathlib import Path
 
 
 def cmd_platform() -> None:
     print(platform.machine())
+
+
+_WINDOWS_MACHINE_NAMES = {
+    0x014C: "X86",
+    0x01C4: "ARM",
+    0x8664: "AMD64",
+    0xAA64: "ARM64",
+}
+
+
+def normalize_python_architecture(value: str, pointer_bits: int | None = None) -> str:
+    """Return a stable interpreter architecture name from common aliases."""
+    compact = re.sub(r"[^a-z0-9]", "", (value or "").lower())
+    if compact in {"amd64", "x8664", "x64"}:
+        return "AMD64"
+    if compact in {"arm64", "aarch64"}:
+        return "ARM64"
+    if compact in {"x86", "i386", "i486", "i586", "i686"}:
+        return "X86"
+    if compact in {"arm", "arm32", "armv7", "armv7l"}:
+        return "ARM"
+    if pointer_bits == 32:
+        return "X86"
+    return (value or "UNKNOWN").strip().upper() or "UNKNOWN"
+
+
+def architecture_from_build_platform(platform_tag: str) -> str:
+    """Map Python's wheel/build platform tag to its binary architecture."""
+    compact = re.sub(r"[^a-z0-9]", "", (platform_tag or "").lower())
+    if "amd64" in compact or "x8664" in compact:
+        return "AMD64"
+    if "arm64" in compact or "aarch64" in compact:
+        return "ARM64"
+    if compact in {"win32", "windowsi386"} or compact.endswith("i686"):
+        return "X86"
+    return ""
+
+
+def _windows_process_architectures() -> tuple[str, str]:
+    """Return (emulated process arch, native OS arch) via IsWow64Process2."""
+    if sys.platform != "win32":
+        return "", ""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        is_wow64_process2 = kernel32.IsWow64Process2
+        is_wow64_process2.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ushort),
+            ctypes.POINTER(ctypes.c_ushort),
+        ]
+        is_wow64_process2.restype = ctypes.c_bool
+        process_machine = ctypes.c_ushort(0)
+        native_machine = ctypes.c_ushort(0)
+        process = kernel32.GetCurrentProcess()
+        if not is_wow64_process2(
+            process, ctypes.byref(process_machine), ctypes.byref(native_machine)
+        ):
+            return "", ""
+        return (
+            _WINDOWS_MACHINE_NAMES.get(process_machine.value, ""),
+            _WINDOWS_MACHINE_NAMES.get(native_machine.value, ""),
+        )
+    except (AttributeError, OSError):
+        # IsWow64Process2 is unavailable on older Windows releases.
+        return "", ""
+
+
+def get_python_architecture_info() -> dict[str, str | int]:
+    """Describe this Python build without confusing it with the host CPU."""
+    reported = platform.machine()
+    pointer_bits = struct.calcsize("P") * 8
+    build_platform = sysconfig.get_platform()
+    build_arch = architecture_from_build_platform(build_platform)
+    process_arch, native_arch = _windows_process_architectures()
+    # sysconfig's platform is the interpreter's wheel/ABI target (for example,
+    # win-amd64). On recent Windows ARM/Prism builds, both platform.machine()
+    # and IsWow64Process2 may expose ARM64 even for an AMD64 Python binary.
+    python_arch = normalize_python_architecture(
+        build_arch or process_arch or reported, pointer_bits
+    )
+    native = normalize_python_architecture(native_arch or reported, pointer_bits)
+    return {
+        "python_arch": python_arch,
+        "native_arch": native,
+        "build_platform": build_platform or "UNKNOWN",
+        "reported_machine": reported or "UNKNOWN",
+        "pointer_bits": pointer_bits,
+    }
+
+
+def cmd_python_arch() -> None:
+    print(json.dumps(get_python_architecture_info(), separators=(",", ":")))
 
 
 _MEDIC_DIR = Path(__file__).resolve().parent
@@ -384,6 +480,7 @@ def cmd_autostart_status() -> None:
 
 _COMMANDS = {
     "platform": cmd_platform,
+    "python_arch": cmd_python_arch,
     "env": cmd_env_status,
     "config": cmd_config_status,
     "config_secrets": cmd_config_secrets,

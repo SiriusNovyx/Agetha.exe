@@ -18,6 +18,8 @@ Set-Location -LiteralPath $Script:Root
 $script:VenvPython = $null
 $script:PythonVersionInfo = $null
 $script:PythonCmd = $null
+$script:PreferredPythonExe = $null
+$script:RequireX64Python = $false
 
 function Get-ConfigValue {
     param(
@@ -134,16 +136,53 @@ function Invoke-PythonHelper {
     return ($output | Select-Object -Last 1).ToString().Trim()
 }
 
-function Get-PythonMachine {
+function Get-PythonArchitectureInfo {
     param([string]$PythonExe)
     try {
-        $out = & $PythonExe -c 'import platform; print(platform.machine())' 2>$null
-        if ($LASTEXITCODE -eq 0) { return ($out | Select-Object -Last 1).ToString().Trim() }
+        $json = Invoke-PythonHelper -PythonExe $PythonExe -Command 'python_arch'
+        if ($json) { return ($json | ConvertFrom-Json) }
     } catch { }
-    return Invoke-PythonHelper -PythonExe $PythonExe -Command 'platform'
+    try {
+        $out = & $PythonExe -c 'import platform; print(platform.machine())' 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return [PSCustomObject]@{
+                python_arch = ($out | Select-Object -Last 1).ToString().Trim()
+                native_arch = 'UNKNOWN'
+                reported_machine = ($out | Select-Object -Last 1).ToString().Trim()
+                pointer_bits = 0
+            }
+        }
+    } catch { }
+    return $null
+}
+
+function Get-PythonMachine {
+    param([string]$PythonExe)
+    $info = Get-PythonArchitectureInfo -PythonExe $PythonExe
+    if ($info) { return $info.python_arch }
+    return $null
+}
+
+function Test-X64PythonArchitecture {
+    param([string]$Architecture)
+    return $Architecture -match '^(?i)(AMD64|x86_64|x64)$'
 }
 
 function Resolve-PythonCommand {
+    if ($script:PreferredPythonExe -and (Test-Path -LiteralPath $script:PreferredPythonExe)) {
+        $null = & $script:PreferredPythonExe --version 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            return @{ Exe = $script:PreferredPythonExe; Args = @() }
+        }
+    }
+    if ($script:RequireX64Python) {
+        $x64Dir = Find-X64PythonPath
+        if ($x64Dir) {
+            $script:PreferredPythonExe = Join-Path $x64Dir 'python.exe'
+            return @{ Exe = $script:PreferredPythonExe; Args = @() }
+        }
+        return $null
+    }
     if (Get-Command python -ErrorAction SilentlyContinue) {
         $null = & python --version 2>&1
         if ($LASTEXITCODE -eq 0) { return @{ Exe = 'python'; Args = @() } }
@@ -181,15 +220,62 @@ function Test-Arm64Host {
     return $false
 }
 
-function Find-X64PythonPath {
-    $candidates = @(
-        Get-ChildItem -Path "$env:LOCALAPPDATA\Programs\Python\Python31*" -Directory -ErrorAction SilentlyContinue
-        Get-ChildItem -Path 'C:\Python31*' -Directory -ErrorAction SilentlyContinue
-    ) | Where-Object { Test-Path (Join-Path $_.FullName 'python.exe') }
+function Get-PythonExecutableCandidates {
+    $candidates = [System.Collections.Generic.List[string]]::new()
 
-    foreach ($dir in $candidates) {
-        $arch = Get-PythonMachine -PythonExe (Join-Path $dir.FullName 'python.exe')
-        if ($arch -eq 'AMD64') { return $dir.FullName }
+    foreach ($command in @(Get-Command python -All -ErrorAction SilentlyContinue)) {
+        $path = if ($command.Source) { $command.Source } else { $command.Path }
+        if ($path) { $candidates.Add($path) }
+    }
+
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        foreach ($line in @(& py -0p 2>$null)) {
+            if ($line -match '([A-Za-z]:\\.+?python(?:w)?\.exe)\s*$') {
+                $candidates.Add($Matches[1])
+            }
+        }
+    }
+
+    foreach ($registryRoot in @(
+        'HKCU:\Software\Python\PythonCore',
+        'HKLM:\Software\Python\PythonCore',
+        'HKLM:\Software\WOW6432Node\Python\PythonCore'
+    )) {
+        foreach ($versionKey in @(Get-ChildItem -LiteralPath $registryRoot -ErrorAction SilentlyContinue)) {
+            try {
+                $install = Get-ItemProperty -LiteralPath (Join-Path $versionKey.PSPath 'InstallPath') -ErrorAction Stop
+                if ($install.ExecutablePath) { $candidates.Add([string]$install.ExecutablePath) }
+                $installDir = [string]$install.'(default)'
+                if ($installDir) { $candidates.Add((Join-Path $installDir 'python.exe')) }
+            } catch { }
+        }
+    }
+
+    foreach ($installRoot in @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python'),
+        (Join-Path $env:ProgramFiles 'Python'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Python'),
+        'C:\'
+    )) {
+        if (-not $installRoot -or -not (Test-Path -LiteralPath $installRoot)) { continue }
+        foreach ($dir in @(Get-ChildItem -LiteralPath $installRoot -Directory -ErrorAction SilentlyContinue)) {
+            if ($installRoot -eq 'C:\' -and $dir.Name -notlike 'Python*') { continue }
+            $exe = Join-Path $dir.FullName 'python.exe'
+            if (Test-Path -LiteralPath $exe) { $candidates.Add($exe) }
+        }
+    }
+
+    return @($candidates | Where-Object {
+        $_ -and (Test-Path -LiteralPath $_)
+    } | Select-Object -Unique)
+}
+
+function Find-X64PythonPath {
+    foreach ($exe in @(Get-PythonExecutableCandidates)) {
+        $arch = Get-PythonMachine -PythonExe $exe
+        if (Test-X64PythonArchitecture -Architecture $arch) {
+            return (Split-Path -Parent $exe)
+        }
     }
     return $null
 }
@@ -254,25 +340,21 @@ function Install-X64Python {
     $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
     $env:PATH = "$machinePath;$userPath"
 
-    $arch = Get-PythonMachine -PythonExe 'python'
-    if (-not $arch) {
-        Write-Warn 'Python still not found after PATH refresh.'
+    $x64Path = Find-X64PythonPath
+    if (-not $x64Path) {
+        Write-Warn 'The x64 installer completed, but its interpreter could not be located.'
         Write-Info 'Close this window, reopen it, and run this script again.'
         Wait-Key
         exit 1
     }
-    if ($arch -ne 'AMD64') {
-        Write-Warn "Python found but reports arch '$arch' - expected AMD64."
-        Write-Info 'Close this window and re-run to start with a clean PATH.'
-        Wait-Key
-        exit 1
-    }
-    Write-Ok "[D4/4]  PATH refreshed - Python $arch (x64) is now active."
+    $script:PreferredPythonExe = Join-Path $x64Path 'python.exe'
+    $env:PATH = "$x64Path;$x64Path\Scripts;$env:PATH"
+    Write-Ok "[D4/4]  Selected x64 Python: $script:PreferredPythonExe"
 
     $venvPy = Join-Path $Script:Root 'venv\Scripts\python.exe'
     if (Test-Path -LiteralPath $venvPy) {
         $venvArch = Get-PythonMachine -PythonExe $venvPy
-        if ($venvArch -and $venvArch -ne 'AMD64') {
+        if ($venvArch -and -not (Test-X64PythonArchitecture -Architecture $venvArch)) {
             Write-Warn "Existing venv was built with $venvArch Python (incompatible)."
             Write-Step 'Removing stale venv - it will be rebuilt in step [2/7]...'
             Remove-Item -LiteralPath (Join-Path $Script:Root 'venv') -Recurse -Force
@@ -504,24 +586,30 @@ function Test-Arm64Python {
 
     $pyArch = 'MISSING'
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        $detected = Get-PythonMachine -PythonExe 'python'
-        if ($detected) {
-            $pyArch = $detected
-            Write-Info "Python found on PATH - compiled architecture: $pyArch"
+        $pathCommand = Get-Command python -ErrorAction SilentlyContinue
+        $pathPython = if ($pathCommand.Source) { $pathCommand.Source } else { $pathCommand.Path }
+        $info = Get-PythonArchitectureInfo -PythonExe $pathPython
+        if ($info) {
+            $pyArch = $info.python_arch
+            Write-Info "Python on PATH - interpreter architecture: $pyArch"
+            Write-Info "Native Windows architecture: $($info.native_arch)"
+            if (Test-X64PythonArchitecture -Architecture $pyArch) {
+                $script:PreferredPythonExe = $pathPython
+            }
         }
     } else {
         Write-Info 'No Python binary found on PATH.'
     }
 
-    if ($pyArch -eq 'AMD64') {
+    if (Test-X64PythonArchitecture -Architecture $pyArch) {
         Write-Ok 'Python is x64 (AMD64) - running under Prism emulation.'
         Write-Ok 'Binary wheels for pygame-ce / pyautogui / mss install correctly.'
         Write-Host ''
         return
     }
 
-    if ($pyArch -eq 'ARM64') {
-        Write-Warn 'Native ARM64 Python detected - incompatible with PyPI wheels.'
+    if ($pyArch -match '^(?i)(ARM64|aarch64)$') {
+        Write-Warn 'The Python first on PATH is ARM64; checking other installed interpreters.'
     } else {
         Write-Warn 'No compatible Python found on PATH.'
     }
@@ -531,9 +619,10 @@ function Test-Arm64Python {
     $x64Path = Find-X64PythonPath
     if ($x64Path) {
         Write-Ok "Found existing x64 Python at: $x64Path"
-        Write-Step 'Prepending to session PATH - no download required.'
+        $script:PreferredPythonExe = Join-Path $x64Path 'python.exe'
+        Write-Step 'Selecting it for venv creation - no download required.'
         $env:PATH = "$x64Path;$x64Path\Scripts;$env:PATH"
-        Write-Ok 'x64 Python is now active for this session.'
+        Write-Ok "x64 Python selected: $script:PreferredPythonExe"
         Write-Host ''
         return
     }
@@ -571,7 +660,11 @@ function Invoke-StandardChecks {
     Write-Head '[1 / 7]  Python'
     $script:PythonCmd = Resolve-PythonCommand
     if (-not $script:PythonCmd) {
-        Write-Fail 'Python not found on PATH.'
+        if ($script:RequireX64Python) {
+            Write-Fail 'No compatible x64 Python installation could be selected.'
+        } else {
+            Write-Fail 'Python not found on PATH.'
+        }
         Write-Info 'https://www.python.org/downloads/'
         Wait-Key
         exit 1
@@ -599,6 +692,15 @@ function Invoke-StandardChecks {
     Write-Head '[2 / 7]  Virtual environment'
     $venvDir = Join-Path $Script:Root 'venv'
     $venvPy = Join-Path $venvDir 'Scripts\python.exe'
+    if (Test-Path -LiteralPath $venvPy) {
+        if ($script:RequireX64Python) {
+            $venvArch = Get-PythonMachine -PythonExe $venvPy
+            if ($venvArch -and -not (Test-X64PythonArchitecture -Architecture $venvArch)) {
+                Write-Warn "Existing venv uses $venvArch Python; rebuilding it with x64 Python."
+                Remove-Item -LiteralPath $venvDir -Recurse -Force
+            }
+        }
+    }
     if (Test-Path -LiteralPath $venvPy) {
         $venvVerInfo = Get-PythonVersionInfo -Cmd @{ Exe = $venvPy; Args = @() }
         if ($venvVerInfo -and -not (Test-IsSupportedPythonVersion -VersionInfo $venvVerInfo)) {
@@ -1141,7 +1243,9 @@ Write-Head '+----------------------------------------------------------+'
 Write-Host ''
 
 if (Test-Arm64Host) {
-    Write-Warn 'ARM64 host confirmed.  Prism x64-emulation layer is active.'
+    $script:RequireX64Python = $true
+    Write-Warn 'Windows host architecture is ARM64 (this does not describe Python).'
+    Write-Info 'Agetha will select an x64 Python process running under Prism.'
     Write-Info 'Python package compliance check required - see Section B.'
     Write-Host ''
     Test-Arm64Python

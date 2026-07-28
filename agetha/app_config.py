@@ -103,6 +103,15 @@ ENABLE_STREAMING = yes
 # ENABLE_AMBIENT_POLLS — yes = periodic background screen checks when idle; no = only when you chat.
 ENABLE_AMBIENT_POLLS = yes
 
+# ENABLE_DATETIME_CONTEXT - include compact local weekday/date/time in every AI prompt.
+ENABLE_DATETIME_CONTEXT = yes
+
+# DATETIME_INCLUDE_SECONDS - include seconds (off by default to save prompt tokens).
+DATETIME_INCLUDE_SECONDS = no
+
+# DATETIME_INCLUDE_TIMEZONE - include local zone name and UTC offset.
+DATETIME_INCLUDE_TIMEZONE = yes
+
 
 # ── OS Permissions ────────────────────────────────────────────────────────────
 # Master switches for commands that touch files, apps, or other windows.
@@ -329,6 +338,9 @@ TESSERACT_PATH =
 # WINDOW_TOPMOST — yes = Agetha stays above other windows.
 WINDOW_TOPMOST = yes
 
+# UI_SCALE - auto scales from display resolution; or use a manual value (0.75-2.50).
+UI_SCALE = auto
+
 # WINDOW_START_X / Y — pixel position when Agetha first opens.
 WINDOW_START_X = 80
 WINDOW_START_Y = 80
@@ -344,6 +356,27 @@ WINDOW_MOVE_SMOOTH = yes
 
 # WINDOW_MOVE_DURATION_MS — animation length in ms (0 = instant, max 2000).
 WINDOW_MOVE_DURATION_MS = 280
+
+# ENABLE_CRT_CLOSE_ANIMATION - brief CRT-style collapse before graceful exit.
+ENABLE_CRT_CLOSE_ANIMATION = yes
+
+# REDUCED_MOTION - disable decorative pulsing and window motion, including CRT close.
+REDUCED_MOTION = no
+
+# ENABLE_MOOD_GLOW - show a subtle mood-coloured border around the GIF.
+ENABLE_MOOD_GLOW = no
+
+# MOOD_GLOW_ANIMATED - slowly pulse the mood border; no = solid colour.
+MOOD_GLOW_ANIMATED = yes
+
+# MOOD_GLOW_INTERVAL_MS - decorative border update interval (100-1000 ms).
+MOOD_GLOW_INTERVAL_MS = 150
+
+# ENABLE_MOOD_MOTION - allow one guarded, brief motion per completed AI response.
+ENABLE_MOOD_MOTION = yes
+
+# MOOD_MOTION_COOLDOWN_SECONDS - minimum delay between mood motions (1-60 seconds).
+MOOD_MOTION_COOLDOWN_SECONDS = 4
 
 
 # ── Medic_Checker (launcher) ────────────────────────────────────────────────
@@ -452,6 +485,7 @@ _BOOL_KEYS = frozenset({
     "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
     "ENABLE_VOICE", "USE_LOCAL_STT", "ENABLE_FILE_DRAG_DROP",
     "ENABLE_STREAMING", "ENABLE_AMBIENT_POLLS",
+    "ENABLE_DATETIME_CONTEXT", "DATETIME_INCLUDE_SECONDS", "DATETIME_INCLUDE_TIMEZONE",
     "ENABLE_COMMAND_EXECUTION", "ENABLE_WINDOW_CONTROL", "ENABLE_COMMAND_CONFIRMATIONS",
     "FORCE_CLOSE_AUTO_ALLOW", "ENABLE_ATTENTION_SNAP", "ENABLE_SCREEN_READER",
     "OCR_FOCUSED_WINDOW_ONLY", "INCLUDE_WINDOW_TITLE_IN_CONTEXT", "WINDOW_TOPMOST",
@@ -464,6 +498,8 @@ _BOOL_KEYS = frozenset({
     "ENABLE_CIRCADIAN_RHYTHM", "ENABLE_DREAMS", "ENABLE_TASKS",
     "ENABLE_EMOTION_ENGINE", "ENABLE_AUTOSTART_CONTROL", "ENABLE_THEME_CONTROL",
     "ENABLE_STATUS_PROVIDERS", "ENABLE_TRAY", "TRAY_BACKGROUND_CLOSE",
+    "ENABLE_CRT_CLOSE_ANIMATION", "REDUCED_MOTION", "ENABLE_MOOD_GLOW",
+    "MOOD_GLOW_ANIMATED", "ENABLE_MOOD_MOTION",
 })
 
 _INT_KEYS = frozenset({
@@ -486,6 +522,7 @@ _INT_KEYS = frozenset({
     "EMOTION_BASELINE_VALENCE", "EMOTION_BASELINE_AROUSAL",
     "EMOTION_BASELINE_TRUST", "EMOTION_BASELINE_LONELINESS",
     "EMOTION_HISTORY_MAX", "STATUS_POLL_INTERVAL_SEC",
+    "MOOD_GLOW_INTERVAL_MS", "MOOD_MOTION_COOLDOWN_SECONDS",
 })
 
 _FLOAT_KEYS = frozenset({
@@ -837,6 +874,18 @@ class AppSettings:
     def enable_ambient_polls(self) -> bool:
         return self.bool("ENABLE_AMBIENT_POLLS", True)
 
+    @property
+    def enable_datetime_context(self) -> bool:
+        return self.bool("ENABLE_DATETIME_CONTEXT", True)
+
+    @property
+    def datetime_include_seconds(self) -> bool:
+        return self.bool("DATETIME_INCLUDE_SECONDS", False)
+
+    @property
+    def datetime_include_timezone(self) -> bool:
+        return self.bool("DATETIME_INCLUDE_TIMEZONE", True)
+
     # ── Permissions ─────────────────────────────────────────────────────────
     @property
     def enable_command_execution(self) -> bool:
@@ -1082,6 +1131,16 @@ class AppSettings:
         return self.bool("WINDOW_TOPMOST", True)
 
     @property
+    def ui_scale(self) -> float | None:
+        raw = self.get("UI_SCALE", "auto").strip().lower()
+        if not raw or raw == "auto":
+            return None
+        try:
+            return max(0.75, min(float(raw), 2.50))
+        except (TypeError, ValueError):
+            return None
+
+    @property
     def window_start_x(self) -> int:
         return self.int("WINDOW_START_X", 80, -4096, 8192)
 
@@ -1104,6 +1163,34 @@ class AppSettings:
     @property
     def window_move_duration_ms(self) -> int:
         return self.int("WINDOW_MOVE_DURATION_MS", 280, 0, 2000)
+
+    @property
+    def enable_crt_close_animation(self) -> bool:
+        return self.bool("ENABLE_CRT_CLOSE_ANIMATION", True)
+
+    @property
+    def reduced_motion(self) -> bool:
+        return self.bool("REDUCED_MOTION", False)
+
+    @property
+    def enable_mood_glow(self) -> bool:
+        return self.bool("ENABLE_MOOD_GLOW", False)
+
+    @property
+    def mood_glow_animated(self) -> bool:
+        return self.bool("MOOD_GLOW_ANIMATED", True)
+
+    @property
+    def mood_glow_interval_ms(self) -> int:
+        return self.int("MOOD_GLOW_INTERVAL_MS", 150, 100, 1000)
+
+    @property
+    def enable_mood_motion(self) -> bool:
+        return self.bool("ENABLE_MOOD_MOTION", True)
+
+    @property
+    def mood_motion_cooldown_seconds(self) -> int:
+        return self.int("MOOD_MOTION_COOLDOWN_SECONDS", 4, 1, 60)
 
     # ── Launcher ──────────────────────────────────────────────────────────────
     @property

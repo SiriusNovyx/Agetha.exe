@@ -81,6 +81,8 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
 
     if not user_message and ctx.mood in app._ATTENTION_MOODS:
         app._maybe_snap_to_center(ctx.mood)
+    elif hasattr(app, "_play_response_motion"):
+        app._play_response_motion(ctx.mood)
 
     if command in _WINDOW_COMMANDS and not get_settings().enable_window_control:
         logger.info(f"Blocked (ENABLE_WINDOW_CONTROL=no): {command}")

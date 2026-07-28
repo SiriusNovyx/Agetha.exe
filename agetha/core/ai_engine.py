@@ -12,12 +12,12 @@ import time
 import threading
 import platform
 from pathlib import Path
-from datetime import datetime
 from types import SimpleNamespace
 
 from agetha.utils import IS_WINDOWS, IS_LINUX, apply_window_icon, native_error_popup, native_message_box, logger
 from agetha.app_config import get_settings, parse_config_file, DEFAULT_CONFIG, ensure_config_file, BASE_DIR
 from agetha.platform.window_control import is_self_window_target, is_self_process_target
+from agetha.core.time_context import build_datetime_context, local_now
 
 try:
     from groq import Groq
@@ -759,8 +759,9 @@ class AIEngine:
 
     HISTORY_LIMIT = 6
 
-    def __init__(self, on_error=None):
+    def __init__(self, on_error=None, datetime_provider=None):
         self._on_error = on_error
+        self._datetime_provider = datetime_provider
         self._history: list[dict] = []
         self._client = None
         self._init()
@@ -1316,7 +1317,7 @@ class AIEngine:
 
         try:
             if hasattr(self, "_conversation_path") and self._conversation_path:
-                t = datetime.now().isoformat()
+                t = local_now(getattr(self, "_datetime_provider", None)).isoformat()
                 user_msg = ""
                 m = re.search(r'User:\s*"([^"]*)"', user_turn)
                 if m:
@@ -1491,7 +1492,6 @@ class AIEngine:
     ) -> tuple[str, str, list[dict]]:
         is_user = bool(user_message)
         inactivity_min = self._get_inactivity_seconds() // 60
-        now = datetime.now().strftime("%A, %B %d %Y - %H:%M")
 
         # ── System prompt construction ────────────────────────────────────────
         if self._faster_mode:
@@ -1577,7 +1577,21 @@ class AIEngine:
             )
 
         # ── Build the user-turn string ─────────────────────────────────────────
-        parts = [f"Time: {now}"]
+        parts: list[str] = []
+        if getattr(self._app_settings, "enable_datetime_context", True):
+            try:
+                parts.append(build_datetime_context(
+                    include_seconds=getattr(
+                        self._app_settings, "datetime_include_seconds", False,
+                    ),
+                    include_timezone=getattr(
+                        self._app_settings, "datetime_include_timezone", True,
+                    ),
+                    clock=getattr(self, "_datetime_provider", None),
+                ))
+            except Exception:
+                # Date context must never prevent an AI request.
+                pass
         if not is_user and inactivity_min >= 60:
             parts.append(f"Inactive: {inactivity_min} minutes.")
         if screen_context:
