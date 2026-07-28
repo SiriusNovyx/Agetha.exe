@@ -4,7 +4,7 @@ import inspect
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import requests
 from PIL import Image
@@ -57,6 +57,14 @@ class _Session:
 
     def close(self):
         self.closed = True
+
+
+class _ImmediateThread:
+    def __init__(self, *, target, daemon=True):
+        self._target = target
+
+    def start(self):
+        self._target()
 
 
 def _image():
@@ -379,6 +387,29 @@ class TestDeepOCRIntegration(unittest.TestCase):
         app._reschedule_screen_poll.assert_called_once()
         app._guard.check.assert_not_called()
         app._screen.capture_deep_text.assert_not_called()
+
+    def test_deep_output_is_redacted_before_follow_up_ai_request(self):
+        app = MagicMock()
+        app.root.after.side_effect = lambda _delay, callback: callback()
+        app._defer_after_ai_tick.side_effect = lambda callback: callback()
+        app._screen.capture_deep_text.return_value = OCRResult(
+            "password=hunter2", [], "unlimited_ocr",
+        )
+        app._screen.redact_for_external_context.side_effect = (
+            lambda value: value.replace("hunter2", "[REDACTED]")
+        )
+        app._ai_query.return_value = None
+        ctx = MagicMock(user_message="Analyze my screen", segments=[])
+
+        with patch(
+            "agetha.commands.command_handlers.threading.Thread",
+            _ImmediateThread,
+        ):
+            HANDLERS["analyze_screen_deep"](app, {}, ctx)
+
+        document = app._ai_query.call_args.kwargs["doc_content"]
+        self.assertNotIn("hunter2", document)
+        self.assertIn("[REDACTED]", document)
 
 
 if __name__ == "__main__":

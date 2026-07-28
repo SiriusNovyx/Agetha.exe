@@ -376,7 +376,7 @@ def _scan_patterns(
         if pdef.category in seen:
             continue
         title_scopes = (*pdef.app_names, *pdef.window_title_tokens)
-        if title_scopes and app_context and not any(
+        if title_scopes and not any(
             token.casefold() in app_context for token in title_scopes
         ):
             continue
@@ -1038,6 +1038,10 @@ class ScreenReader:
                     pass
         return self._own_hwnd
 
+    def cache_own_window_handle(self) -> int | None:
+        """Resolve the native app handle while called from Tk's main thread."""
+        return self._get_own_hwnd()
+
     # ── 1 + 4. Focused capture ────────────────────────────────────────────────
 
     def _foreground_info(self) -> dict | None:
@@ -1058,50 +1062,51 @@ class ScreenReader:
             if self._stopped or not self._capture_available:
                 self.last_monitor_status = "capture_disabled"
                 return None
-            if focused_only:
-                win = self._foreground_info()
-                if win is not None:
-                    hwnd = win.get("hwnd")
-                    if automatic and hwnd is not None and hwnd == self._get_own_hwnd():
-                        self.last_monitor_status = "skipped_own_window"
-                        return None
-                    if automatic and is_capture_excluded(
-                        title=win.get("title", ""),
-                        process_name=win.get("process_name", ""),
-                        excluded_apps=self._excluded_apps,
-                        title_exclusions=self._title_exclusions,
-                    ):
-                        self.last_monitor_status = "skipped_excluded_window"
-                        return None
-                    frame = _grab_mss_frame(
-                        {
-                            "left": int(win["left"]),
-                            "top": int(win["top"]),
-                            "width": int(win["width"]),
-                            "height": int(win["height"]),
-                        },
-                        title=win.get("title", ""),
-                        hwnd=hwnd,
-                        scope="focused_window",
-                        process_name=win.get("process_name", ""),
-                    )
-                    if frame is not None:
-                        self.last_monitor_status = "captured_focused_window"
-                        return frame
-                    logger.debug("Focused capture failed; trying a full-display backend")
-                    if IS_WINDOWS and hwnd is not None:
-                        monitor = _find_monitor_for_window(int(hwnd))
-                        if monitor is not None:
-                            frame = _grab_mss_frame(
-                                monitor,
-                                title=win.get("title", ""),
-                                hwnd=hwnd,
-                                scope="active_monitor",
-                                process_name=win.get("process_name", ""),
-                            )
-                            if frame is not None:
-                                self.last_monitor_status = "captured_active_monitor"
-                                return frame
+            win = self._foreground_info() if focused_only or automatic else None
+            if automatic and win is not None:
+                hwnd = win.get("hwnd")
+                if hwnd is not None and hwnd == self._get_own_hwnd():
+                    self.last_monitor_status = "skipped_own_window"
+                    return None
+                if is_capture_excluded(
+                    title=win.get("title", ""),
+                    process_name=win.get("process_name", ""),
+                    excluded_apps=self._excluded_apps,
+                    title_exclusions=self._title_exclusions,
+                ):
+                    self.last_monitor_status = "skipped_excluded_window"
+                    return None
+            if focused_only and win is not None:
+                hwnd = win.get("hwnd")
+                frame = _grab_mss_frame(
+                    {
+                        "left": int(win["left"]),
+                        "top": int(win["top"]),
+                        "width": int(win["width"]),
+                        "height": int(win["height"]),
+                    },
+                    title=win.get("title", ""),
+                    hwnd=hwnd,
+                    scope="focused_window",
+                    process_name=win.get("process_name", ""),
+                )
+                if frame is not None:
+                    self.last_monitor_status = "captured_focused_window"
+                    return frame
+                logger.debug("Focused capture failed; trying a full-display backend")
+                if IS_WINDOWS and hwnd is not None:
+                    monitor = _find_monitor_for_window(int(hwnd))
+                    if monitor is not None:
+                        frame = _grab_mss_frame(
+                            monitor,
+                            title=win.get("title", ""),
+                            hwnd=hwnd,
+                            scope="active_monitor",
+                            process_name=win.get("process_name", ""),
+                        )
+                        if frame is not None:
+                            self.last_monitor_status = "captured_active_monitor"
+                            return frame
             frame = self._capture_with_backend()
             if frame is not None:
                 self.last_monitor_status = f"captured_{frame.scope}"

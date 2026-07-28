@@ -232,6 +232,35 @@ class TestCaptureBehavior(unittest.TestCase):
         self.assertEqual(reader.last_active_window_title, "Previous")
         self.assertEqual(reader.last_pattern_matches, ["previous"])
 
+    def test_12a_full_desktop_poll_skips_excluded_foreground(self):
+        reader = _capture_reader()
+        reader._excluded_apps = ("passwordmanager.exe",)
+        reader._foreground_info = lambda: {
+            "left": 0, "top": 0, "width": 100, "height": 60,
+            "title": "Vault", "hwnd": 7, "process_name": "passwordmanager.exe",
+        }
+        backend = MagicMock(return_value=_frame(scope="virtual_desktop"))
+        reader._backend_candidates = [("fake", backend)]
+        self.assertIsNone(reader._capture_frame(focused_only=False))
+        backend.assert_not_called()
+        self.assertEqual(reader.last_monitor_status, "skipped_excluded_window")
+
+    def test_12b_full_desktop_poll_skips_own_window(self):
+        reader = _capture_reader()
+        reader._foreground_info = lambda: {
+            "left": 0, "top": 0, "width": 100, "height": 60,
+            "title": "Agetha", "hwnd": 999, "process_name": "python.exe",
+        }
+        backend = MagicMock(return_value=_frame(scope="virtual_desktop"))
+        reader._backend_candidates = [("fake", backend)]
+        self.assertIsNone(reader._capture_frame(focused_only=False))
+        backend.assert_not_called()
+        self.assertEqual(reader.last_monitor_status, "skipped_own_window")
+
+    def test_12c_main_thread_handle_cache_is_wired_after_background_init(self):
+        source = inspect.getsource(__import__("main").CompanionApp._init_background)
+        self.assertIn("self._screen.cache_own_window_handle()", source)
+
 
 class TestConcurrency(unittest.TestCase):
     def test_13_deep_ocr_cannot_restore_stale_standard_state(self):
@@ -428,6 +457,10 @@ class TestPatterns(unittest.TestCase):
 
     def test_38_broad_prose_does_not_false_positive(self):
         self.assertEqual(_scan_patterns("The build of this story is exciting and calm."), [])
+
+    def test_38a_scoped_pattern_is_skipped_without_app_context(self):
+        matches = _scan_patterns("is not a valid member of")
+        self.assertFalse(any(match.category == "luau_runtime" for match in matches))
 
     def test_39_custom_patterns_still_load(self):
         original_loaded = screen_reader_module._custom_patterns_loaded

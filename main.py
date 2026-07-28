@@ -1962,6 +1962,11 @@ class CompanionApp:
                     self._bleep = bleep
                     self._screen = screen
                     self._ai = ai
+                    if self._screen:
+                        try:
+                            self._screen.cache_own_window_handle()
+                        except Exception as exc:
+                            logger.warning(f"Own-window handle cache failed: {exc}")
                     try:
                         self._voice_out = VoiceOutputCoordinator(self._bleep, get_settings())
                     except Exception as exc:

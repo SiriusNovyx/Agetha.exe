@@ -1407,6 +1407,7 @@ def handle_analyze_screen_deep(app, response, ctx):
             result,
             max_chars=get_settings().deep_ocr_max_output_chars,
         )
+        wrapped = app._screen.redact_for_external_context(wrapped)
         follow = app._ai_query(
             ctx.user_message or "",
             screen_context="",
