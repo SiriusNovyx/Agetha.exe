@@ -261,6 +261,67 @@ class TestCaptureBehavior(unittest.TestCase):
         source = inspect.getsource(__import__("main").CompanionApp._init_background)
         self.assertIn("self._screen.cache_own_window_handle()", source)
 
+    def test_12d_manual_focused_capture_still_skips_own_window(self):
+        reader = _capture_reader()
+        reader._foreground_info = lambda: {
+            "left": 0, "top": 0, "width": 100, "height": 60,
+            "title": "Agetha", "hwnd": 999, "process_name": "python.exe",
+        }
+        with patch.object(screen_reader_module, "_grab_mss_frame") as grab:
+            self.assertIsNone(reader._capture_frame(automatic=False))
+        grab.assert_not_called()
+        self.assertEqual(reader.last_monitor_status, "skipped_own_window")
+
+    def test_12e_preserved_target_survives_confirmation_focus_change(self):
+        reader = _capture_reader()
+        reader._foreground_info = lambda: {
+            "left": 0, "top": 0, "width": 100, "height": 60,
+            "title": "Agetha", "hwnd": 999, "process_name": "python.exe",
+        }
+        reader.last_capture_metadata = _frame(
+            title="Document", hwnd=77, process_name="reader.exe",
+        )
+        external = {
+            "left": 25, "top": 35, "width": 640, "height": 480,
+            "title": "Document", "hwnd": 77, "process_name": "reader.exe",
+        }
+        captured_frame = _frame(
+            left=25, top=35, title="Document", hwnd=77,
+            process_name="reader.exe",
+        )
+        with (
+            patch.object(screen_reader_module, "_get_window_info", return_value=external),
+            patch.object(screen_reader_module, "_grab_mss_frame", return_value=captured_frame),
+        ):
+            target = reader.preserve_external_target()
+            captured = reader._capture_frame(
+                focused_only=True,
+                automatic=False,
+                capture_target=target,
+            )
+        self.assertEqual(target["hwnd"], 77)
+        self.assertEqual(captured.hwnd, 77)
+
+    def test_12f_preserved_target_failure_does_not_capture_monitor(self):
+        reader = _capture_reader()
+        target = {
+            "left": 25, "top": 35, "width": 640, "height": 480,
+            "title": "Document", "hwnd": 77, "process_name": "reader.exe",
+        }
+        with (
+            patch.object(screen_reader_module, "_get_window_info", return_value=target),
+            patch.object(screen_reader_module, "_grab_mss_frame", return_value=None),
+        ):
+            reader._capture_with_backend = MagicMock()
+            captured = reader._capture_frame(
+                focused_only=True,
+                automatic=False,
+                capture_target=target,
+            )
+        self.assertIsNone(captured)
+        reader._capture_with_backend.assert_not_called()
+        self.assertEqual(reader.last_monitor_status, "capture_target_failed")
+
 
 class TestConcurrency(unittest.TestCase):
     def test_13_deep_ocr_cannot_restore_stale_standard_state(self):
@@ -523,6 +584,16 @@ class TestConfigurationPrivacy(unittest.TestCase):
     def test_45_excluded_app_skips_ocr(self):
         reader = _capture_reader()
         reader._excluded_apps = ("passwordmanager.exe",)
+        reader._foreground_info = lambda: {
+            "left": 0, "top": 0, "width": 100, "height": 60,
+            "title": "Vault", "hwnd": 1, "process_name": "passwordmanager.exe",
+        }
+        self.assertIsNone(reader._capture_frame())
+        self.assertEqual(reader.last_monitor_status, "skipped_excluded_window")
+
+    def test_45a_extensionless_exclusion_matches_executable_name(self):
+        reader = _capture_reader()
+        reader._excluded_apps = ("passwordmanager",)
         reader._foreground_info = lambda: {
             "left": 0, "top": 0, "width": 100, "height": 60,
             "title": "Vault", "hwnd": 1, "process_name": "passwordmanager.exe",

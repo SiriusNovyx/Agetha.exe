@@ -302,7 +302,7 @@ Reliability checklist:
   from standard state;
 - no network timezone or automatic Unlimited-OCR lookup.
 
-Run both OCR suites after any change; the 61-case reliability suite is the
+Run both OCR suites after any change; the 65-case reliability suite is the
 contract for the external screen-monitoring plan.
 
 ## Launcher and Windows ARM

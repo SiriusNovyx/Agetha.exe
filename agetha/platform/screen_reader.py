@@ -449,16 +449,12 @@ def _get_window_process_name(hwnd: int) -> str:
                 pass
 
 
-def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
-    """Return mss-compatible capture dict + metadata for the focused window.
-
-    Returns {left, top, width, height, title, hwnd} in physical pixels, or None.
-    skip_hwnd: pass Agetha's own HWND to avoid capturing herself.
-    """
+def _get_window_info(hwnd: int, skip_hwnd: int | None = None) -> dict | None:
+    """Return current geometry and metadata for one Windows HWND."""
     if not IS_WINDOWS:
         return None
     try:
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        hwnd = int(hwnd)
         if not hwnd:
             return None
         if skip_hwnd and hwnd == skip_hwnd:
@@ -497,8 +493,20 @@ def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
             "process_name": _get_window_process_name(hwnd),
         }
     except Exception as e:
+        logger.debug(f"Window lookup failed: {type(e).__name__}")
+        return None
+
+
+def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
+    """Return mss-compatible capture metadata for the focused Windows window."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+    except Exception as e:
         logger.debug(f"Foreground-window lookup failed: {type(e).__name__}")
         return None
+    return _get_window_info(hwnd, skip_hwnd=skip_hwnd)
 
 
 def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | None:
@@ -1042,6 +1050,70 @@ class ScreenReader:
         """Resolve the native app handle while called from Tk's main thread."""
         return self._get_own_hwnd()
 
+    @staticmethod
+    def _normalized_capture_target(info: dict | None) -> dict | None:
+        if not info:
+            return None
+        try:
+            target = {
+                "left": int(info["left"]),
+                "top": int(info["top"]),
+                "width": int(info["width"]),
+                "height": int(info["height"]),
+                "title": str(info.get("title", ""))[:60],
+                "hwnd": int(info["hwnd"]) if info.get("hwnd") is not None else None,
+                "process_name": str(info.get("process_name", ""))[:120],
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+        if target["width"] <= 20 or target["height"] <= 20:
+            return None
+        return target
+
+    def _resolve_capture_target(self, target: dict | None) -> dict | None:
+        normalized = self._normalized_capture_target(target)
+        if normalized is None or normalized["hwnd"] is None:
+            return None
+        own_hwnd = self._get_own_hwnd()
+        if own_hwnd is None or normalized["hwnd"] == own_hwnd:
+            return None
+        if self._system == "Windows":
+            return _get_window_info(normalized["hwnd"], skip_hwnd=own_hwnd)
+        return normalized
+
+    def preserve_external_target(self) -> dict | None:
+        """Snapshot an external focused target before a confirmation takes focus."""
+        own_hwnd = self._get_own_hwnd()
+        if own_hwnd is None:
+            return None
+        current = self._normalized_capture_target(self._foreground_info())
+        if current is not None and current["hwnd"] != own_hwnd:
+            return self._resolve_capture_target(current)
+
+        state_lock = getattr(self, "_state_lock", None)
+        if state_lock is not None:
+            with state_lock:
+                previous = getattr(self, "last_capture_metadata", None)
+        else:
+            previous = getattr(self, "last_capture_metadata", None)
+        if (
+            previous is None
+            or previous.scope != "focused_window"
+            or previous.hwnd is None
+            or previous.hwnd == own_hwnd
+        ):
+            return None
+        width, height = previous.image.size
+        return self._resolve_capture_target({
+            "left": previous.left,
+            "top": previous.top,
+            "width": width,
+            "height": height,
+            "title": previous.title,
+            "hwnd": previous.hwnd,
+            "process_name": previous.process_name,
+        })
+
     # ── 1 + 4. Focused capture ────────────────────────────────────────────────
 
     def _foreground_info(self) -> dict | None:
@@ -1056,19 +1128,27 @@ class ScreenReader:
         *,
         focused_only: bool = True,
         automatic: bool = True,
+        capture_target: dict | None = None,
     ) -> CapturedFrame | None:
         """Return an immutable image/origin/title snapshot for one operation."""
         with self._capture_lock:
             if self._stopped or not self._capture_available:
                 self.last_monitor_status = "capture_disabled"
                 return None
-            win = self._foreground_info() if focused_only or automatic else None
-            if automatic and win is not None:
+            strict_target = focused_only and capture_target is not None
+            if strict_target:
+                win = self._resolve_capture_target(capture_target)
+                if win is None:
+                    self.last_monitor_status = "capture_target_unavailable"
+                    return None
+            else:
+                win = self._foreground_info() if focused_only or automatic else None
+            if win is not None:
                 hwnd = win.get("hwnd")
                 if hwnd is not None and hwnd == self._get_own_hwnd():
                     self.last_monitor_status = "skipped_own_window"
                     return None
-                if is_capture_excluded(
+                if automatic and is_capture_excluded(
                     title=win.get("title", ""),
                     process_name=win.get("process_name", ""),
                     excluded_apps=self._excluded_apps,
@@ -1093,6 +1173,9 @@ class ScreenReader:
                 if frame is not None:
                     self.last_monitor_status = "captured_focused_window"
                     return frame
+                if strict_target:
+                    self.last_monitor_status = "capture_target_failed"
+                    return None
                 logger.debug("Focused capture failed; trying a full-display backend")
                 if IS_WINDOWS and hwnd is not None:
                     monitor = _find_monitor_for_window(int(hwnd))
@@ -1332,6 +1415,8 @@ class ScreenReader:
         self,
         focused_only: bool = True,
         prompt: str = "<image>document parsing.",
+        capture_target: dict | None = None,
+        require_target: bool = False,
     ) -> OCRResult:
         """Run the configured deep backend only for an explicit caller request."""
         if getattr(self, "_deep_backend_name", "none") != "unlimited_ocr":
@@ -1354,12 +1439,18 @@ class ScreenReader:
         problem = backend.configuration_error()
         if problem:
             return self._deep_error(*problem)
+        if focused_only and require_target and capture_target is None:
+            return self._deep_error(
+                "target_unavailable",
+                "The previously focused window is no longer available for deep OCR.",
+            )
 
         # Deep OCR owns only its immutable frame and never mutates standard state.
         try:
             if hasattr(self, "_capture_lock"):
                 frame = self._capture_frame(
                     focused_only=bool(focused_only), automatic=False,
+                    capture_target=capture_target,
                 )
             else:
                 legacy_state = (

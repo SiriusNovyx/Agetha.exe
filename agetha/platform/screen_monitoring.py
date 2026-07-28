@@ -283,10 +283,17 @@ def is_capture_excluded(
 ) -> bool:
     title_folded = str(title or "").casefold()
     process_folded = str(process_name or "").casefold()
+    process_bare = (
+        process_folded[:-4] if process_folded.endswith(".exe") else process_folded
+    )
     for app in excluded_apps:
         token = app.casefold()
         bare = token[:-4] if token.endswith(".exe") else token
-        if token == process_folded or (bare and bare in title_folded):
+        if (
+            token == process_folded
+            or (bare and bare == process_bare)
+            or (bare and bare in title_folded)
+        ):
             return True
     plain, regexes = title_exclusions
     return any(item in title_folded for item in plain) or any(

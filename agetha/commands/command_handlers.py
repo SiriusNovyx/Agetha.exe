@@ -62,6 +62,25 @@ def register(command: str) -> Callable[[HandlerFn], HandlerFn]:
     return deco
 
 
+def _deep_ocr_focused_only(response: dict) -> bool:
+    raw = response.get("focused_only", True)
+    return (
+        raw if isinstance(raw, bool)
+        else str(raw).strip().lower() not in {"0", "no", "false", "off"}
+    )
+
+
+def _block_recursive_deep_ocr(response: dict | None) -> dict | None:
+    if not response or response.get("command") != "analyze_screen_deep":
+        return response
+    logger.warning("Blocked recursive analyze_screen_deep follow-up")
+    safe = dict(response)
+    safe["command"] = "speak" if safe.get("segments") else "idle"
+    safe.pop("focused_only", None)
+    safe.pop("prompt", None)
+    return safe
+
+
 def dispatch(app: "CompanionApp", response: dict, user_message: str | None = None) -> None:
     """Route a parsed AI response to the appropriate handler."""
     command = response.get("command", "idle")
@@ -87,6 +106,16 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
         logger.info("analyze_screen_deep ignored during an ambient turn")
         app.root.after(0, app._reschedule_screen_poll)
         return
+
+    if command == "analyze_screen_deep" and _deep_ocr_focused_only(response):
+        response["_deep_capture_target"] = None
+        if app._screen:
+            try:
+                response["_deep_capture_target"] = (
+                    app._screen.preserve_external_target()
+                )
+            except Exception as exc:
+                logger.warning(f"Could not preserve deep-OCR target: {exc}")
 
     if not user_message and ctx.mood in app._ATTENTION_MOODS:
         app._maybe_snap_to_center(ctx.mood)
@@ -1379,11 +1408,7 @@ def handle_analyze_screen_deep(app, response, ctx):
         app.root.after(0, app._reschedule_screen_poll)
         return True
 
-    raw_focused = response.get("focused_only", True)
-    focused_only = (
-        raw_focused if isinstance(raw_focused, bool)
-        else str(raw_focused).strip().lower() not in {"0", "no", "false", "off"}
-    )
+    focused_only = _deep_ocr_focused_only(response)
     prompt = str(response.get("prompt", "") or "<image>document parsing.")[:2000]
     if ctx.segments:
         first = str(ctx.segments[0].get("text", "Analyzing…"))[:120]
@@ -1395,6 +1420,10 @@ def handle_analyze_screen_deep(app, response, ctx):
         result = app._screen.capture_deep_text(
             focused_only=focused_only,
             prompt=prompt,
+            capture_target=response.get("_deep_capture_target"),
+            require_target=(
+                focused_only and "_deep_capture_target" in response
+            ),
         )
         if not result.ok:
             message = result.text[:300]
@@ -1413,6 +1442,7 @@ def handle_analyze_screen_deep(app, response, ctx):
             screen_context="",
             doc_content=wrapped,
         )
+        follow = _block_recursive_deep_ocr(follow)
         if follow:
             app._dispatch_response(follow, ctx.user_message)
         else:

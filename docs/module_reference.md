@@ -134,7 +134,7 @@ Notes:
 
 - `capture_text(max_chars=3000, focused_only=True)`
 - `capture_image(focused_only=True)`
-- `capture_deep_text(...)`
+- `capture_deep_text(...)` and `preserve_external_target()`
 - `get_active_window_title()` and `redact_for_external_context()`
 - `last_pattern_matches` for current direct context
 - `last_new_pattern_events` for deduplicated ambient reactions
@@ -179,14 +179,14 @@ long-lived effects should use the explicit tracked-controller pattern.
 
 ## Tests
 
-The current suite contains 305 tests across 12 files. Counts are a snapshot, not
+The current suite contains 312 tests across 12 files. Counts are a snapshot, not
 a version contract; use the coverage descriptions to select a focused suite.
 
 | File | Current count | Coverage |
 |---|---:|---|
 | [tests/__init__.py](../tests/__init__.py) | - | Test package marker. |
 | [test_atomic_persistence.py](../tests/test_atomic_persistence.py) | 9 | Atomic replacement/failure cleanup and corrupt-state repair/call-site use. |
-| [test_hybrid_ocr.py](../tests/test_hybrid_ocr.py) | 30 | OCR settings, Tesseract coordinates/confidence, Unlimited client security/errors/temp cleanup, deep integration and ambient block. |
+| [test_hybrid_ocr.py](../tests/test_hybrid_ocr.py) | 33 | OCR settings, Tesseract coordinates/confidence, Unlimited client security/errors/temp cleanup, deep integration and ambient block. |
 | [test_medic_arch.py](../tests/test_medic_arch.py) | 6 | Architecture aliases, build-platform priority, ARM64-native/x64-Prism distinction, JSON output. |
 | [test_phase1_qa.py](../tests/test_phase1_qa.py) | 8 | Dashboard jobs/notepad, memory dual-write/recursion gates, stats/memory basics. |
 | [test_phase2_tts.py](../tests/test_phase2_tts.py) | 17 | TTS settings/clamps, coordinator modes/fallback, player non-raising lifecycle. |
@@ -195,7 +195,7 @@ a version contract; use the coverage descriptions to select a focused suite.
 | [test_phase4_realism.py](../tests/test_phase4_realism.py) | 16 | Command wiring, stats/notepad/trivia, prompt suppression, mood/session recap, coding-assist safety, GIF coverage, compile. |
 | [test_phase5_v4.py](../tests/test_phase5_v4.py) | 29 | Config, rhythm, dreams, tasks, prompt/guard/command wiring. |
 | [test_phase6_v5.py](../tests/test_phase6_v5.py) | 87 | Emotion/history/concurrency, audit, autostart, Windows integration/rollback, status, tray, command wiring. |
-| [test_screen_monitoring_reliability.py](../tests/test_screen_monitoring_reliability.py) | 61 | Coordinate/origin/capture/concurrency/change/event/pattern/privacy/stale-result/backward-compatibility matrix. |
+| [test_screen_monitoring_reliability.py](../tests/test_screen_monitoring_reliability.py) | 65 | Coordinate/origin/capture/concurrency/change/event/pattern/privacy/stale-result/backward-compatibility matrix. |
 | [test_time_ui_effects.py](../tests/test_time_ui_effects.py) | 25 | Datetime context, new settings, display scale, glow/motion/CRT lifecycle, shutdown idempotence, optional real-Tk smoke. |
 
 ## Documentation
