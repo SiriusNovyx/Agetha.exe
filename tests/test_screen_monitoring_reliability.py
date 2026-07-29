@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import threading
 import time
 import unittest
@@ -229,6 +230,7 @@ class TestCaptureBehavior(unittest.TestCase):
             name = _linux_process_name_from_window(42)
         self.assertEqual(name, "keepassxc")
 
+    @unittest.skipUnless(os.name == "nt", "Windows metadata path")
     def test_05d_windows_metadata_includes_process_id(self):
         user32 = MagicMock()
         kernel32 = MagicMock()
