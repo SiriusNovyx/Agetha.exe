@@ -2474,9 +2474,10 @@ class CompanionApp:
         except Exception:
             pass
         try:
-            from agetha.core.dreams import has_pending_wake_recall
-            if has_pending_wake_recall():
-                return True
+            if get_settings().enable_dreams:
+                from agetha.core.dreams import has_pending_wake_recall
+                if has_pending_wake_recall():
+                    return True
         except Exception:
             pass
         return False

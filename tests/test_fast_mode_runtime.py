@@ -234,6 +234,25 @@ class TestPendingContext(unittest.TestCase):
                 status_providers._pending[:] = previous_status
             dreams._pending_recall = previous_dream
 
+    def test_disabled_dream_recall_does_not_keep_ambient_poll_pending(self):
+        import main
+
+        previous_dream = dreams._pending_recall
+        dreams._pending_recall = {"text": "rain"}
+        try:
+            with (
+                patch.object(status_providers, "has_pending_observations", return_value=False),
+                patch.object(main, "get_settings", return_value=_settings(enable_dreams=False)),
+            ):
+                self.assertFalse(main.CompanionApp._has_pending_fast_ambient_context())
+            with (
+                patch.object(status_providers, "has_pending_observations", return_value=False),
+                patch.object(main, "get_settings", return_value=_settings(enable_dreams=True)),
+            ):
+                self.assertTrue(main.CompanionApp._has_pending_fast_ambient_context())
+        finally:
+            dreams._pending_recall = previous_dream
+
 
 class TestAmbientDecision(unittest.TestCase):
     @classmethod

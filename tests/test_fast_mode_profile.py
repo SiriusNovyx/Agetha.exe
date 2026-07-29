@@ -104,6 +104,35 @@ class FastModeProfileTests(unittest.TestCase):
             app_config.read_config_document(self.config)[1]["AI_MAX_TOKENS"], "220",
         )
 
+    def test_activation_rejects_invalid_original_managed_value(self) -> None:
+        self._write_config(
+            "FASTER_MODE = no\n"
+            "AI_MAX_TOKENS = not-a-number\n"
+            "UNKNOWN_PLUGIN_KEY = keep-me\n"
+        )
+        before = self.config.read_bytes()
+
+        result = self._activate()
+
+        self.assertEqual(result.status, "invalid_updates")
+        self.assertIn("AI_MAX_TOKENS", result.warnings[0])
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(self.snapshot.exists())
+
+    def test_dashboard_activation_rejects_invalid_prospective_original(self) -> None:
+        self._write_config()
+        before = self.config.read_bytes()
+
+        result = fast.apply_config_updates_with_fast_mode(
+            {"AI_MAX_TOKENS": "invalid", "FASTER_MODE": "yes"},
+            self.config,
+            self.snapshot,
+        )
+
+        self.assertEqual(result.status, "invalid_updates")
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(self.snapshot.exists())
+
     def test_failed_snapshot_write_leaves_config_unchanged(self) -> None:
         self._write_config()
         before = self.config.read_bytes()

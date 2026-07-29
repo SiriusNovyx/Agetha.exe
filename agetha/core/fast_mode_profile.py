@@ -568,6 +568,17 @@ def _activate_locked(
             return _repair_active_locked(config, snapshot_file, existing, text)
     if prospective_text is None:
         prospective_text = read_config_document(config)[0]
+    typed_ok, invalid_keys = validate_config_document(
+        prospective_text, (*FAST_MODE_OVERRIDES, "FASTER_MODE"),
+    )
+    if not typed_ok:
+        names = ", ".join(invalid_keys)
+        logger.warning("Fast Mode activation validation failed for: %s", names)
+        return FastModeReconcileResult(
+            "invalid_updates",
+            warnings=(f"Original values failed typed validation for: {names}",),
+            error="managed settings must be valid before Fast Mode can be enabled",
+        )
     raw = parse_config_document(prospective_text)
     snapshot = _new_snapshot(raw)
     try:
