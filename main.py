@@ -1120,6 +1120,7 @@ class CompanionApp:
         self._guard = CommandGuard(self.root)
         self._cancel_event = threading.Event()
         self._ai_busy = False
+        self._ai_busy_noninterruptible = False
         self._ai_tick_lock = threading.Lock()
         self._pending_user_message: str | None = None
         self._post_ai_tick_callbacks: list[Callable[[], None]] = []
@@ -1962,6 +1963,11 @@ class CompanionApp:
                     self._bleep = bleep
                     self._screen = screen
                     self._ai = ai
+                    if self._screen:
+                        try:
+                            self._screen.cache_own_window_handle()
+                        except Exception as exc:
+                            logger.warning(f"Own-window handle cache failed: {exc}")
                     try:
                         self._voice_out = VoiceOutputCoordinator(self._bleep, get_settings())
                     except Exception as exc:
@@ -2404,7 +2410,8 @@ class CompanionApp:
         with self._ai_tick_lock:
             if self._ai_busy or self._speech_active:
                 if is_user:
-                    self._cancel_event.set()
+                    if not self._ai_busy_noninterruptible:
+                        self._cancel_event.set()
                     self._pending_user_message = user_message
                 else:
                     self._reschedule_screen_poll()
@@ -2469,13 +2476,38 @@ class CompanionApp:
                 screen_text = self._screen.capture_text(
                     focused_only=_SETTINGS.ocr_focused_window_only,
                 )
-                self._last_screen_text = screen_text
+                monitor_status = getattr(self._screen, "last_monitor_status", "")
+                preserve_previous_context = False
+                if monitor_status == "skipped_excluded_window":
+                    active_title = ""
+                    screen_text = "[Screen OCR skipped for an excluded window.]"
+                    preserve_previous_context = True
+                elif monitor_status == "skipped_own_window":
+                    active_title = ""
+                    screen_text = "[Screen OCR skipped while Agetha has focus.]"
+                    preserve_previous_context = True
+                elif monitor_status == "ocr_empty":
+                    screen_text = "[Screen OCR found no readable text.]"
+                    preserve_previous_context = True
+                elif monitor_status == "unchanged" and not is_user:
+                    screen_text = "[Screen unchanged; no new OCR event.]"
+                    preserve_previous_context = True
+                if screen_text and not preserve_previous_context:
+                    self._last_screen_text = screen_text
 
-                _matches = getattr(self._screen, "last_pattern_matches", [])
+                _matches = getattr(
+                    self._screen,
+                    "last_pattern_matches" if is_user else "last_new_pattern_events",
+                    [],
+                )
+                _current_matches = getattr(self._screen, "last_pattern_matches", [])
+                if not is_user and _current_matches and not _matches:
+                    screen_text = "[Repeated screen event suppressed; no new OCR event.]"
+                    preserve_previous_context = True
                 if _matches:
                     tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
                     screen_text = tags + "\n" + screen_text
-                elif getattr(self._screen, "has_angry_trigger", False):
+                elif is_user and getattr(self._screen, "has_angry_trigger", False):
                     kws = ", ".join(self._screen.last_angry_keywords[:3])
                     screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
 
@@ -2488,7 +2520,7 @@ class CompanionApp:
                 }
                 _positions = getattr(self._screen, "last_word_positions", [])
                 _important = [p for p in _positions if p.get("text", "").lower() in _KEY_WORDS][:5]
-                if _important:
+                if _important and (is_user or bool(_matches)) and not preserve_previous_context:
                     pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
                     screen_text = f"[Error positions: {pos_str}]\n" + screen_text
             elif active_title:
@@ -2496,6 +2528,10 @@ class CompanionApp:
                 self._last_screen_text = screen_text
 
         ai_screen_context = screen_text or self._last_screen_text
+        if self._screen:
+            ai_screen_context = self._screen.redact_for_external_context(
+                ai_screen_context,
+            )
 
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
@@ -2556,6 +2592,40 @@ class CompanionApp:
     def _defer_after_ai_tick(self, callback: Callable[[], None]) -> None:
         """Run callback after the current _ai_tick releases _ai_busy (avoids _ai_query races)."""
         self._post_ai_tick_callbacks.append(callback)
+
+    def _defer_exclusive_ai_operation(self, callback: Callable[[], None]) -> None:
+        """Run one deferred operation while retaining the app-wide AI slot."""
+        def _start() -> None:
+            if self._closing:
+                return
+            with self._ai_tick_lock:
+                if self._ai_busy or self._speech_active:
+                    logger.warning("Deferred exclusive AI operation could not reserve its slot")
+                    return
+                self._ai_busy = True
+                self._ai_busy_noninterruptible = True
+            self._cancel_event.clear()
+            self.root.after(0, lambda: self._input_box.config(state="disabled"))
+
+            def _run() -> None:
+                try:
+                    callback()
+                except Exception as exc:
+                    logger.warning(f"Deferred exclusive AI operation failed: {exc}")
+                finally:
+                    with self._ai_tick_lock:
+                        self._ai_busy_noninterruptible = False
+                        self._ai_busy = False
+                    try:
+                        self.root.after(0, self._re_enable_input)
+                    except Exception:
+                        pass
+                    self._run_deferred_ai_tick_callbacks()
+                    self._drain_pending_user_message()
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        self._defer_after_ai_tick(_start)
 
     def _run_deferred_ai_tick_callbacks(self) -> None:
         if self._closing:
@@ -2811,13 +2881,19 @@ class CompanionApp:
         doc_content: str = "",
         memory_search_context: str = "",
         suppress_search_memory: bool = False,
+        reserved_ai_slot: bool = False,
     ):
         if self._cancel_event.is_set() or not self._ai:
             return None
+        owns_ai_slot = not reserved_ai_slot
         with self._ai_tick_lock:
-            if self._ai_busy or self._speech_active:
-                return None
-            self._ai_busy = True
+            if reserved_ai_slot:
+                if not self._ai_busy or not self._ai_busy_noninterruptible:
+                    return None
+            else:
+                if self._ai_busy or self._speech_active:
+                    return None
+                self._ai_busy = True
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
         def _on_token(raw):
@@ -2825,9 +2901,16 @@ class CompanionApp:
                 self.root.after(0, lambda r=raw: self._subtitle.show_thinking(r))
 
         try:
+            selected_screen_context = (
+                self._last_screen_text if screen_context is None else screen_context
+            )
+            if self._screen:
+                selected_screen_context = self._screen.redact_for_external_context(
+                    selected_screen_context,
+                )
             if _SETTINGS.enable_streaming:
                 return self._ai.query_streaming(
-                    screen_context=self._last_screen_text if screen_context is None else screen_context,
+                    screen_context=selected_screen_context,
                     user_message=user_message,
                     doc_content=doc_content,
                     memory_search_context=memory_search_context,
@@ -2835,7 +2918,7 @@ class CompanionApp:
                     on_token=_on_token,
                 )
             return self._ai.query(
-                screen_context=self._last_screen_text if screen_context is None else screen_context,
+                screen_context=selected_screen_context,
                 user_message=user_message,
                 doc_content=doc_content,
                 memory_search_context=memory_search_context,
@@ -2845,8 +2928,9 @@ class CompanionApp:
             logger.error(f"_ai_query failed: {exc}")
             return None
         finally:
-            self._ai_busy = False
-            self._drain_pending_user_message()
+            if owns_ai_slot:
+                self._ai_busy = False
+                self._drain_pending_user_message()
 
     def _try_short_mood_speak(self, command: str, ctx) -> bool:
         try:
@@ -2999,7 +3083,9 @@ class CompanionApp:
                 player.stop()
             except Exception:
                 pass
-        for resource in (self._voice, self._voice_out, self._bleep):
+        for resource in (
+            self._voice, self._voice_out, self._bleep, getattr(self, "_screen", None),
+        ):
             if resource is not None:
                 try:
                     resource.stop()

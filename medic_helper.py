@@ -279,6 +279,8 @@ def cmd_feature_modules() -> None:
         "agetha.core.audit_log",
         "agetha.platform.autostart",
         "agetha.platform.win_integration",
+        "agetha.platform.ocr_backends",
+        "agetha.platform.screen_monitoring",
         "agetha.features.tasks",
         "agetha.features.status_providers",
         "agetha.features.tray_scaffold",
@@ -329,6 +331,13 @@ def cmd_realism_apis() -> None:
     except Exception as exc:
         failures.append(f"ai_engine:{exc}")
 
+    try:
+        from agetha.platform.screen_reader import ScreenReader
+        if not callable(getattr(ScreenReader, "capture_deep_text", None)):
+            failures.append("screen_reader.capture_deep_text")
+    except Exception as exc:
+        failures.append(f"screen_reader:{exc}")
+
     # v4.0.0 — circadian rhythm, dream journal, task keeper
     try:
         from agetha.core import rhythm as rh
@@ -357,6 +366,36 @@ def cmd_realism_apis() -> None:
         print("REALISM_FAIL:" + ";".join(failures))
     else:
         print("REALISM_OK")
+
+
+def cmd_deep_ocr_status() -> None:
+    """Validate optional deep-OCR configuration without contacting the service."""
+    try:
+        from agetha.app_config import get_settings
+        from agetha.platform.ocr_backends.unlimited_ocr_backend import (
+            is_local_server_url,
+            normalize_server_url,
+        )
+        settings = get_settings(reload=True)
+    except Exception:
+        print("DEEP_OCR_INVALID")
+        return
+
+    if settings.deep_ocr_backend != "unlimited_ocr":
+        print("DEEP_OCR_DISABLED")
+        return
+    raw_url = settings.get("UNLIMITED_OCR_SERVER_URL", "")
+    try:
+        normalize_server_url(raw_url)
+    except ValueError:
+        print("DEEP_OCR_INVALID_URL")
+        return
+    if is_local_server_url(raw_url):
+        print("DEEP_OCR_CONFIGURED_LOCAL")
+    elif settings.unlimited_ocr_allow_remote:
+        print("DEEP_OCR_CONFIGURED_REMOTE")
+    else:
+        print("DEEP_OCR_REMOTE_BLOCKED")
 
 
 def cmd_openrouter_module() -> None:
@@ -489,6 +528,7 @@ _COMMANDS = {
     "tts": cmd_tts_deps,
     "features": cmd_feature_modules,
     "realism": cmd_realism_apis,
+    "deep_ocr": cmd_deep_ocr_status,
     "openrouter": cmd_openrouter_module,
     "toast_shortcut": cmd_toast_shortcut,
     "autostart": cmd_autostart_status,

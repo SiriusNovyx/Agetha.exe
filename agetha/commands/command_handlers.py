@@ -62,6 +62,25 @@ def register(command: str) -> Callable[[HandlerFn], HandlerFn]:
     return deco
 
 
+def _deep_ocr_focused_only(response: dict) -> bool:
+    raw = response.get("focused_only", True)
+    return (
+        raw if isinstance(raw, bool)
+        else str(raw).strip().lower() not in {"0", "no", "false", "off"}
+    )
+
+
+def _block_recursive_deep_ocr(response: dict | None) -> dict | None:
+    if not response or response.get("command") != "analyze_screen_deep":
+        return response
+    logger.warning("Blocked recursive analyze_screen_deep follow-up")
+    safe = dict(response)
+    safe["command"] = "speak" if safe.get("segments") else "idle"
+    safe.pop("focused_only", None)
+    safe.pop("prompt", None)
+    return safe
+
+
 def dispatch(app: "CompanionApp", response: dict, user_message: str | None = None) -> None:
     """Route a parsed AI response to the appropriate handler."""
     command = response.get("command", "idle")
@@ -78,6 +97,25 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
         app.root.after(0, lambda: app._set_state(app.STATE_IDLE))
         app._reschedule_screen_poll()
         return
+
+    # Defense in depth: an ambient model turn must not even open a confirmation
+    # dialog for deep OCR, let alone capture or transmit a screenshot.
+    if command == "analyze_screen_deep" and (
+        not user_message or user_message == "__touch__"
+    ):
+        logger.info("analyze_screen_deep ignored during an ambient turn")
+        app.root.after(0, app._reschedule_screen_poll)
+        return
+
+    if command == "analyze_screen_deep" and _deep_ocr_focused_only(response):
+        response["_deep_capture_target"] = None
+        if app._screen:
+            try:
+                response["_deep_capture_target"] = (
+                    app._screen.preserve_external_target()
+                )
+            except Exception as exc:
+                logger.warning(f"Could not preserve deep-OCR target: {exc}")
 
     if not user_message and ctx.mood in app._ATTENTION_MOODS:
         app._maybe_snap_to_center(ctx.mood)
@@ -1350,6 +1388,68 @@ def handle_request_screen_read(app, response, ctx):
     app._defer_after_ai_tick(
         lambda: threading.Thread(target=_requery, daemon=True).start()
     )
+    return True
+
+
+@register("analyze_screen_deep")
+def handle_analyze_screen_deep(app, response, ctx):
+    """Run optional deep OCR only after a direct user-triggered AI turn."""
+    if not ctx.user_message or ctx.user_message == "__touch__":
+        logger.info("analyze_screen_deep ignored without an explicit user request")
+        app.root.after(0, lambda: app._subtitle.show_message(
+            "Deep OCR only runs after you ask for it.", "#ff6600",
+        ))
+        app.root.after(0, app._reschedule_screen_poll)
+        return True
+    if not app._screen:
+        app.root.after(0, lambda: app._subtitle.show_message(
+            "Screen capture is unavailable.", "#ff4444",
+        ))
+        app.root.after(0, app._reschedule_screen_poll)
+        return True
+
+    focused_only = _deep_ocr_focused_only(response)
+    prompt = str(response.get("prompt", "") or "<image>document parsing.")[:2000]
+    if ctx.segments:
+        first = str(ctx.segments[0].get("text", "Analyzing…"))[:120]
+        app.root.after(0, lambda text=first: app._subtitle.show_message(text, "#888888"))
+
+    def _analyze_and_requery():
+        from agetha.platform.ocr_backends.base import format_deep_ocr_for_prompt
+
+        result = app._screen.capture_deep_text(
+            focused_only=focused_only,
+            prompt=prompt,
+            capture_target=response.get("_deep_capture_target"),
+            require_target=(
+                focused_only and "_deep_capture_target" in response
+            ),
+        )
+        if not result.ok:
+            message = result.text[:300]
+            app.root.after(0, lambda text=message: app._subtitle.show_message(text, "#ff6600"))
+            app.root.after(0, lambda: app._set_state(app.STATE_IDLE, "neutral"))
+            app.root.after(0, app._reschedule_screen_poll)
+            return
+
+        wrapped = format_deep_ocr_for_prompt(
+            result,
+            max_chars=get_settings().deep_ocr_max_output_chars,
+        )
+        wrapped = app._screen.redact_for_external_context(wrapped)
+        follow = app._ai_query(
+            ctx.user_message or "",
+            screen_context="",
+            doc_content=wrapped,
+            reserved_ai_slot=True,
+        )
+        follow = _block_recursive_deep_ocr(follow)
+        if follow:
+            app._dispatch_response(follow, ctx.user_message)
+        else:
+            app.root.after(0, app._reschedule_screen_poll)
+
+    app._defer_exclusive_ai_operation(_analyze_and_requery)
     return True
 
 

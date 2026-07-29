@@ -73,8 +73,6 @@ PUBLIC API — quick reference
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -87,6 +85,7 @@ from typing import Optional
 # ══════════════════════════════════════════════════════════════════════
 
 from agetha.app_config import BASE_DIR
+from agetha.utils import write_atomic
 
 MEMORY_DIR    = BASE_DIR / "memory"
 SOUL_FILE     = MEMORY_DIR / "soul.md"  # memory/soul.md
@@ -440,29 +439,7 @@ def _write_atomic(filepath: Path, content: str) -> None:
                  fails (e.g. cross-device move). Caller is responsible for
                  catching this in a try/except block.
     """
-    parent = filepath.parent
-    parent.mkdir(parents=True, exist_ok=True)
-
-    # mkstemp creates the temp file on the same filesystem as the target.
-    # Same filesystem is required for os.replace() to be truly atomic.
-    fd, tmp_path = tempfile.mkstemp(
-        dir=parent,
-        prefix=".agetha_tmp_",
-        suffix=filepath.suffix or ".json",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(content)
-            fh.flush()
-            os.fsync(fh.fileno())   # Flush kernel write-back cache to disk
-        os.replace(tmp_path, filepath)   # Atomic rename
-    except Exception:
-        # Clean up orphaned temp file before re-raising
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    write_atomic(filepath, content)
 
 
 def _read_episodic_unsafe() -> list[dict]:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from agetha.app_config import BASE_DIR
-from agetha.utils import logger
+from agetha.utils import logger, write_atomic
 
 # Duplicated Win95 palette (must not import main.py)
 W95_BG = "#c0c0c0"
@@ -260,8 +260,30 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
             ("ENABLE_SCREEN_READER", "bool", True, ()),
             ("OCR_MAX_DIMENSION", "text", True, ()),
             ("OCR_FOCUSED_WINDOW_ONLY", "bool", True, ()),
+            ("OCR_CHANGE_DETECTION", "bool", True, ()),
+            ("OCR_CHANGE_THRESHOLD", "text", True, ()),
+            ("OCR_FORCE_REFRESH_SECONDS", "text", True, ()),
+            ("OCR_STATE_EXPIRY_SECONDS", "text", True, ()),
+            ("OCR_PATTERN_COOLDOWN_SECONDS", "text", True, ()),
+            ("OCR_PATTERN_CONFIRM_SCANS", "text", True, ()),
+            ("OCR_LOW_CONFIDENCE_CONFIRM_SCANS", "text", True, ()),
+            ("OCR_PATTERN_CLEAR_SCANS", "text", True, ()),
+            ("OCR_MIN_WORD_CONFIDENCE", "text", True, ()),
+            ("OCR_MIN_PATTERN_CONFIDENCE", "text", True, ()),
+            ("OCR_PREPROCESSING", "choice", True, ("basic", "auto")),
+            ("OCR_LANGUAGES", "text", True, ()),
+            ("OCR_PSM", "choice", True, ("auto", "3", "6", "11")),
+            ("OCR_EXCLUDED_APPS", "text", True, ()),
+            ("OCR_EXCLUDED_TITLE_PATTERNS", "text", True, ()),
+            ("OCR_REDACT_SENSITIVE_TEXT", "bool", True, ()),
             ("INCLUDE_WINDOW_TITLE_IN_CONTEXT", "bool", True, ()),
             ("TESSERACT_PATH", "text", True, ()),
+            ("DEEP_OCR_BACKEND", "choice", True, ("none", "unlimited_ocr")),
+            ("UNLIMITED_OCR_SERVER_URL", "text", True, ()),
+            ("UNLIMITED_OCR_MODEL", "text", True, ()),
+            ("UNLIMITED_OCR_TIMEOUT_SECONDS", "text", True, ()),
+            ("UNLIMITED_OCR_ALLOW_REMOTE", "bool", True, ()),
+            ("DEEP_OCR_MAX_OUTPUT_CHARS", "text", True, ()),
             ("OCR_CUSTOM_PATTERNS", "text", True, ()),
             ("OCR_PAUSE_WHILE_TYPING_SEC", "text", True, ()),
         ),
@@ -363,6 +385,16 @@ def read_notepad_text() -> str:
     except Exception as exc:
         logger.warning(f"dashboard: notepad read failed: {exc}")
     return ""
+
+
+def write_notepad_text(content: str) -> bool:
+    """Persist dashboard notepad text atomically; never raise to Tk callbacks."""
+    try:
+        write_atomic(NOTEPAD_FILE, content)
+        return True
+    except Exception as exc:
+        logger.warning(f"dashboard: notepad save failed: {exc}")
+        return False
 
 
 def _process_count() -> str:
@@ -687,11 +719,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     btn_row.pack(fill="x", padx=8, pady=(0, 8))
 
     def _save_notepad() -> None:
-        try:
-            NOTEPAD_FILE.parent.mkdir(parents=True, exist_ok=True)
-            NOTEPAD_FILE.write_text(note_text.get("1.0", "end-1c"), encoding="utf-8")
-        except Exception as exc:
-            logger.warning(f"dashboard: notepad save failed: {exc}")
+        write_notepad_text(note_text.get("1.0", "end-1c"))
 
     tk.Button(btn_row, text="Save", font=W95_FONT, bg=W95_BTN_BG, command=_save_notepad).pack(side="right")
     tk.Button(

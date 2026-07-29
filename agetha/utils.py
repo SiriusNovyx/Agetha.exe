@@ -6,6 +6,7 @@ Centralizes platform detection, common helpers, and config defaults.
 import sys
 import os
 import logging
+import tempfile
 from pathlib import Path
 
 # ── Platform Detection ─────────────────────────────────────────────────────────
@@ -25,6 +26,37 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
     return logging.getLogger("Agetha")
 
 logger = setup_logging()
+
+
+def write_atomic(filepath: str | os.PathLike[str], content: str | bytes) -> None:
+    """Durably replace a file without exposing a partial target to readers."""
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        if isinstance(content, bytes):
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        # The sibling temp file is on the same filesystem, so replace is atomic
+        # on NTFS and POSIX filesystems. Windows requires the handle closed first.
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
 
 # ── Base Paths ─────────────────────────────────────────────────────────────────
 from agetha.app_config import BASE_DIR, CONFIG_PATH, ENV_PATH

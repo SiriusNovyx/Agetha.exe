@@ -15,7 +15,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
-from agetha.utils import logger
+from agetha.utils import logger, write_atomic
 from agetha.app_config import BASE_DIR
 
 MEMORY_DIR = BASE_DIR / "memory"
@@ -39,20 +39,19 @@ def _load_unlocked() -> list[dict[str, Any]]:
         return []
     try:
         raw = json.loads(TASKS_FILE.read_text(encoding="utf-8", errors="replace"))
-        if isinstance(raw, list):
-            return [t for t in raw if isinstance(t, dict) and t.get("text")]
+        if not isinstance(raw, list):
+            raise ValueError("expected a JSON array")
+        return [t for t in raw if isinstance(t, dict) and t.get("text")]
     except Exception as exc:
         logger.warning(f"tasks: load failed: {exc}")
+        _save_unlocked([])
     return []
 
 
 def _save_unlocked(tasks: list[dict[str, Any]]) -> None:
     """Persist task list; caller must hold `_lock`."""
     try:
-        TASKS_FILE.write_text(
-            json.dumps(tasks, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_atomic(TASKS_FILE, json.dumps(tasks, indent=2, ensure_ascii=False))
     except Exception as exc:
         logger.warning(f"tasks: save failed: {exc}")
 

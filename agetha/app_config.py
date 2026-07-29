@@ -4,16 +4,20 @@ app_config.py — Central config.txt loader for Agetha Mod.
 Parses config.txt once, merges .env overrides, exposes typed settings.
 Missing, unreadable, or invalid config.txt always falls back to DEFAULT_CONFIG.
 
-API keys (GROQ_API_KEY*, OPENROUTER_API_KEY) are loaded from .env only —
+API keys (GROQ_API_KEY*, OPENROUTER_API_KEY, UNLIMITED_OCR_API_KEY) are loaded from .env only —
 values in config.txt are ignored.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import sys
+import tempfile
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
@@ -22,6 +26,28 @@ else:
 
 CONFIG_PATH = BASE_DIR / "config.txt"
 ENV_PATH = BASE_DIR / ".env"
+
+
+def _write_atomic_config(path: Path, content: str) -> None:
+    """Circular-import-safe atomic writer for config.txt."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
 
 DEFAULT_CONFIG = """# =============================================================================
 # Agetha Mod — config.txt
@@ -325,12 +351,45 @@ OCR_MAX_DIMENSION = 2560
 # OCR_FOCUSED_WINDOW_ONLY — yes = OCR only the active window; no = full screen.
 OCR_FOCUSED_WINDOW_ONLY = yes
 
+# Skip Tesseract when the captured target has not materially changed.
+OCR_CHANGE_DETECTION = yes
+OCR_CHANGE_THRESHOLD = 0.025
+OCR_FORCE_REFRESH_SECONDS = 20
+OCR_STATE_EXPIRY_SECONDS = 300
+
+# Screen-event deduplication and confirmation controls.
+OCR_PATTERN_COOLDOWN_SECONDS = 60
+OCR_PATTERN_CONFIRM_SCANS = 1
+OCR_LOW_CONFIDENCE_CONFIRM_SCANS = 2
+OCR_PATTERN_CLEAR_SCANS = 2
+
+# OCR quality, layout, language, privacy, and opt-out controls.
+OCR_MIN_WORD_CONFIDENCE = 30
+OCR_MIN_PATTERN_CONFIDENCE = 45
+OCR_PREPROCESSING = auto
+OCR_LANGUAGES = eng
+OCR_PSM = auto
+OCR_EXCLUDED_APPS =
+OCR_EXCLUDED_TITLE_PATTERNS =
+OCR_REDACT_SENSITIVE_TEXT = yes
+
 # INCLUDE_WINDOW_TITLE_IN_CONTEXT — yes = send [Active: Window Title] to AI each poll.
 INCLUDE_WINDOW_TITLE_IN_CONTEXT = yes
 
 # TESSERACT_PATH — full path to tesseract.exe if not on PATH (Windows).
 # Example: C:\\Program Files\\Tesseract-OCR\\tesseract.exe
 TESSERACT_PATH =
+
+# Deep OCR is opt-in and is never used by automatic screen polling.
+DEEP_OCR_BACKEND = none
+
+# Unlimited-OCR runs as a separate OpenAI-compatible service. Loopback is
+# allowed by default; remote hosts require explicit opt-in.
+UNLIMITED_OCR_SERVER_URL = http://127.0.0.1:10000
+UNLIMITED_OCR_MODEL = Unlimited-OCR
+UNLIMITED_OCR_TIMEOUT_SECONDS = 180
+UNLIMITED_OCR_ALLOW_REMOTE = no
+DEEP_OCR_MAX_OUTPUT_CHARS = 12000
 
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -401,7 +460,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 5.0.0
+APP_VERSION = 5.5.1
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
@@ -477,6 +536,7 @@ _SECRET_KEYS = frozenset(
     {
         "OPENROUTER_API_KEY",
         "GROQ_API_KEY",
+        "UNLIMITED_OCR_API_KEY",
         *(f"GROQ_API_KEY_{i}" for i in range(1, 11)),
     }
 )
@@ -488,7 +548,9 @@ _BOOL_KEYS = frozenset({
     "ENABLE_DATETIME_CONTEXT", "DATETIME_INCLUDE_SECONDS", "DATETIME_INCLUDE_TIMEZONE",
     "ENABLE_COMMAND_EXECUTION", "ENABLE_WINDOW_CONTROL", "ENABLE_COMMAND_CONFIRMATIONS",
     "FORCE_CLOSE_AUTO_ALLOW", "ENABLE_ATTENTION_SNAP", "ENABLE_SCREEN_READER",
-    "OCR_FOCUSED_WINDOW_ONLY", "INCLUDE_WINDOW_TITLE_IN_CONTEXT", "WINDOW_TOPMOST",
+    "OCR_FOCUSED_WINDOW_ONLY", "OCR_CHANGE_DETECTION",
+    "OCR_REDACT_SENSITIVE_TEXT", "INCLUDE_WINDOW_TITLE_IN_CONTEXT", "WINDOW_TOPMOST",
+    "UNLIMITED_OCR_ALLOW_REMOTE",
     "SKIP_TESSERACT_CHECK", "SKIP_ASSET_CHECK", "AUTO_PIP_INSTALL",
     "CREATE_DESKTOP_SHORTCUT", "CHECK_FOR_UPDATES", "WINDOW_PICKER_ON_AMBIGUOUS",
     "DRY_RUN_MODE", "WINDOW_MOVE_SMOOTH", "ENABLE_LONGTERM_MEMORY",
@@ -523,11 +585,17 @@ _INT_KEYS = frozenset({
     "EMOTION_BASELINE_TRUST", "EMOTION_BASELINE_LONELINESS",
     "EMOTION_HISTORY_MAX", "STATUS_POLL_INTERVAL_SEC",
     "MOOD_GLOW_INTERVAL_MS", "MOOD_MOTION_COOLDOWN_SECONDS",
+    "UNLIMITED_OCR_TIMEOUT_SECONDS", "DEEP_OCR_MAX_OUTPUT_CHARS",
+    "OCR_PATTERN_CONFIRM_SCANS", "OCR_LOW_CONFIDENCE_CONFIRM_SCANS",
+    "OCR_PATTERN_CLEAR_SCANS",
 })
 
 _FLOAT_KEYS = frozenset({
     "AI_TEMPERATURE", "AI_TOP_P", "TOUCH_COOLDOWN_SEC", "SUBTITLE_CHAR_DELAY",
     "ANIMATION_SPEED", "OCR_PAUSE_WHILE_TYPING_SEC",
+    "OCR_CHANGE_THRESHOLD", "OCR_FORCE_REFRESH_SECONDS",
+    "OCR_STATE_EXPIRY_SECONDS", "OCR_PATTERN_COOLDOWN_SECONDS",
+    "OCR_MIN_WORD_CONFIDENCE", "OCR_MIN_PATTERN_CONFIDENCE",
     "TTS_VOLUME",
     "EMOTION_DECAY_PER_HOUR",
 })
@@ -594,7 +662,8 @@ def _is_valid_bool(value: str) -> bool:
 def _is_valid_number(value: str, *, as_float: bool = False) -> bool:
     try:
         if as_float:
-            float(str(value).strip())
+            if not math.isfinite(float(str(value).strip())):
+                return False
         else:
             int(str(value).strip())
         return True
@@ -645,6 +714,7 @@ def _load_env_overrides(config: dict[str, str]) -> None:
     for key in (
         "OPENROUTER_API_KEY",
         "GROQ_API_KEY",
+        "UNLIMITED_OCR_API_KEY",
         *(f"GROQ_API_KEY_{i}" for i in range(2, 11)),
     ):
         config.setdefault(key, "")
@@ -758,6 +828,8 @@ def _parse_int(value: str | None, default: int, lo: int | None = None, hi: int |
 def _parse_float(value: str | None, default: float, lo: float | None = None, hi: float | None = None) -> float:
     try:
         n = float(str(value).strip())
+        if not math.isfinite(n):
+            n = default
     except (TypeError, ValueError, AttributeError):
         n = default
     if lo is not None:
@@ -765,6 +837,30 @@ def _parse_float(value: str | None, default: float, lo: float | None = None, hi:
     if hi is not None:
         n = min(hi, n)
     return n
+
+
+def _parse_http_url(value: str | None, default: str) -> str:
+    """Return a credential-free HTTP(S) URL or a known-safe default."""
+    raw = str(value or "").strip()
+    try:
+        parsed = urlsplit(raw)
+        _ = parsed.port
+        if (
+            not raw
+            or len(raw) > 2048
+            or parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError
+        return urlunsplit((
+            parsed.scheme.lower(), parsed.netloc, parsed.path.rstrip("/"), "", "",
+        ))
+    except (TypeError, ValueError):
+        return default
 
 
 _BUILTIN_PROTECTED = frozenset({
@@ -1118,12 +1214,117 @@ class AppSettings:
         return self.bool("OCR_FOCUSED_WINDOW_ONLY", True)
 
     @property
+    def ocr_change_detection(self) -> bool:
+        return self.bool("OCR_CHANGE_DETECTION", True)
+
+    @property
+    def ocr_change_threshold(self) -> float:
+        return self.float("OCR_CHANGE_THRESHOLD", 0.025, 0.0, 1.0)
+
+    @property
+    def ocr_force_refresh_seconds(self) -> float:
+        return self.float("OCR_FORCE_REFRESH_SECONDS", 20.0, 1.0, 3600.0)
+
+    @property
+    def ocr_state_expiry_seconds(self) -> float:
+        return self.float("OCR_STATE_EXPIRY_SECONDS", 300.0, 30.0, 86400.0)
+
+    @property
+    def ocr_pattern_cooldown_seconds(self) -> float:
+        return self.float("OCR_PATTERN_COOLDOWN_SECONDS", 60.0, 0.0, 86400.0)
+
+    @property
+    def ocr_pattern_confirm_scans(self) -> int:
+        return self.int("OCR_PATTERN_CONFIRM_SCANS", 1, 1, 20)
+
+    @property
+    def ocr_low_confidence_confirm_scans(self) -> int:
+        return self.int("OCR_LOW_CONFIDENCE_CONFIRM_SCANS", 2, 1, 20)
+
+    @property
+    def ocr_pattern_clear_scans(self) -> int:
+        return self.int("OCR_PATTERN_CLEAR_SCANS", 2, 1, 20)
+
+    @property
+    def ocr_min_word_confidence(self) -> float:
+        return self.float("OCR_MIN_WORD_CONFIDENCE", 30.0, 0.0, 100.0)
+
+    @property
+    def ocr_min_pattern_confidence(self) -> float:
+        return self.float("OCR_MIN_PATTERN_CONFIDENCE", 45.0, 0.0, 100.0)
+
+    @property
+    def ocr_preprocessing(self) -> str:
+        value = self.get("OCR_PREPROCESSING", "auto").strip().lower()
+        return value if value in {"basic", "auto"} else "auto"
+
+    @property
+    def ocr_languages(self) -> str:
+        value = self.get("OCR_LANGUAGES", "eng").strip().replace(" ", "")
+        return value[:100] if re.fullmatch(r"[A-Za-z0-9_+-]+", value) else "eng"
+
+    @property
+    def ocr_psm(self) -> str:
+        value = self.get("OCR_PSM", "auto").strip().lower()
+        return value if value in {"auto", "3", "6", "11"} else "auto"
+
+    @property
+    def ocr_excluded_apps(self) -> str:
+        return self.get("OCR_EXCLUDED_APPS", "")[:2000]
+
+    @property
+    def ocr_excluded_title_patterns(self) -> str:
+        return self.get("OCR_EXCLUDED_TITLE_PATTERNS", "")[:4000]
+
+    @property
+    def ocr_redact_sensitive_text(self) -> bool:
+        return self.bool("OCR_REDACT_SENSITIVE_TEXT", True)
+
+    @property
     def include_window_title_in_context(self) -> bool:
         return self.bool("INCLUDE_WINDOW_TITLE_IN_CONTEXT", True)
 
     @property
     def tesseract_path(self) -> str:
         return self.get("TESSERACT_PATH", "").strip()
+
+    @property
+    def deep_ocr_backend(self) -> str:
+        value = self.get("DEEP_OCR_BACKEND", "none").strip().lower()
+        return value if value in {"none", "unlimited_ocr"} else "none"
+
+    @property
+    def unlimited_ocr_server_url(self) -> str:
+        return _parse_http_url(
+            self.get("UNLIMITED_OCR_SERVER_URL", "http://127.0.0.1:10000"),
+            "http://127.0.0.1:10000",
+        )
+
+    @property
+    def unlimited_ocr_model(self) -> str:
+        value = (
+            self.get("UNLIMITED_OCR_MODEL", "Unlimited-OCR")
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .strip()
+        )
+        return value[:200] or "Unlimited-OCR"
+
+    @property
+    def unlimited_ocr_timeout_seconds(self) -> int:
+        return self.int("UNLIMITED_OCR_TIMEOUT_SECONDS", 180, 10, 1200)
+
+    @property
+    def unlimited_ocr_allow_remote(self) -> bool:
+        return self.bool("UNLIMITED_OCR_ALLOW_REMOTE", False)
+
+    @property
+    def deep_ocr_max_output_chars(self) -> int:
+        return self.int("DEEP_OCR_MAX_OUTPUT_CHARS", 12000, 1000, 50000)
+
+    @property
+    def unlimited_ocr_api_key(self) -> str:
+        return self.get("UNLIMITED_OCR_API_KEY", "").strip()
 
     # ── UI ────────────────────────────────────────────────────────────────────
     @property
@@ -1207,7 +1408,7 @@ class AppSettings:
 
     @property
     def app_version(self) -> str:
-        return self.get("APP_VERSION", "5.0.0").strip() or "5.0.0"
+        return self.get("APP_VERSION", "5.5.1").strip() or "5.5.1"
 
     @property
     def github_releases_url(self) -> str:
@@ -1304,7 +1505,7 @@ def patch_config_keys(updates: dict[str, str]) -> tuple[bool, list[str]]:
                 out.append(line if line.endswith("\n") else line + "\n")
         for key, value in remaining.items():
             out.append(f"{key} = {value}\n")
-        path.write_text("".join(out), encoding="utf-8")
+        _write_atomic_config(path, "".join(out))
         get_settings(reload=True)
         return True, failed
     except Exception as exc:
@@ -1331,5 +1532,4 @@ def get_settings(reload: bool = False) -> AppSettings:
 
 def create_default_config(path: Path | None = None) -> None:
     path = path or CONFIG_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(DEFAULT_CONFIG, encoding="utf-8")
+    _write_atomic_config(path, DEFAULT_CONFIG)

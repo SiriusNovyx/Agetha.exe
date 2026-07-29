@@ -19,7 +19,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 from agetha.app_config import BASE_DIR, get_settings
-from agetha.utils import logger, native_error_popup
+from agetha.utils import logger, native_error_popup, write_atomic
 
 W95_BG = "#c0c0c0"
 W95_TITLE_BG = "#000080"
@@ -50,10 +50,7 @@ def load_mic_settings() -> dict:
 def save_mic_settings(data: dict) -> None:
     try:
         _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _SETTINGS_PATH.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_atomic(_SETTINGS_PATH, json.dumps(data, indent=2, ensure_ascii=False))
         logger.info(f"Microphone settings saved to {_SETTINGS_PATH}")
     except Exception as exc:
         logger.warning(f"Could not save mic settings: {exc}")

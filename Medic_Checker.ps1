@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v5.0.0)
+  Agetha startup health check and launcher (Overhaul Edition v5.5.1)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
@@ -39,9 +39,9 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.0.0'
+    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.5.1'
     if ($v) { return $v }
-    return '5.0.0'
+    return '5.5.1'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -59,7 +59,7 @@ try {
     $script:AppVersion = Get-AppVersion
     $Host.UI.RawUI.WindowTitle = "Agetha.exe  -  Health Check  |  v$script:AppVersion"
 } catch {
-    $script:AppVersion = '5.0.0'
+    $script:AppVersion = '5.5.1'
 }
 
 function Test-GitHubUpdate {
@@ -964,6 +964,18 @@ function Invoke-StandardChecks {
             Write-Info 'Or set TESSERACT_PATH in config.txt to your tesseract.exe.'
         }
     }
+    $deepOcrStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'deep_ocr'
+    if ($deepOcrStatus -eq 'DEEP_OCR_DISABLED') {
+        Write-Info 'Deep OCR: disabled (optional).'
+    } elseif ($deepOcrStatus -eq 'DEEP_OCR_CONFIGURED_LOCAL') {
+        Write-Ok 'Deep OCR: configured for a local Unlimited-OCR service (connectivity not tested).'
+    } elseif ($deepOcrStatus -eq 'DEEP_OCR_CONFIGURED_REMOTE') {
+        Write-Warn 'Deep OCR: configured for a remote service; screenshots leave this machine when explicitly requested.'
+    } elseif ($deepOcrStatus -eq 'DEEP_OCR_REMOTE_BLOCKED') {
+        Write-Warn 'Deep OCR: remote URL blocked because UNLIMITED_OCR_ALLOW_REMOTE=no.'
+    } else {
+        Write-Warn 'Deep OCR: optional configuration has an invalid server URL.'
+    }
     Write-Host ''
 
     # [5/7] assets
@@ -1159,7 +1171,8 @@ function Invoke-StandardChecks {
         'agetha\core\rhythm.py', 'agetha\core\dreams.py',
         'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py',
         'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
-        'agetha\platform\screen_reader.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
+        'agetha\platform\screen_reader.py', 'agetha\platform\screen_monitoring.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
+        'agetha\platform\ocr_backends\__init__.py', 'agetha\platform\ocr_backends\base.py', 'agetha\platform\ocr_backends\tesseract_backend.py', 'agetha\platform\ocr_backends\unlimited_ocr_backend.py',
         'agetha\platform\autostart.py', 'agetha\platform\win_integration.py',
         'agetha\features\tts_player.py', 'agetha\features\web_rag.py', 'agetha\features\tasks.py',
         'agetha\features\status_providers.py', 'agetha\features\tray_scaffold.py',
@@ -1218,7 +1231,8 @@ $coreFiles = @(
     'agetha\core\rhythm.py', 'agetha\core\dreams.py',
     'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py',
     'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
-    'agetha\platform\screen_reader.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
+    'agetha\platform\screen_reader.py', 'agetha\platform\screen_monitoring.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
+    'agetha\platform\ocr_backends\__init__.py', 'agetha\platform\ocr_backends\base.py', 'agetha\platform\ocr_backends\tesseract_backend.py', 'agetha\platform\ocr_backends\unlimited_ocr_backend.py',
     'agetha\platform\autostart.py', 'agetha\platform\win_integration.py',
     'agetha\features\tts_player.py', 'agetha\features\web_rag.py', 'agetha\features\tasks.py',
     'agetha\features\status_providers.py', 'agetha\features\tray_scaffold.py',
@@ -1231,7 +1245,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (v5.0.0 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (v5.5.1 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut

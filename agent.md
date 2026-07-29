@@ -3,9 +3,16 @@
 Guidance for humans and coding agents working on this fork.  
 **Priorities (locked):** (1) realism — she feels like a living process on this PC; (2) safety — Command Guard / confirmations / no real harm. Spectacle is optional flavor.
 
-**Version focus:** Overhaul ~v5.0.0 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+**Version focus:** Overhaul v5.5.1 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
 ---
+
+## Code map
+
+Start with [`docs/README.md`](docs/README.md) for the audited architecture,
+runtime flows, complete module reference, and development/test checklists. This
+guide remains the source for character identity, asset intent, and contributor
+priorities.
 
 ## What this project is
 
