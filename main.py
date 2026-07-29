@@ -23,6 +23,34 @@ from pathlib import Path
 from typing import Callable
 from PIL import Image, ImageTk, ImageSequence
 
+
+_FAST_MODE_SKIP_RECONCILE_ENV = "AGETHA_SKIP_FAST_MODE_RECONCILE"
+
+
+def _consume_fast_mode_reconcile_skip(environment=None) -> bool:
+    """Consume the one-launch Medic opt-out without persisting it."""
+    env = os.environ if environment is None else environment
+    raw = str(env.pop(_FAST_MODE_SKIP_RECONCILE_ENV, "") or "").strip().lower()
+    return raw in {"1", "yes", "true", "on"}
+
+
+# Reconcile the on-disk Fast Mode transaction before imports that cache typed
+# settings. Importing ``main`` for tests or tooling remains strictly read-only.
+if __name__ == "__main__":
+    if _consume_fast_mode_reconcile_skip():
+        print("[FastMode] reconciliation skipped for this launch by user choice.")
+    else:
+        try:
+            from agetha.core.fast_mode_profile import reconcile_fast_mode_profile
+            _fast_mode_startup_result = reconcile_fast_mode_profile()
+            if not _fast_mode_startup_result.ok:
+                print(
+                    f"[FastMode] {_fast_mode_startup_result.status}; existing settings kept. "
+                    "Run Medic Checker for recovery."
+                )
+        except Exception as _fast_mode_startup_exc:
+            print(f"[FastMode] startup reconciliation failed safely: {_fast_mode_startup_exc}")
+
 # Platform Detection Setup
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
@@ -52,7 +80,7 @@ from agetha.platform.voice_input import (
 )
 from agetha.utils import (
     native_error_popup, native_message_box, apply_window_icon, logger, BASE_DIR, WINDOW_W, WINDOW_H,
-    TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS,
+    TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS,
     refresh_config_constants,
 )
 from agetha.app_config import get_settings
@@ -2365,7 +2393,10 @@ class CompanionApp:
             return
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
-        self._poll_job = self.root.after(SCREEN_POLL_INTERVAL_MS, self._schedule_screen_poll)
+        self._poll_job = self.root.after(
+            get_settings().screen_poll_interval_ms,
+            self._schedule_screen_poll,
+        )
         try:
             from agetha.core.companion_stats import update_stats
             update_stats("tick")
@@ -2397,10 +2428,75 @@ class CompanionApp:
         self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
         self.root.after(0, lambda: self._subtitle.show_message("Cancelled.", "#888888"))
 
+    @staticmethod
+    def _fast_ambient_is_local_idle(
+        monitor_status: str,
+        raw_screen_text: str,
+        previous_screen_text: str,
+        *,
+        repeated_event: bool = False,
+        has_new_pattern_event: bool = False,
+    ) -> bool:
+        """Return True only for a confirmed no-new-screen-event state."""
+        if has_new_pattern_event:
+            return False
+        if monitor_status in {
+            "unchanged",
+            "ocr_empty",
+            "skipped_own_window",
+            "skipped_excluded_window",
+        }:
+            return True
+        current = (raw_screen_text or "").strip()
+        previous = (previous_screen_text or "").strip()
+        if repeated_event and current == previous:
+            return True
+        # A forced OCR refresh reports ``ocr_complete`` even when its text is
+        # byte-for-byte identical to the cached event.
+        return bool(current and previous and current == previous)
+
+    @staticmethod
+    def _compact_fast_ambient_context(text: str, max_chars: int = 720) -> str:
+        """Keep a meaningful Fast ambient event small without losing its tags."""
+        value = (text or "").strip()
+        limit = max(80, int(max_chars))
+        if len(value) <= limit:
+            return value
+        return value[: limit - 1].rstrip() + "…"
+
+    @staticmethod
+    def _has_pending_fast_ambient_context() -> bool:
+        """Check one-shot local context without consuming it."""
+        try:
+            from agetha.features.status_providers import has_pending_observations
+            if has_pending_observations():
+                return True
+        except Exception:
+            pass
+        try:
+            if get_settings().enable_dreams:
+                from agetha.core.dreams import has_pending_wake_recall
+                if has_pending_wake_recall():
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _fast_mode_runtime_active(self) -> bool:
+        ai = getattr(self, "_ai", None)
+        if not ai or not getattr(ai, "_faster_mode", False):
+            return False
+        try:
+            from agetha.core.fast_mode_profile import is_fast_mode_profile_active
+            return bool(is_fast_mode_profile_active())
+        except Exception:
+            return False
+
     def _ai_tick(self, user_message: str | None = None):
         if self._closing:
             return
         is_user = user_message is not None
+        fast_mode = self._fast_mode_runtime_active()
 
         # Deep sleep: skip ambient polls (presence rest). User interaction still wakes her.
         if not is_user and self._state == self.STATE_SLEEPING:
@@ -2453,6 +2549,11 @@ class CompanionApp:
             self.root.after(0, self._wake_from_presence_rest)
 
         screen_text = ""
+        raw_screen_text = ""
+        monitor_status = ""
+        repeated_event = False
+        has_new_pattern_event = False
+        previous_screen_text = self._last_screen_text
         if self._screen:
             own_hwnd = None
             try:
@@ -2476,6 +2577,7 @@ class CompanionApp:
                 screen_text = self._screen.capture_text(
                     focused_only=_SETTINGS.ocr_focused_window_only,
                 )
+                raw_screen_text = screen_text
                 monitor_status = getattr(self._screen, "last_monitor_status", "")
                 preserve_previous_context = False
                 if monitor_status == "skipped_excluded_window":
@@ -2504,7 +2606,18 @@ class CompanionApp:
                 if not is_user and _current_matches and not _matches:
                     screen_text = "[Repeated screen event suppressed; no new OCR event.]"
                     preserve_previous_context = True
+                    repeated_event = True
+                    if (
+                        fast_mode
+                        and (raw_screen_text or "").strip()
+                        != (previous_screen_text or "").strip()
+                    ):
+                        # The old pattern is repeated, but other OCR text changed;
+                        # keep that meaningful new event for the tiny Fast prompt.
+                        screen_text = raw_screen_text
+                        preserve_previous_context = False
                 if _matches:
+                    has_new_pattern_event = True
                     tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
                     screen_text = tags + "\n" + screen_text
                 elif is_user and getattr(self._screen, "has_angry_trigger", False):
@@ -2527,7 +2640,31 @@ class CompanionApp:
                 screen_text = f"[Active: {active_title}]"
                 self._last_screen_text = screen_text
 
+        if (
+            fast_mode
+            and not is_user
+            and self._fast_ambient_is_local_idle(
+                monitor_status,
+                raw_screen_text,
+                previous_screen_text,
+                repeated_event=repeated_event,
+                has_new_pattern_event=has_new_pattern_event,
+            )
+            and not self._has_pending_fast_ambient_context()
+        ):
+            logger.debug(f"Fast ambient local idle: {monitor_status or 'repeated'}")
+            self._ai_busy = False
+
+            def _finish_local_idle() -> None:
+                self._reschedule_screen_poll()
+                self._drain_pending_user_message()
+
+            self.root.after(0, _finish_local_idle)
+            return
+
         ai_screen_context = screen_text or self._last_screen_text
+        if fast_mode and not is_user:
+            ai_screen_context = self._compact_fast_ambient_context(ai_screen_context)
         if self._screen:
             ai_screen_context = self._screen.redact_for_external_context(
                 ai_screen_context,
@@ -2539,17 +2676,31 @@ class CompanionApp:
             if not self._cancel_event.is_set():
                 self.root.after(0, lambda r=raw_so_far: self._subtitle.show_thinking(r))
 
+        normalized_message = (user_message or "").strip().lower()
+        if not is_user:
+            request_profile = "fast_ambient"
+        elif (
+            normalized_message == "__touch__"
+            or normalized_message.startswith("[system]")
+            or normalized_message.startswith("[reminder]")
+        ):
+            request_profile = "fast_command"
+        else:
+            request_profile = "fast_user"
+
         try:
             if _SETTINGS.enable_streaming:
                 response = self._ai.query_streaming(
                     screen_context=ai_screen_context,
                     user_message=user_message or "",
                     on_token=_on_token,
+                    request_profile=request_profile,
                 )
             else:
                 response = self._ai.query(
                     screen_context=ai_screen_context,
                     user_message=user_message or "",
+                    request_profile=request_profile,
                 )
         except Exception as exc:
             if self._closing:
@@ -2882,6 +3033,7 @@ class CompanionApp:
         memory_search_context: str = "",
         suppress_search_memory: bool = False,
         reserved_ai_slot: bool = False,
+        request_profile: str | None = None,
     ):
         if self._cancel_event.is_set() or not self._ai:
             return None
@@ -2916,6 +3068,7 @@ class CompanionApp:
                     memory_search_context=memory_search_context,
                     suppress_search_memory=suppress_search_memory,
                     on_token=_on_token,
+                    request_profile=request_profile,
                 )
             return self._ai.query(
                 screen_context=selected_screen_context,
@@ -2923,6 +3076,7 @@ class CompanionApp:
                 doc_content=doc_content,
                 memory_search_context=memory_search_context,
                 suppress_search_memory=suppress_search_memory,
+                request_profile=request_profile,
             )
         except Exception as exc:
             logger.error(f"_ai_query failed: {exc}")

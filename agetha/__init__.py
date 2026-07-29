@@ -1,3 +1,3 @@
 """Agetha desktop companion package."""
 
-__version__ = "5.5.1"
+__version__ = "5.5.5"

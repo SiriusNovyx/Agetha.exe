@@ -3,7 +3,13 @@
 Guidance for humans and coding agents working on this fork.  
 **Priorities (locked):** (1) realism — she feels like a living process on this PC; (2) safety — Command Guard / confirmations / no real harm. Spectacle is optional flavor.
 
-**Version focus:** Overhaul v5.5.1 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+**Version focus:** Overhaul v5.5.5 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+
+**Supported platforms:** Windows 10/11 x64; Windows 11 ARM64/Snapdragon through
+x64 Python under Prism; and Linux desktop environments through the existing
+Linux paths. macOS is retired and unsupported as of v5.5.5. Do not describe
+Windows-only integrations as available on Linux, or retained macOS fallbacks as
+tested or supported.
 
 ---
 
@@ -16,7 +22,10 @@ priorities.
 
 ## What this project is
 
-Windows desktop AI companion: always-on-top Win95-style window, animated GIF avatar, Groq/OpenRouter/Ollama chat, spatial OCR, dual memory, OS commands with native confirmation tiers.
+Desktop AI companion with a Windows-first Win95-style UI, animated GIF avatar,
+Groq/OpenRouter/Ollama chat, spatial OCR, dual memory, and guarded OS commands.
+Linux uses the existing platform paths and degrades safely when a Windows-only
+integration is unavailable.
 
 Original upstream: Agetha.exe (chocolatebread / @tomiszivacs). This repo is a **fork** that owns the companion / virus-registry direction.
 
@@ -182,7 +191,7 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 | `ENABLE_GLITCH_EFFECTS` | no (safe default) | Cosmetic only |
 | `ENABLE_WEB_RAG` | no (safe default) | Network |
 | `ENABLE_LONGTERM_MEMORY` | yes | BM25 + session recap archive |
-| `FASTER_MODE` | user | Shorter prompts / less personality |
+| `FASTER_MODE` | no | Reversible 13-setting performance profile plus adaptive request budgets; never add safety/provider/privacy keys |
 
 ---
 

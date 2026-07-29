@@ -96,11 +96,31 @@ loader:
 4. loads allowed secrets from `.env`;
 5. returns a cached `AppSettings` object through `get_settings()`.
 
-`patch_config_keys()` is the supported programmatic update route and writes
-atomically. The dashboard uses this settings system instead of maintaining a
-second configuration model. Some settings are live-readable; settings marked
-with `*` in the dashboard require restart. Consult typed properties rather than
-parsing strings independently in a feature module.
+Structural config updates preserve comments, ordering, blank lines, unknown
+keys, and duplicate-key semantics while writing atomically. The dashboard uses
+this settings system instead of maintaining a second configuration model. Some
+settings are live-readable; settings marked with `*` in the dashboard require
+restart. Consult typed properties rather than parsing strings independently in
+a feature module.
+
+`core.fast_mode_profile` coordinates the reversible Fast Mode transaction. The
+approved 13-key map is canonical in `app_config`; activation writes a restricted,
+schema-versioned snapshot before forcing values in `config.txt`, and restoration
+writes and validates only the managed keys before removing that snapshot. A
+manual third-value edit is retained as the post-Fast preference, while unrelated
+settings are never rolled back. Startup reconciliation occurs before settings
+are cached, repairs managed drift idempotently, and applies a validated cached
+runtime overlay after `.env` loading without changing `.env` itself. Invalid
+active metadata fails closed instead of inventing new originals. A completed
+restoration is marked inactive before snapshot deletion so cleanup failure can
+only retry cleanup, never replay restoration.
+
+Cross-process transactions use a persistent operating-system lock, bounded
+retry, no-follow/reparse-aware opening, and a second validation of every owned
+path after the lock is held. Config and snapshot replacements use exclusive
+same-directory temporary files plus flush/fsync/replace. See
+[Fast Mode security and recovery](fast_mode_security.md) for the threat model,
+audit events, ambiguous-write semantics, and operator commands.
 
 ## AI engine and prompt composition
 
@@ -113,7 +133,13 @@ one `AIEngine` interface:
 
 Both `query()` and `query_streaming()` build the same logical request and pass
 the returned text through `_parse()`. Provider choice must not fork command
-safety or prompt behavior.
+safety or prompt behavior. Fast Mode selects a bounded internal request profile
+for ambient, command, user, tool-result, or explicit deep-analysis work. These
+profiles constrain history and optional context but do not change provider or
+command policy; tool/deep work may use the saved pre-Fast output ceiling and a
+less restrictive analysis segment rule. Their final answer is retained with a
+synthetic history marker while the raw document, web, memory, or OCR payload is
+omitted from subsequent conversation history.
 
 The prompt is composed from compact, bounded sections when enabled:
 
@@ -175,10 +201,11 @@ places bounded redacted text and pattern metadata into an ambient AI turn.
 `analyze_screen_deep` is blocked for ambient turns and must pass the command
 guard before an explicit capture/request.
 
-Platform fallbacks are best-effort. Windows uses native foreground-window and
-monitor information plus available capture libraries. Linux considers display
-availability, X11/Wayland, and installed screenshot tools. Unsupported capture
-or OCR returns a safe empty/error result rather than crashing the UI.
+Windows uses native foreground-window and monitor information plus available
+capture libraries. Linux desktop environments use the existing X11/desktop-tool
+paths, which are exercised with mocks in headless CI and return safe empty/error
+results when capture facilities are unavailable. Historical macOS paths may
+remain, but macOS is retired and unsupported as of v5.5.5.
 
 ## UI architecture
 

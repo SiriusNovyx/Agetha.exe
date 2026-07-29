@@ -24,11 +24,18 @@ from agetha.core import memory_search
 from agetha.core.ai_engine import AIEngine
 
 
+def _tk_root_or_skip(case: unittest.TestCase) -> tk.Tk:
+    try:
+        return tk.Tk()
+    except tk.TclError as exc:
+        case.skipTest(f"Tk display unavailable: {exc}")
+
+
 class TestDashboardAfterCancel(unittest.TestCase):
     """Mirrors dashboard _schedule / _cancel_jobs / _closing pattern."""
 
     def test_no_poll_after_close(self) -> None:
-        root = tk.Tk()
+        root = _tk_root_or_skip(self)
         root.withdraw()
         closing = False
         jobs: list[str] = []
@@ -72,7 +79,7 @@ class TestDashboardNotepad(unittest.TestCase):
                 note_file.write_text("line one\nline two", encoding="utf-8")
                 self.assertEqual(dashboard.read_notepad_text(), "line one\nline two")
 
-                root = tk.Tk()
+                root = _tk_root_or_skip(self)
                 root.withdraw()
                 saved: list[str] = []
 
@@ -96,7 +103,7 @@ class TestDashboardNotepad(unittest.TestCase):
 
 class TestDashboardOpenClose(unittest.TestCase):
     def test_repeated_open_close(self) -> None:
-        root = tk.Tk()
+        root = _tk_root_or_skip(self)
         root.withdraw()
         settings = MagicMock()
         settings.raw = {"ENABLE_LONGTERM_MEMORY": "yes"}

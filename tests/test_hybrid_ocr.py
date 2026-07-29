@@ -458,6 +458,9 @@ class TestDeepOCRIntegration(unittest.TestCase):
         self.assertNotIn("hunter2", document)
         self.assertIn("[REDACTED]", document)
         self.assertTrue(app._ai_query.call_args.kwargs["reserved_ai_slot"])
+        self.assertEqual(
+            app._ai_query.call_args.kwargs["request_profile"], "deep_analysis",
+        )
         app._screen.capture_deep_text.assert_called_once_with(
             focused_only=True,
             prompt="<image>document parsing.",

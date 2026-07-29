@@ -39,7 +39,7 @@ then launch the app. Its architecture selection must stay synchronized with
 | File | Responsibility and important symbols |
 |---|---|
 | [agetha/__init__.py](../agetha/__init__.py) | Package marker and package `__version__`. Do not bump it merely to mirror an unrelated upstream release. |
-| [agetha/app_config.py](../agetha/app_config.py) | Authoritative `DEFAULT_CONFIG`, parser diagnostics, `AppSettings`, `get_settings()`, `ensure_config_file()`, `patch_config_keys()`, secret filtering, type validation, and clamps. |
+| [agetha/app_config.py](../agetha/app_config.py) | Authoritative `DEFAULT_CONFIG`, `FAST_MODE_OVERRIDES`, parser diagnostics, `AppSettings`, cached runtime overlays, structural/atomic config updates, secret filtering, type validation, and clamps. |
 | [agetha/utils.py](../agetha/utils.py) | Logging, `write_atomic()`, icon/native dialog helpers, simple env loading, compatibility config creation, platform flags, and refreshable legacy timing/window constants. |
 
 ### Configuration symbols
@@ -60,7 +60,7 @@ Keep that side effect in mind in isolated tests.
 | [commands/__init__.py](../agetha/commands/__init__.py) | Package marker only; no eager imports. |
 | [command_guard.py](../agetha/commands/command_guard.py) | `CommandGuard`: Safe/Caution/Danger classification, dry-run descriptions, native/Tk confirmations, timeout-deny behavior, protected-process checks, and force-close policy. Unknown commands default to Danger. |
 | [command_handlers.py](../agetha/commands/command_handlers.py) | `DispatchCtx`, `HANDLERS`, `register()`, and `dispatch()`. Contains registered handlers for UI, files, clipboard, process/window, browser/web, system, memory, effects, tasks/emotions, Windows integration, and OCR. Coordinates feature gates, guard calls, stats/emotion updates, deferred re-query, Tk handoffs, and results. |
-| [system_commands.py](../agetha/commands/system_commands.py) | Cross-platform implementations for URL/clipboard/folder access, system info, volume/wallpaper, scoped file search, typing, lock/shutdown/restart, reminders, notifications, and screenshot paths. Uses bounded, platform-specific fallbacks. |
+| [system_commands.py](../agetha/commands/system_commands.py) | Guarded URL/clipboard/folder access, system info, volume/wallpaper, scoped file search, typing, lock/shutdown/restart, reminders, notifications, and screenshot paths. Uses supported Windows and existing Linux paths where implemented; Windows-only operations degrade safely on Linux. |
 
 The complete command change contract is in
 [Adding an AI command](development.md#adding-an-ai-command). Safety policy belongs
@@ -73,6 +73,7 @@ model output.
 |---|---|
 | [core/__init__.py](../agetha/core/__init__.py) | Package marker only; callers import concrete modules. |
 | [ai_engine.py](../agetha/core/ai_engine.py) | `_LocalOllamaClient`, `_OpenRouterClient`, `AIEngine`, `VALID_MOODS`, `VALID_COMMANDS`, system prompts/few shots, screen-context wrapper, provider/retry flow, `_build_prompt()`, `_parse()`, `query()`, and `query_streaming()`. |
+| [fast_mode_profile.py](../agetha/core/fast_mode_profile.py) | Schema/profile-versioned Fast Mode validation, no-follow cross-process locking, post-lock path revalidation, activation/restoration transactions, drift/conflict recovery, structured audits, health inspection, cached original/forced-value access, and portable status/reconcile/restore CLI. |
 | [time_context.py](../agetha/core/time_context.py) | `local_now(clock)` and `build_datetime_context(...)`; injectable local clock, weekday/ISO date, optional seconds, timezone name fallback, and UTC-offset formatting without network calls. |
 | [memory_system.py](../agetha/core/memory_system.py) | Static soul plus bounded episodic memory. `load_soul()`, `log_memory()`, recent/selective clear/display/stat/prompt helpers, and `build_system_prompt()`. Uses a lock and atomic rewrites. |
 | [memory_search.py](../agetha/core/memory_search.py) | Append-only long-term JSONL, mtime/size cache, pure-Python BM25-like search, one-shot session recap, and untrusted bounded prompt formatting. |
@@ -81,7 +82,7 @@ model output.
 | [dreams.py](../agetha/core/dreams.py) | Builds surreal bounded dream entries from memory fragments, persists JSONL, and provides a process-local one-shot wake-recall queue. |
 | [emotion_engine.py](../agetha/core/emotion_engine.py) | Persistent valence/arousal/trust/loneliness model with baselines, inertia, wall-time decay, absence milestones, derived mood/stage, injectable clock, history integration, and atomic state. Never changes permissions. |
 | [emotional_history.py](../agetha/core/emotional_history.py) | Sanitized, weighted relationship events; deterministic summaries, age decay, bounded compaction, remove/clear/relevance/display APIs, and atomic JSONL rewrites. Raw user text is not copied as a trusted summary. |
-| [audit_log.py](../agetha/core/audit_log.py) | Local bounded append-only audit entries for user-visible system changes. `log_audit()` returns success rather than raising; `read_audit()` skips malformed rows and returns newest first. |
+| [audit_log.py](../agetha/core/audit_log.py) | Local bounded append-only audit entries for user-visible system changes and secret-free Fast Mode transitions. `log_audit()` accepts an optional owned audit path and returns success rather than raising; `read_audit()` skips malformed rows and returns newest first. |
 
 ### `AIEngine` entry points
 
@@ -125,7 +126,7 @@ Notes:
 | [screen_reader.py](../agetha/platform/screen_reader.py) | `PatternDef`, `PatternMatch`, pattern registry, focused-window/monitor discovery, capture fallback order, `ScreenReader`, standard/deep OCR orchestration, current matches vs new events, state publication, redaction, stale-result rejection, and stop lifecycle. |
 | [screen_monitoring.py](../agetha/platform/screen_monitoring.py) | Pure reliability helpers: immutable `CapturedFrame`, `ProcessedOCRImage`, per-window/event state, preprocessing/scales, thumbnail difference, `ScreenChangeDetector`, `PatternEventTracker`, exclusions, and secret redaction. |
 | [voice_input.py](../agetha/platform/voice_input.py) | Microphone settings/discovery/probe, PyAudio-to-sounddevice fallback, Win95 `MicPickerDialog`, `VoiceInput` listener, Google STT, and locked singleton faster-whisper loading. |
-| [window_control.py](../agetha/platform/window_control.py) | External-window matching/ranking/picking and move/resize/close/kill operations; Windows Win32 implementation and limited Linux process fallback. Synchronous geometry animation must remain on a worker. |
+| [window_control.py](../agetha/platform/window_control.py) | External-window matching/ranking/picking and move/resize/close/kill operations through Windows Win32 and existing Linux process/window-tool paths. Synchronous geometry animation must remain on a worker; unavailable Linux tools fail safely. |
 | [autostart.py](../agetha/platform/autostart.py) | Visible current-user Startup-folder `.lnk` management. Validates ownership/target containment and refuses foreign/malformed shortcut mutation. No service, task, or Run-key persistence. |
 | [win_integration.py](../agetha/platform/win_integration.py) | Allowlisted Windows Settings pages, current-user light/dark theme with atomic backup/rollback, and aggregate Recycle Bin status. Command gates/audit remain in callers. |
 | [windows_notify.py](../agetha/platform/windows_notify.py) | AppUserModelID, Start Menu shortcut registration, trusted icon, XML-safe WinRT toast. Distinct from autostart. Non-Windows returns false. |
@@ -162,11 +163,11 @@ does not modify Tk widgets.
 | [ui/__init__.py](../agetha/ui/__init__.py) | Package marker only. |
 | [display_scale.py](../agetha/ui/display_scale.py) | `resolve_ui_scale()` and `scale_px()`. Manual `UI_SCALE` clamps to 0.75-2.50; automatic scale considers display/DPI and clamps to 1.0-2.0. |
 | [dashboard.py](../agetha/ui/dashboard.py) | `open_dashboard()`, trusted `open_project_link()`, notepad read/write. Owns System Monitor, Virus Registry, Notepad, About, and typed Settings tabs plus per-window callback cleanup. |
-| [w95_window.py](../agetha/ui/w95_window.py) | Borderless Win95 Toplevel helpers, Windows caption stripping, map/deiconify refresh, and safe cross-platform fallback. |
+| [w95_window.py](../agetha/ui/w95_window.py) | Borderless Win95 Toplevel helpers, Windows caption stripping, and cross-platform map/deiconify refresh/fallback behavior. |
 | [mood_effects.py](../agetha/ui/mood_effects.py) | `MOOD_COLOURS`, `mood_colour()`, and `MoodGlowController`: disabled/static/one-job pulse modes, subtle interpolation, slow manic color path, reduced-motion behavior, cancel/close lifecycle. |
 | [motion_effects.py](../agetha/ui/motion_effects.py) | `MOTION_STEPS`, `MOOD_MOTION_MAP`, and `MoodMotionController`: named response-level geometry, probability/cooldown, drag/minimize/close/owner guards, one active job chain, monitor clamp, exact restoration. |
 | [window_effects.py](../agetha/ui/window_effects.py) | `CRTCloseController`: duplicate guard, input/geometry cancellation, centered widen/vertical collapse/horizontal collapse/fade, tracked callbacks, reduced-motion/immediate fallback, exactly-once shutdown callback. |
-| [glitch_overlay.py](../agetha/ui/glitch_overlay.py) | Gated visual-only Canvas effects, style/duration normalization, rare mood trigger, topmost transient overlay, bounded optional NumPy/Pillow static generation, and cross-platform transparency fallback. |
+| [glitch_overlay.py](../agetha/ui/glitch_overlay.py) | Gated visual-only Canvas effects, style/duration normalization, rare mood trigger, topmost transient overlay, bounded optional NumPy/Pillow static generation, and Windows-supported transparency behavior. |
 | [virus_trivia.py](../agetha/ui/virus_trivia.py) | Five-question draggable Win95 trivia Toplevel; visual/gameplay only, no network/system mutation, and no repeating timer. |
 
 Dashboard caveats: multiple instances are possible; its callback-ID list grows
@@ -179,13 +180,19 @@ long-lived effects should use the explicit tracked-controller pattern.
 
 ## Tests
 
-The current suite contains 324 tests across 12 files. Counts are a snapshot, not
-a version contract; use the coverage descriptions to select a focused suite.
+The normal suite spans shared runtime, platform, UI, persistence, Fast Mode, and
+security files. Counts change as regressions are added; use the coverage
+descriptions to select a focused suite and report the number from the command
+that was actually run.
 
 | File | Current count | Coverage |
 |---|---:|---|
 | [tests/__init__.py](../tests/__init__.py) | - | Test package marker. |
 | [test_atomic_persistence.py](../tests/test_atomic_persistence.py) | 9 | Atomic replacement/failure cleanup and corrupt-state repair/call-site use. |
+| [test_fast_mode_profile.py](../tests/test_fast_mode_profile.py) | 34 | Disabled read-only startup, activation/restoration transactions, durable cleanup-only retry, crash/cache recovery, drift/CAS preference resets, structural preservation, `.env` isolation, migration, validation, permissions, and path safety. |
+| [test_fast_mode_runtime.py](../tests/test_fast_mode_runtime.py) | 31 | Adaptive history/output profiles, complete tool/deep analysis with payload-safe retained answers, all-profile safety kernels, direct-only deep OCR, provider parity, bounded ambient events, Ollama options, pending presence context, and unchanged-ambient local skip. |
+| [test_fast_mode_security.py](../tests/test_fast_mode_security.py) | 32 | Override/profile invariants, strict snapshot schema, no-follow lock opening, descriptor/path identity, TOCTOU injection, bounded locking, atomic-write states, disk-truth recovery, secret-free audits, and portable CLI behavior. |
+| [test_fast_mode_ui_medic.py](../tests/test_fast_mode_ui_medic.py) | 23 | Managed dashboard state, coordinated save/close/transition/failure lifecycle, fresh-state consent, secret-free Medic JSON/conflict counts, cleanup-state wording, one-launch declined-action skips, and Medic required-file coverage. |
 | [test_hybrid_ocr.py](../tests/test_hybrid_ocr.py) | 35 | OCR settings, Tesseract coordinates/confidence, Unlimited client security/errors/temp cleanup, deep integration and ambient block. |
 | [test_medic_arch.py](../tests/test_medic_arch.py) | 6 | Architecture aliases, build-platform priority, ARM64-native/x64-Prism distinction, JSON output. |
 | [test_phase1_qa.py](../tests/test_phase1_qa.py) | 8 | Dashboard jobs/notepad, memory dual-write/recursion gates, stats/memory basics. |
@@ -208,12 +215,14 @@ a version contract; use the coverage descriptions to select a focused suite.
 | [docs/module_reference.md](module_reference.md) | This repository-wide file and symbol map. |
 | [docs/development.md](development.md) | Setup, configuration, change checklists, validation commands, and platform limits. |
 | [docs/unlimited_ocr_server.md](unlimited_ocr_server.md) | Explicit deep-OCR service configuration, loopback mock, deployment, privacy, and controlled failures. |
-| [docs/releases/v5.5.1.md](releases/v5.5.1.md) | User-facing highlights, safety/privacy notes, upgrade guidance, and attribution for the v5.5.1 fork release. |
+| [docs/releases/v5.5.5.md](releases/v5.5.5.md) | Fast Mode 2.0 profile, recovery, adaptive request budgets, safety boundaries, and v5.5.5 upgrade guidance. |
+| [docs/fast_mode_security.md](fast_mode_security.md) | Fast Mode threat model, platform lock behavior, post-lock validation, durability, Windows ACL limits, ambiguous-write recovery, audit events, CLI exit codes, and CI coverage. |
+| [docs/releases/v5.5.1.md](releases/v5.5.1.md) | Historical reliability, Windows ARM, high-DPI, UI lifecycle, and attribution notes for v5.5.1. |
 
-An external `implementation_plan.md` was used for the screen-monitoring
-reliability work, but it is not checked into this repository and is not a
-canonical ongoing source. The implemented contracts are documented here and
-locked by `test_screen_monitoring_reliability.py` and `test_hybrid_ocr.py`.
+External implementation plans informed the screen-monitoring and Fast Mode 2.0
+work, but they are not checked into this repository and are not canonical
+ongoing sources. The implemented contracts are documented here and locked by
+the focused screen/OCR and Fast Mode test suites above.
 
 ## Assets
 

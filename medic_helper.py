@@ -277,6 +277,7 @@ def cmd_feature_modules() -> None:
         "agetha.core.emotion_engine",
         "agetha.core.emotional_history",
         "agetha.core.audit_log",
+        "agetha.core.fast_mode_profile",
         "agetha.platform.autostart",
         "agetha.platform.win_integration",
         "agetha.platform.ocr_backends",
@@ -517,6 +518,98 @@ def cmd_autostart_status() -> None:
         print(f"AUTOSTART_ERROR:{exc}")
 
 
+def _fast_mode_result_value(result: object, name: str, default: object = None) -> object:
+    if isinstance(result, dict):
+        return result.get(name, default)
+    return getattr(result, name, default)
+
+
+def _fast_mode_result_ok(result: object) -> bool:
+    status = str(_fast_mode_result_value(result, "status", "unknown"))
+    if status == "restored_snapshot_retained":
+        return True
+    explicit = _fast_mode_result_value(result, "ok", None)
+    if explicit is not None:
+        return bool(explicit)
+    return status not in {
+        "snapshot_invalid", "snapshot_write_failed", "snapshot_cleanup_failed",
+        "config_write_failed", "invalid_updates", "profile_busy", "restore_failed",
+        "unsafe_path_state", "unsafe_profile_definition", "verification_pending",
+        "failed",
+    }
+
+
+def _print_fast_mode_result(result: object, profile: object) -> None:
+    """Print one secret-free JSON object for PowerShell to consume."""
+    status = str(_fast_mode_result_value(result, "status", "unknown"))
+    changed = tuple(str(key) for key in (_fast_mode_result_value(result, "changed_keys", ()) or ()))
+    warnings = tuple(_fast_mode_result_value(result, "warnings", ()) or ())
+    conflict_count = sum(
+        1 for warning in warnings
+        if str(warning).startswith("Preserved a user-edited restore value for ")
+    )
+    if status == "restore_conflict_preserved" and conflict_count == 0:
+        # Older snapshots/results did not distinguish conflict warnings. The
+        # warning count remains a safer estimate than the unrelated changed-key
+        # count (which also includes ordinary restored/unmanaged settings).
+        conflict_count = len(warnings)
+    payload = {
+        "status": status,
+        "ok": _fast_mode_result_ok(result),
+        "active": bool(profile.is_fast_mode_profile_active()),
+        "managed_count": len(tuple(profile.managed_fast_mode_keys())),
+        "changed_keys": changed,
+        "conflict_count": conflict_count,
+        # Medic only needs the count. Warning text can contain local paths and is
+        # already logged by the owning module when appropriate.
+        "warning_count": len(warnings),
+    }
+    print(json.dumps(payload, separators=(",", ":")))
+
+
+def _run_fast_mode_command(action: str) -> None:
+    try:
+        from agetha.core import fast_mode_profile as profile
+
+        if action == "reconcile":
+            result = profile.reconcile_fast_mode_profile()
+        elif action == "restore":
+            restore = getattr(profile, "restore_fast_mode_profile", None)
+            if not callable(restore):
+                restore = profile.deactivate_fast_mode
+            result = restore()
+        else:
+            result = profile.inspect_fast_mode_profile()
+        _print_fast_mode_result(result, profile)
+    except Exception:
+        # Keep this machine-readable and avoid echoing exception text that may
+        # include private filesystem paths.
+        print(json.dumps({
+            "status": "unavailable",
+            "ok": False,
+            "active": False,
+            "managed_count": 0,
+            "changed_keys": [],
+            "conflict_count": 0,
+            "warning_count": 1,
+        }, separators=(",", ":")))
+
+
+def cmd_fast_mode_status() -> None:
+    """Inspect Fast Mode without changing config or snapshot state."""
+    _run_fast_mode_command("status")
+
+
+def cmd_fast_mode_reconcile() -> None:
+    """Run the guarded profile reconciliation requested by Medic."""
+    _run_fast_mode_command("reconcile")
+
+
+def cmd_fast_mode_restore() -> None:
+    """Restore the saved profile; Medic asks for confirmation before this call."""
+    _run_fast_mode_command("restore")
+
+
 _COMMANDS = {
     "platform": cmd_platform,
     "python_arch": cmd_python_arch,
@@ -532,6 +625,9 @@ _COMMANDS = {
     "openrouter": cmd_openrouter_module,
     "toast_shortcut": cmd_toast_shortcut,
     "autostart": cmd_autostart_status,
+    "fast_mode_status": cmd_fast_mode_status,
+    "fast_mode_reconcile": cmd_fast_mode_reconcile,
+    "fast_mode_restore": cmd_fast_mode_restore,
 }
 
 

@@ -33,18 +33,30 @@ python .\main.py
 Direct launch still creates missing config/runtime state, but it does not run the
 full Medic repair workflow.
 
-### Linux development launch
+### Linux direct setup
+
+Use a Python 3.13 virtual environment and install the project dependencies with
+the package manager/tooling appropriate for the distribution. Tk and native
+Tesseract are distribution packages on many Linux systems. Then launch:
 
 ```bash
-python3 -m venv venv
-venv/bin/python -m pip install -r requirements.txt
-venv/bin/python main.py
+python main.py
 ```
 
-Tkinter and a native Tesseract executable may come from the OS package manager.
-Screen capture also depends on the display server and installed screenshot
-tools. Windows-only operations should report unsupported status rather than
-preventing startup.
+Medic Checker is Windows-specific. Linux Fast Mode recovery uses the Python CLI
+documented in [Fast Mode security and recovery](fast_mode_security.md).
+
+### Platform support policy
+
+Supported development/release targets are Windows 10/11 x64, Windows 11
+ARM64/Snapdragon through x64 Python under Prism, and Linux desktop environments
+through the existing Linux paths. Shared and platform-focused tests run on
+Windows and Linux in CI. Windows-only integrations must stay feature-gated and
+Linux must degrade safely when an optional desktop utility is absent.
+
+macOS is retired and unsupported as of v5.5.5. Historical macOS branches may
+remain in source control, but macOS failures are outside release acceptance and
+must not be described as tested or supported.
 
 ### Required local inputs
 
@@ -163,8 +175,9 @@ runtime source of truth.
 and `write_file`.
 
 Confirmations deny after timeout. Unknown commands are Danger. Protected
-processes include built-in critical Windows/Linux names plus Python and Agetha;
-user additions extend rather than replace that set. `FORCE_CLOSE_AUTO_ALLOW`
+processes include built-in critical Windows names plus Python and Agetha;
+legacy Linux names remain defensively recognized in retained fallback code.
+User additions extend rather than replace that set. `FORCE_CLOSE_AUTO_ALLOW`
 never authorizes protected/self targets. Dry-run is an additional user-visible
 decision path, not a way around confirmation or feature gates.
 
@@ -338,6 +351,26 @@ Also run Medic manually on the target Windows machine and inspect both
 `Medic_Checker.ps1`, `medic_helper.py`, the candidate rules, wording, and tests in
 sync. Do not require the administrator launcher for normal operation.
 
+## Fast Mode recovery tooling
+
+Read [Fast Mode security and recovery](fast_mode_security.md) before changing
+the profile, snapshot schema, locking, or transaction paths. The Windows Medic
+commands and portable Python commands intentionally keep status, reconciliation,
+and restoration separate. Status must remain read-only; recovery operations may
+write only after their existing operator confirmation boundary.
+
+Linux/direct-Python smoke commands:
+
+```bash
+python -m agetha.core.fast_mode_profile status
+python -m agetha.core.fast_mode_profile reconcile
+python -m agetha.core.fast_mode_profile restore
+```
+
+Do not add profile settings without extending the forbidden-key invariant,
+typed/range validation, strict snapshot tests, Dashboard transaction tests, and
+recovery documentation.
+
 ## Test map
 
 ### Full suite
@@ -357,6 +390,10 @@ With the project venv:
 | Change | Command |
 |---|---|
 | Atomic storage/state recovery | `python -m unittest tests.test_atomic_persistence -v` |
+| Fast Mode snapshot/config transactions | `python -m unittest tests.test_fast_mode_profile -v` |
+| Fast Mode locking/path/audit/CLI security | `python -m unittest tests.test_fast_mode_security -v` |
+| Fast Mode adaptive request/runtime behavior | `python -m unittest tests.test_fast_mode_runtime -v` |
+| Fast Mode dashboard and Medic integration | `python -m unittest tests.test_fast_mode_ui_medic -v` |
 | OCR backend/deep service | `python -m unittest tests.test_hybrid_ocr -v` |
 | Windows ARM/Medic architecture | `python -m unittest tests.test_medic_arch -v` |
 | Dashboard/memory/stats | `python -m unittest tests.test_phase1_qa -v` |
@@ -371,6 +408,18 @@ With the project venv:
 
 Medic's compile/import checks are useful environment diagnostics, but they do not
 replace the test suite.
+
+### GitHub Actions
+
+`.github/workflows/ci.yml` runs Python 3.13 on `windows-latest` and
+`ubuntu-latest`. Both jobs compile shared modules, run the full suite and focused
+Fast Mode suites, and import shared platform modules without provider keys, a
+display, Tesseract, or remote OCR. Windows additionally parses Medic and runs
+reparse/path/lock smokes. Linux runs actual symlink/POSIX permission/`fcntl`
+coverage, portable CLI transactions, and mocked X11 desktop-path tests.
+
+GitHub-hosted Windows is x64. It does not replace a manual Surface Pro or other
+Windows ARM64 test of x64 Python selection and Prism execution.
 
 ### Basic compile check
 
@@ -405,8 +454,19 @@ paths relevant to the change:
     suppression.
 11. Deny Caution/Danger operations and verify no side effect; test protected/self
     window targets.
-12. Start on Linux with unavailable Windows/alpha/window-control features and
-    verify graceful degradation.
+12. Enable Fast Mode from the dashboard, verify the 13 managed values and local
+    snapshot, restart, then disable it and compare the restored values.
+13. While Fast Mode is active, manually change one managed and one unmanaged
+    setting; restart, confirm the forced value is repaired, then confirm both new
+    preferences survive restoration as documented.
+14. Run Medic against active, restoration-pending, and deliberately corrupt
+    temporary snapshots; confirm it reports status and asks before mutation.
+15. Observe an unchanged Fast ambient scan and confirm no provider request is
+    made; then produce a meaningful OCR event and confirm one bounded request.
+16. On Linux, run the status-only CLI and a temporary activation/restore cycle;
+    verify unavailable desktop capture facilities fail safely without a display.
+17. On Surface/Windows ARM when available, confirm Medic selects x64 Python and
+    Agetha starts under Prism without offering to replace that interpreter.
 
 Record which steps were actually performed and the platform used.
 
@@ -414,13 +474,14 @@ Record which steps were actually performed and the platform used.
 
 | Area | Current limitation or caveat |
 |---|---|
-| Linux window control | Most external window geometry is implemented for Windows; handlers use limited `wmctrl`/`pkill` fallbacks where available. |
-| Linux/Wayland capture | Depends on compositor permissions and installed Spectacle/grim/GNOME tools; focused-window geometry is less reliable than Win32. |
-| Window alpha/chrome | CRT alpha and borderless native styling are best-effort off Windows; close falls back to immediate cleanup. |
+| Platform scope | Windows and existing Linux desktop paths are supported. macOS is retired. Hosted CI cannot validate Windows ARM/Prism or every Linux compositor/desktop utility. |
+| Window alpha/chrome | Windows alpha support can vary by graphics stack; close falls back to immediate cleanup if the effect is unavailable. |
 | Tesseract | Python package alone is insufficient; the native executable and requested language data must exist. |
 | Voice shutdown | Listener/recognition workers are daemon threads and stop by event/timeouts rather than a blocking UI-thread join. Keep operations bounded. |
 | Screen own-window handle | Own-window exclusion is best when the native handle is cached/passed from Tk; avoid adding worker-side Tk calls to resolve it. |
 | Dashboard | Multiple dashboards may open. Its tracked callback list is cleared on close but can grow during a long session; keep new pollers sparse. |
+| Fast Mode snapshot permissions | POSIX permission bits are forced to user read/write. On Windows, the file inherits the current user's directory ACL because portable `chmod` cannot create a new Windows ACL. Reparse-point targets are refused. |
+| Fast Mode same-user threat | Lock/path hardening resists practical substitution and races but is not a privilege boundary against a fully compromised process running as the same user. |
 | Web fetch | Bounded but currently does not reject private/loopback HTTP targets at the transport layer; retain its disabled default and Caution confirmation. |
 | Glitch overlay | Short-lived callbacks rely on Toplevel destruction; use explicit tracked IDs for any new persistent loop. |
 | Dependencies | Voice/DnD packages are installed by current `requirements.txt` even though the features are config-optional; avoid describing package installation and feature enablement as the same thing. |

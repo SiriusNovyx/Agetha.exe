@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import sys
 import tempfile
 import math
+import threading
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -27,27 +30,65 @@ else:
 CONFIG_PATH = BASE_DIR / "config.txt"
 ENV_PATH = BASE_DIR / ".env"
 
+_CONFIG_WRITE_LOCK = threading.RLock()
+
+
+class AtomicWriteError(OSError):
+    """Report whether an atomic replacement may already be visible on disk."""
+
+    def __init__(self, state: str, message: str) -> None:
+        super().__init__(message)
+        self.state = state
+        self.write_applied = state == "write_applied_verification_failed"
+
+
+def _fsync_parent_directory(path: Path) -> None:
+    """Persist a completed rename on POSIX; Windows has no portable equivalent."""
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    directory_fd = os.open(path.parent, flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
 
 def _write_atomic_config(path: Path, content: str) -> None:
-    """Circular-import-safe atomic writer for config.txt."""
+    """Durably replace a text file using an exclusive same-directory temp file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
+    temp_name: str | None = None
+    replaced = False
     try:
+        fd, temp_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        try:
+            os.chmod(temp_name, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            # mkstemp is 0600 on POSIX. Windows files inherit the ACL of the
+            # per-user application directory; chmod is not an ACL boundary.
+            pass
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_name, path)
-    except Exception:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
-        raise
+        replaced = True
+        _fsync_parent_directory(path)
+    except Exception as exc:
+        if temp_name is not None and not replaced:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+        state = (
+            "write_applied_verification_failed" if replaced else "write_not_applied"
+        )
+        raise AtomicWriteError(state, f"atomic write failed during {state}") from exc
 
 DEFAULT_CONFIG = """# =============================================================================
 # Agetha Mod — config.txt
@@ -88,7 +129,10 @@ ENABLE_OPENROUTER = no
 # Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
 OPENROUTER_MODEL = google/gemma-4-31b-it:free
 
-# FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
+# FASTER_MODE — enables Agetha's reversible performance profile.
+# Selected AI, context, polling, and OCR values are temporarily forced and
+# restored when disabled. Provider, permission, privacy, and security settings
+# are never changed. Recovery metadata stays in memory/fast_mode_snapshot.json.
 FASTER_MODE = no
 
 
@@ -460,7 +504,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 5.5.1
+APP_VERSION = 5.5.5
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
@@ -541,6 +585,24 @@ _SECRET_KEYS = frozenset(
     }
 )
 
+# Canonical reversible Fast Mode profile. This configuration-layer allowlist is
+# imported and re-exported by core.fast_mode_profile; do not duplicate it there.
+FAST_MODE_OVERRIDES: dict[str, str] = {
+    "AI_MAX_TOKENS": "220",
+    "HISTORY_LIMIT": "3",
+    "MEMORY_CHARS": "300",
+    "EPISODIC_PROMPT_LIMIT": "3",
+    "AI_TEMPERATURE": "0.65",
+    "AI_TOP_P": "0.90",
+    "ENABLE_STREAMING": "yes",
+    "ENABLE_COMPANION_STATS_CONTEXT": "no",
+    "DATETIME_INCLUDE_SECONDS": "no",
+    "SCREEN_POLL_INTERVAL_SEC": "180",
+    "OCR_MAX_DIMENSION": "1920",
+    "OCR_PREPROCESSING": "basic",
+    "OCR_FORCE_REFRESH_SECONDS": "30",
+}
+
 _BOOL_KEYS = frozenset({
     "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
     "ENABLE_VOICE", "USE_LOCAL_STT", "ENABLE_FILE_DRAG_DROP",
@@ -608,6 +670,21 @@ _GLITCH_STYLES = frozenset({
 
 _VALID_BOOLS = frozenset({"1", "yes", "true", "on", "0", "no", "false", "off"})
 
+# Canonical ranges used when a persisted value must round-trip exactly rather
+# than merely be accepted and clamped by a runtime property. Fast Mode uses
+# these limits before saving restoration metadata.
+_CONFIG_VALUE_RANGES: dict[str, tuple[float, float]] = {
+    "AI_MAX_TOKENS": (64, 8192),
+    "HISTORY_LIMIT": (1, 20),
+    "MEMORY_CHARS": (100, 5000),
+    "EPISODIC_PROMPT_LIMIT": (0, 50),
+    "AI_TEMPERATURE": (0.0, 2.0),
+    "AI_TOP_P": (0.0, 1.0),
+    "SCREEN_POLL_INTERVAL_SEC": (15, 3600),
+    "OCR_MAX_DIMENSION": (640, 8192),
+    "OCR_FORCE_REFRESH_SECONDS": (1.0, 3600.0),
+}
+
 
 @dataclass
 class ConfigLoadResult:
@@ -671,6 +748,40 @@ def _is_valid_number(value: str, *, as_float: bool = False) -> bool:
         return False
 
 
+def validate_config_value(
+    key: str,
+    value: str,
+    *,
+    enforce_range: bool = False,
+) -> bool:
+    """Validate one raw setting without loading defaults or environment data."""
+    normalized = str(key).strip().upper()
+    raw = str(value)
+    if "\r" in raw or "\n" in raw:
+        return False
+    if normalized in _BOOL_KEYS:
+        return _is_valid_bool(raw)
+    if normalized in _INT_KEYS:
+        if not _is_valid_number(raw, as_float=False):
+            return False
+        if enforce_range:
+            limits = _CONFIG_VALUE_RANGES.get(normalized)
+            return limits is not None and limits[0] <= int(raw.strip()) <= limits[1]
+        return True
+    if normalized in _FLOAT_KEYS:
+        if not _is_valid_number(raw, as_float=True):
+            return False
+        if enforce_range:
+            limits = _CONFIG_VALUE_RANGES.get(normalized)
+            return limits is not None and limits[0] <= float(raw.strip()) <= limits[1]
+        return True
+    if normalized == "OCR_PREPROCESSING":
+        return raw.strip().lower() in {"basic", "auto"}
+    # Strict persisted profiles may contain only settings with an explicit
+    # typed or enum validator. General config parsing remains permissive.
+    return not enforce_range
+
+
 def _merge_with_defaults(file_config: dict[str, str]) -> tuple[dict[str, str], list[str]]:
     """Overlay file values onto defaults; drop invalid typed values."""
     defaults = default_config_dict()
@@ -730,6 +841,10 @@ def _load_env_overrides(config: dict[str, str]) -> None:
             k, v = k.strip().upper(), v.strip()
             if k == "GROQ_API_KEY_1":
                 k = "GROQ_API_KEY"
+            if k == "FASTER_MODE" or k in FAST_MODE_OVERRIDES:
+                # Fast Mode is a disk-backed transaction. Environment copies
+                # of managed values would create a split-brain runtime state.
+                continue
             if v:
                 config[k] = v
     except Exception as exc:
@@ -786,7 +901,27 @@ def parse_config_file(path: Path | None = None) -> dict[str, str]:
         if _is_secret_key(key):
             merged[key] = ""
 
+    # The on-disk Fast Mode switch is authoritative for startup reconciliation.
+    # Keep this value before .env is merged: .env remains untouched, but a stale
+    # non-secret override there must not defeat an already validated profile.
+    fast_mode_requested = _parse_bool(merged.get("FASTER_MODE"), False)
     _load_env_overrides(merged)
+    # FASTER_MODE is a disk-backed transaction switch, not an environment
+    # override. Keeping config.txt authoritative prevents split-brain states
+    # where snapshot reconciliation and runtime prompt behavior disagree.
+    merged["FASTER_MODE"] = "yes" if fast_mode_requested else "no"
+    try:
+        # Lazy import avoids app_config <-> fast_mode_profile import cycles.
+        from agetha.core.fast_mode_profile import get_fast_mode_runtime_overrides
+
+        merged.update(get_fast_mode_runtime_overrides(
+            config_path=path,
+            config_enabled=fast_mode_requested,
+        ))
+    except Exception:
+        # Profile diagnostics/recovery are handled by its public reconciliation
+        # API. A broken optional state file must never prevent config loading.
+        pass
     _last_load = result
 
     for w in result.warnings:
@@ -1408,7 +1543,7 @@ class AppSettings:
 
     @property
     def app_version(self) -> str:
-        return self.get("APP_VERSION", "5.5.1").strip() or "5.5.1"
+        return self.get("APP_VERSION", "5.5.5").strip() or "5.5.5"
 
     @property
     def github_releases_url(self) -> str:
@@ -1469,43 +1604,150 @@ class AppSettings:
         return items
 
 
-def patch_config_keys(updates: dict[str, str]) -> tuple[bool, list[str]]:
-    """Update multiple KEY = value lines in one write. Returns (ok, failed_keys)."""
-    if not updates:
-        return True, []
-    failed: list[str] = []
+_CONFIG_DOCUMENT_LINE_RE = re.compile(
+    r"^(?P<prefix>\s*)(?P<key>[A-Za-z0-9_]+)(?P<separator>\s*=\s*)(?P<value>.*)$"
+)
+
+
+def _normalise_config_updates(
+    updates: Mapping[str, object],
+) -> tuple[dict[str, str], list[str]]:
+    """Validate structural config updates without parsing or normalising values."""
     clean: dict[str, str] = {}
-    for raw_key, raw_val in updates.items():
+    failed: list[str] = []
+    for raw_key, raw_value in updates.items():
         key = str(raw_key).strip().upper()
-        if not key:
+        if not key or not key.replace("_", "").isalnum():
+            failed.append(key or "<empty>")
             continue
         if _is_secret_key(key):
             _log_config("Refused to write an API key to config.txt — use .env")
             failed.append(key)
             continue
-        clean[key] = str(raw_val)
+        value = str(raw_value)
+        if "\r" in value or "\n" in value:
+            # Config values are deliberately one-line. Refusing embedded lines
+            # also prevents a value from injecting an unrelated setting.
+            failed.append(key)
+            continue
+        clean[key] = value
+    return clean, failed
+
+
+def read_config_document(path: Path | None = None) -> tuple[str, dict[str, str]]:
+    """Return raw config text and only the KEY=VALUE entries actually present."""
+    target = Path(path or CONFIG_PATH)
+    text = target.read_text(encoding="utf-8", errors="replace")
+    parsed, _invalid = _parse_config_text(text)
+    return text, parsed
+
+
+def parse_config_document(text: str) -> dict[str, str]:
+    """Parse only entries present in one raw config document (no defaults/.env)."""
+    parsed, _invalid = _parse_config_text(text)
+    return parsed
+
+
+def validate_config_document(
+    text: str,
+    keys: Iterable[str] | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Validate raw typed values without merging defaults or reading .env."""
+    raw = parse_config_document(text)
+    selected = tuple(dict.fromkeys(
+        str(key).strip().upper() for key in (keys if keys is not None else raw)
+    ))
+    invalid: list[str] = []
+    for key in selected:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if not validate_config_value(key, value):
+            invalid.append(key)
+    invalid_set = set(invalid)
+    ordered = tuple(key for key in selected if key in invalid_set)
+    return not ordered, ordered
+
+
+def render_config_document(
+    text: str,
+    updates: Mapping[str, object] | None = None,
+    remove_keys: Iterable[str] = (),
+) -> str:
+    """Patch raw config text while retaining comments, order, blanks and unknowns.
+
+    Every occurrence of an updated key is changed so duplicate settings cannot
+    make Python and Medic observe different effective values. Removed keys are
+    removed at every occurrence. Missing updates are appended in caller order.
+    """
+    clean, failed = _normalise_config_updates(updates or {})
+    if failed:
+        raise ValueError(f"Invalid or forbidden config keys: {', '.join(failed)}")
+
+    removals: set[str] = set()
+    for raw_key in remove_keys:
+        key = str(raw_key).strip().upper()
+        if not key or not key.replace("_", "").isalnum():
+            raise ValueError(f"Invalid config key for removal: {raw_key!r}")
+        removals.add(key)
+    # An explicit update wins if a caller accidentally supplies both.
+    removals.difference_update(clean)
+
+    newline = "\r\n" if "\r\n" in text else "\n"
+    seen: set[str] = set()
+    output: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if line.endswith("\r\n"):
+            body, ending = line[:-2], "\r\n"
+        elif line.endswith(("\n", "\r")):
+            body, ending = line[:-1], line[-1]
+        else:
+            body, ending = line, ""
+        match = _CONFIG_DOCUMENT_LINE_RE.match(body)
+        if not match:
+            output.append(line)
+            continue
+        key = match.group("key").upper()
+        if key in removals:
+            continue
+        if key not in clean:
+            output.append(line)
+            continue
+        output.append(
+            f"{match.group('prefix')}{match.group('key')}"
+            f"{match.group('separator')}{clean[key]}{ending}"
+        )
+        seen.add(key)
+
+    rendered = "".join(output)
+    missing = [(key, value) for key, value in clean.items() if key not in seen]
+    if missing:
+        if rendered and not rendered.endswith(("\n", "\r")):
+            rendered += newline
+        rendered += "".join(f"{key} = {value}{newline}" for key, value in missing)
+    return rendered
+
+
+def write_config_document(path: Path, content: str) -> None:
+    """Atomically replace one config document; callers coordinate transactions."""
+    with _CONFIG_WRITE_LOCK:
+        _write_atomic_config(Path(path), content)
+
+
+def patch_config_keys(updates: dict[str, str]) -> tuple[bool, list[str]]:
+    """Update multiple KEY = value lines in one write. Returns (ok, failed_keys)."""
+    if not updates:
+        return True, []
+    clean, failed = _normalise_config_updates(updates)
     if not clean:
         return False, failed
     path = CONFIG_PATH
     try:
-        ensure_config_file(write_if_missing=True)
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-        remaining = dict(clean)
-        out: list[str] = []
-        for line in lines:
-            matched_key: str | None = None
-            for key in remaining:
-                pattern = re.compile(rf"^(\s*{re.escape(key)}\s*=).*", re.IGNORECASE)
-                if pattern.match(line):
-                    matched_key = key
-                    break
-            if matched_key is not None:
-                out.append(f"{matched_key} = {remaining.pop(matched_key)}\n")
-            else:
-                out.append(line if line.endswith("\n") else line + "\n")
-        for key, value in remaining.items():
-            out.append(f"{key} = {value}\n")
-        _write_atomic_config(path, "".join(out))
+        with _CONFIG_WRITE_LOCK:
+            ensure_config_file(write_if_missing=True)
+            text = path.read_text(encoding="utf-8", errors="replace")
+            rendered = render_config_document(text, clean)
+            _write_atomic_config(path, rendered)
         get_settings(reload=True)
         return True, failed
     except Exception as exc:

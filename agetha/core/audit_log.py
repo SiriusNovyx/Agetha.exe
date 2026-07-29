@@ -9,12 +9,15 @@ raises to callers. Read-modify-write is guarded by a process-level RLock.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
-from agetha.utils import logger
 from agetha.app_config import BASE_DIR
+
+logger = logging.getLogger("Agetha")
 
 MEMORY_DIR = BASE_DIR / "memory"
 AUDIT_FILE = MEMORY_DIR / "audit_log.jsonl"
@@ -36,9 +39,9 @@ def _utcnow(now_fn: Callable[[], datetime] | None = None) -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _ensure_dir() -> None:
+def _ensure_dir(path: Path | None = None) -> None:
     try:
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (path or AUDIT_FILE).parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
 
@@ -49,6 +52,7 @@ def log_audit(
     outcome: str,
     *,
     now_fn: Callable[[], datetime] | None = None,
+    audit_file: Path | None = None,
 ) -> bool:
     """Append one audit record. Returns True on success. Never raises."""
     try:
@@ -66,9 +70,10 @@ def log_audit(
             "outcome": (outcome or "unknown").strip()[:64],
         }
         line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+        target = Path(audit_file or AUDIT_FILE)
         with _lock:
-            _ensure_dir()
-            with AUDIT_FILE.open("a", encoding="utf-8") as fh:
+            _ensure_dir(target)
+            with target.open("a", encoding="utf-8") as fh:
                 fh.write(line)
         logger.info(f"audit: {record['action']} -> {record['outcome']}")
         return True

@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import tkinter as tk
 import webbrowser
+from dataclasses import dataclass
 from tkinter import messagebox, ttk
 from pathlib import Path
 from typing import Any
 
-from agetha.app_config import BASE_DIR
+from agetha.app_config import BASE_DIR, CONFIG_PATH, read_config_document
 from agetha.utils import logger, write_atomic
 
 # Duplicated Win95 palette (must not import main.py)
@@ -25,6 +26,194 @@ W95_FONT_BOLD = ("MS Sans Serif", 8, "bold")
 W95_WARN = "#800000"
 
 NOTEPAD_FILE = BASE_DIR / "memory" / "notepad.txt"
+
+
+@dataclass(frozen=True)
+class FastModeDashboardState:
+    """Small, secret-free view used by both the Tk UI and focused tests."""
+
+    status: str = "unavailable"
+    active: bool = False
+    managed_keys: tuple[str, ...] = ()
+
+
+_FAST_MODE_ACTIVATION_PENDING = frozenset({
+    "activation_required", "snapshot_missing",
+})
+_FAST_MODE_RESTORATION_PENDING = frozenset({
+    "restore_required", "restoration_pending",
+})
+
+
+def _load_fast_mode_api() -> Any:
+    """Import lazily so the dashboard remains usable during partial upgrades."""
+    from agetha.core import fast_mode_profile
+
+    return fast_mode_profile
+
+
+def _fast_mode_result_status(result: Any) -> str:
+    if isinstance(result, dict):
+        return str(result.get("status", "unknown") or "unknown")
+    return str(getattr(result, "status", "unknown") or "unknown")
+
+
+def _fast_mode_result_ok(result: Any) -> bool:
+    """Accept the profile result contract while tolerating older test doubles."""
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, dict) and "ok" in result:
+        return bool(result["ok"])
+    explicit = getattr(result, "ok", None)
+    if explicit is not None:
+        return bool(explicit)
+    return _fast_mode_result_status(result) not in {
+        "snapshot_invalid", "snapshot_write_failed", "snapshot_cleanup_failed",
+        "config_write_failed", "invalid_updates", "profile_busy", "restore_failed",
+        "unsafe_path_state", "unsafe_profile_definition", "verification_pending",
+        "failed",
+    }
+
+
+def get_fast_mode_dashboard_state(api: Any | None = None) -> FastModeDashboardState:
+    """Return current profile state without exposing snapshot values or secrets."""
+    try:
+        api = api or _load_fast_mode_api()
+        inspected = api.inspect_fast_mode_profile()
+        status = _fast_mode_result_status(inspected)
+        keys = tuple(str(key).upper() for key in api.managed_fast_mode_keys())
+        inspected_active = (
+            inspected.get("active") if isinstance(inspected, dict)
+            else getattr(inspected, "active", None)
+        )
+        active = (
+            bool(inspected_active)
+            if inspected_active is not None
+            else bool(api.is_fast_mode_profile_active())
+        )
+        return FastModeDashboardState(status=status, active=active, managed_keys=keys)
+    except Exception as exc:
+        logger.warning(f"dashboard: Fast Mode status unavailable: {exc}")
+        return FastModeDashboardState()
+
+
+def format_fast_mode_managed_status(
+    key: str,
+    *,
+    state: FastModeDashboardState | None = None,
+    api: Any | None = None,
+) -> str:
+    """Build the safe per-field status shown below a managed setting."""
+    try:
+        api = api or _load_fast_mode_api()
+        state = state or get_fast_mode_dashboard_state(api)
+        normalized = str(key).strip().upper()
+        if not state.active or normalized not in state.managed_keys:
+            return ""
+        forced = api.get_fast_mode_forced_value(normalized)
+        original = api.get_fast_mode_original_value(normalized)
+        restored = "default (setting was absent)" if original is None else str(original)
+        return f"Managed by Fast Mode — forced: {forced}; restored later: {restored}"
+    except Exception as exc:
+        logger.warning(f"dashboard: Fast Mode field status unavailable: {exc}")
+        return "Managed by Fast Mode"
+
+
+def format_fast_mode_summary(state: FastModeDashboardState) -> str:
+    count = len(state.managed_keys)
+    if state.active:
+        return f"Fast Mode: active — {count} settings temporarily managed"
+    if state.status == "snapshot_invalid":
+        return "Fast Mode: snapshot invalid — use Medic Checker recovery"
+    if state.status == "profile_busy":
+        return "Fast Mode: another process is updating the profile"
+    if state.status == "verification_pending":
+        return "Fast Mode: write verification interrupted — reconciliation required"
+    if state.status in {"unsafe_path_state", "unsafe_profile_definition"}:
+        return "Fast Mode: safety validation failed"
+    if state.status in {"restore_required", "restoration_pending"}:
+        return "Fast Mode: restoration pending"
+    if state.status in {"cleanup_pending", "restored_snapshot_retained"}:
+        return "Fast Mode: disabled — recovery snapshot cleanup pending"
+    if state.status in {"activation_required", "snapshot_missing"}:
+        return "Fast Mode: activation pending"
+    if state.status == "unavailable":
+        return "Fast Mode: status unavailable"
+    return "Fast Mode: disabled"
+
+
+def _fast_mode_confirmation_action(
+    *,
+    current_enabled: bool,
+    desired_enabled: bool,
+    status: str,
+) -> str | None:
+    """Return the transition that needs consent using freshly inspected state."""
+    normalized = str(status or "unknown").strip().lower()
+    if desired_enabled and (
+        not current_enabled or normalized in _FAST_MODE_ACTIVATION_PENDING
+    ):
+        return "activate"
+    if not desired_enabled and (
+        current_enabled or normalized in _FAST_MODE_RESTORATION_PENDING
+    ):
+        return "restore"
+    return None
+
+
+def get_fast_mode_apply_confirmation(
+    updates: dict[str, str],
+    api: Any | None = None,
+    config_path: Path | None = None,
+) -> tuple[str | None, FastModeDashboardState]:
+    """Re-read disk/profile state immediately before a dashboard transaction."""
+    _text, disk_values = read_config_document(config_path or CONFIG_PATH)
+    current_enabled = str(disk_values.get("FASTER_MODE", "no")).strip().lower() in {
+        "yes", "true", "1", "on",
+    }
+    desired_raw = updates.get("FASTER_MODE")
+    desired_enabled = (
+        str(desired_raw).strip().lower() in {"yes", "true", "1", "on"}
+        if desired_raw is not None else current_enabled
+    )
+    state = get_fast_mode_dashboard_state(api)
+    return (
+        _fast_mode_confirmation_action(
+            current_enabled=current_enabled,
+            desired_enabled=desired_enabled,
+            status=state.status,
+        ),
+        state,
+    )
+
+
+def apply_dashboard_config_updates(updates: dict[str, str], api: Any | None = None) -> Any:
+    """Apply one coordinated config/Fast-Mode transaction."""
+    api = api or _load_fast_mode_api()
+    return api.apply_config_updates_with_fast_mode(dict(updates))
+
+
+def format_fast_mode_failure(status: str) -> str:
+    normalized = str(status or "unknown").strip().lower()
+    if normalized == "profile_busy":
+        return (
+            "Fast Mode is currently being updated by another process.\n\n"
+            "Close the other Agetha or Medic Checker instance and try again. "
+            "No settings were changed."
+        )
+    if normalized == "verification_pending":
+        return (
+            "The configuration write may have completed, but verification was interrupted.\n\n"
+            "Recovery metadata was preserved. Run Fast Mode reconciliation again to "
+            "inspect the current disk state safely."
+        )
+    if normalized in {"unsafe_path_state", "unsafe_profile_definition"}:
+        return "Fast Mode safety validation failed. No transaction was started."
+    return (
+        "Could not apply settings safely. The existing configuration and recovery "
+        f"snapshot were preserved.\n\nStatus: {normalized}"
+    )
+
 
 PROJECT_LINKS: dict[str, str] = {
     "Fork repository": "https://github.com/SiriusNovyx/Agetha.exe",
@@ -744,7 +933,10 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         about_frame,
         text=(
             "Fork support and issue reporting belong to SiriusNovyx. "
-            "The original upstream project does not maintain or support this fork."
+            "Supported platforms: Windows 10/11 and Linux desktop paths; "
+            "Windows ARM/Snapdragon uses x64 Python under Prism. macOS is "
+            "unsupported. The original "
+            "upstream project does not maintain or support this fork."
         ),
         bg=W95_BG, fg=W95_WARN, font=W95_FONT,
         justify="left", anchor="w", wraplength=_px(500),
@@ -765,6 +957,16 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         raw_cfg = dict(getattr(app_settings, "raw", {}) or {})
 
     editors: dict[str, tuple[str, Any]] = {}
+    editor_widgets: dict[str, tk.Widget] = {}
+    managed_hints: dict[str, tuple[tk.StringVar, tk.Label]] = {}
+    ui_syncing = {"active": False}
+    try:
+        fast_mode_api: Any | None = _load_fast_mode_api()
+    except Exception as exc:
+        logger.warning(f"dashboard: Fast Mode controls unavailable: {exc}")
+        fast_mode_api = None
+    fast_mode_state = get_fast_mode_dashboard_state(fast_mode_api)
+    fast_mode_summary_var = tk.StringVar(value=format_fast_mode_summary(fast_mode_state))
     status_var = tk.StringVar(value="Edit settings, then click Apply settings.")
 
     header = tk.Frame(settings_frame, bg=W95_BG)
@@ -780,6 +982,17 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         bg=W95_BG, fg=W95_WARN, font=W95_FONT, anchor="w",
         wraplength=_px(500), justify="left",
     ).pack(fill="x", pady=(2, 0))
+    fast_mode_summary_label = tk.Label(
+        header,
+        textvariable=fast_mode_summary_var,
+        bg=W95_BG,
+        fg=W95_WARN if fast_mode_state.status == "snapshot_invalid" else W95_TEXT,
+        font=W95_FONT_BOLD,
+        anchor="w",
+        wraplength=_px(500),
+        justify="left",
+    )
+    fast_mode_summary_label.pack(fill="x", pady=(4, 0))
     # v5.0.0 — live read-only status lines (never fail, never mutate state)
     _live_lines: list[str] = []
     try:
@@ -850,6 +1063,8 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         return str(raw_cfg.get(key, "no")).strip().lower() in ("yes", "true", "1", "on")
 
     def _mark_dirty(_key: str | None = None) -> None:
+        if ui_syncing["active"]:
+            return
         status_var.set("Unsaved changes — click Apply settings.")
 
     voice_menu_ref: dict[str, Any] = {}
@@ -863,17 +1078,21 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         for key, kind, needs_restart, choices in items:
             row = tk.Frame(settings_inner, bg=W95_BG)
             row.pack(fill="x", pady=1)
+            control_row = tk.Frame(row, bg=W95_BG)
+            control_row.pack(fill="x")
             label = f"{key} *" if needs_restart else key
             if kind == "bool":
                 var = tk.BooleanVar(value=_cfg_yes(key))
-                tk.Checkbutton(
-                    row, text=label, variable=var, command=lambda k=key: _mark_dirty(k),
+                widget = tk.Checkbutton(
+                    control_row, text=label, variable=var, command=lambda k=key: _mark_dirty(k),
                     bg=W95_BG, fg=W95_TEXT, font=W95_FONT, activebackground=W95_BG,
                     selectcolor=W95_BG, anchor="w",
-                ).pack(side="left", fill="x", expand=True)
+                )
+                widget.pack(side="left", fill="x", expand=True)
                 editors[key] = ("bool", var)
+                editor_widgets[key] = widget
             elif kind == "choice":
-                tk.Label(row, text=label, width=28, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
+                tk.Label(control_row, text=label, width=28, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
                 effective_choices = choices
                 if key == "TTS_VOICE_NAME":
                     engine_now = str(raw_cfg.get("VOICE_TTS_ENGINE", "pyttsx3")).strip().lower()
@@ -890,11 +1109,12 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
                 if not effective_choices:
                     effective_choices = (current or _default_tts_voice("pyttsx3"),)
                 var = tk.StringVar(value=current)
-                om = tk.OptionMenu(row, var, *effective_choices)
+                om = tk.OptionMenu(control_row, var, *effective_choices)
                 om.configure(bg=W95_BTN_BG, fg=W95_TEXT, font=W95_FONT, activebackground=W95_BTN_BG)
                 om.pack(side="left", fill="x", expand=True)
                 var.trace_add("write", lambda *_a, k=key: _mark_dirty(k))
                 editors[key] = ("choice", var)
+                editor_widgets[key] = om
                 if key == "TTS_VOICE_NAME":
                     voice_menu_ref["menu"] = om
                     voice_menu_ref["var"] = var
@@ -906,12 +1126,28 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
                         bg=W95_BG, fg=W95_SHADOW, font=W95_FONT, anchor="w",
                     ).pack(fill="x", padx=(4, 0), pady=(0, 2))
             else:
-                tk.Label(row, text=label, width=28, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
+                tk.Label(control_row, text=label, width=28, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
                 var = tk.StringVar(value=str(raw_cfg.get(key, "")))
-                entry = tk.Entry(row, textvariable=var, font=W95_FONT, bg="#ffffff", fg=W95_TEXT)
+                entry = tk.Entry(control_row, textvariable=var, font=W95_FONT, bg="#ffffff", fg=W95_TEXT)
                 entry.pack(side="left", fill="x", expand=True)
                 var.trace_add("write", lambda *_a, k=key: _mark_dirty(k))
                 editors[key] = ("text", var)
+                editor_widgets[key] = entry
+
+            if key in fast_mode_state.managed_keys:
+                hint_var = tk.StringVar(value="")
+                hint = tk.Label(
+                    row,
+                    textvariable=hint_var,
+                    bg=W95_BG,
+                    fg=W95_WARN,
+                    font=W95_FONT,
+                    anchor="w",
+                    justify="left",
+                    wraplength=_px(470),
+                )
+                hint.pack(fill="x", padx=(12, 0), pady=(0, 2))
+                managed_hints[key] = (hint_var, hint)
 
     def _sync_tts_voice_options(*_args: Any, mark_dirty: bool = True) -> None:
         """When VOICE_TTS_ENGINE changes, refresh TTS_VOICE_NAME dropdown choices."""
@@ -950,6 +1186,56 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         )
         _sync_tts_voice_options(mark_dirty=False)
 
+    def _refresh_fast_mode_controls() -> None:
+        nonlocal fast_mode_state
+        fast_mode_state = get_fast_mode_dashboard_state(fast_mode_api)
+        fast_mode_summary_var.set(format_fast_mode_summary(fast_mode_state))
+        fast_mode_summary_label.configure(
+            fg=W95_WARN if fast_mode_state.status in {
+                "snapshot_invalid", "invalid_active", "restore_required",
+                "restoration_pending", "activation_required", "snapshot_missing",
+                "cleanup_pending", "restored_snapshot_retained",
+            } else W95_TEXT,
+        )
+        for key, widget in editor_widgets.items():
+            managed = fast_mode_state.active and key in fast_mode_state.managed_keys
+            try:
+                widget.configure(state="disabled" if managed else "normal")
+            except Exception:
+                pass
+            hint_pair = managed_hints.get(key)
+            if hint_pair is None:
+                continue
+            hint_var, hint = hint_pair
+            if managed:
+                hint_var.set(
+                    format_fast_mode_managed_status(
+                        key,
+                        state=fast_mode_state,
+                        api=fast_mode_api,
+                    )
+                )
+                if not hint.winfo_manager():
+                    hint.pack(fill="x", padx=(12, 0), pady=(0, 2))
+            else:
+                hint_var.set("")
+                if hint.winfo_manager():
+                    hint.pack_forget()
+
+    def _sync_editor_values(values: dict[str, Any]) -> None:
+        ui_syncing["active"] = True
+        try:
+            for key, (kind, var) in editors.items():
+                value = str(values.get(key, ""))
+                if kind == "bool":
+                    var.set(value.strip().lower() in ("yes", "true", "1", "on"))
+                else:
+                    var.set(value.strip())
+        finally:
+            ui_syncing["active"] = False
+
+    _refresh_fast_mode_controls()
+
     footer = tk.Frame(settings_frame, bg=W95_BG)
     footer.pack(fill="x", padx=8, pady=(0, 8))
     tk.Label(
@@ -967,7 +1253,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
 
     def _apply_settings() -> None:
         try:
-            from agetha.app_config import patch_config_keys
+            from agetha.app_config import get_settings as _reload_settings
             from agetha.utils import refresh_config_constants
         except Exception as exc:
             logger.warning(f"dashboard: apply imports failed: {exc}")
@@ -997,28 +1283,96 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
             status_var.set("No changes to apply.")
             return
 
-        ok, failed = patch_config_keys(updates)
-        if not ok:
-            status_var.set("Apply failed — could not write config.txt.")
+        # Do not decide consent from the values captured when the dashboard was
+        # opened. config.txt or the recovery snapshot may have changed since
+        # then, so re-read both immediately before the coordinated transaction.
+        try:
+            confirmation, current_fast_mode_state = get_fast_mode_apply_confirmation(
+                updates, fast_mode_api,
+            )
+        except Exception as exc:
+            logger.warning(f"dashboard: Fast Mode pre-apply inspection failed: {exc}")
+            status_var.set("Apply paused — Fast Mode state could not be verified.")
             messagebox.showerror(
                 "Agetha — Settings",
-                "Could not write config.txt.\nCheck file permissions and try again.",
+                "Could not verify the current Fast Mode state. No settings were changed.",
                 parent=win,
             )
             return
 
-        for key, val in updates.items():
-            if key not in failed:
-                raw_cfg[key] = val
+        if confirmation == "activate":
+            managed_names = "\n".join(
+                f"  • {key}" for key in current_fast_mode_state.managed_keys
+            )
+            if not messagebox.askyesno(
+                "Agetha — Enable Fast Mode",
+                "Fast Mode will temporarily manage these settings:\n\n"
+                f"{managed_names}\n\n"
+                "Their current values will be saved locally and restored when Fast Mode is disabled. "
+                "Provider, permission, privacy, and security settings are never changed.\n\n"
+                "Enable Fast Mode?",
+                parent=win,
+            ):
+                status_var.set("Fast Mode activation cancelled — no settings changed.")
+                return
+        elif confirmation == "restore":
+            if not messagebox.askyesno(
+                "Agetha — Disable Fast Mode",
+                "Disabling Fast Mode will restore the values saved before activation. "
+                "Intentional manual edits made while it was active are preserved.\n\n"
+                "Disable Fast Mode and restore saved settings?",
+                parent=win,
+            ):
+                status_var.set("Fast Mode restoration cancelled — no settings changed.")
+                return
+
+        try:
+            result = apply_dashboard_config_updates(updates, fast_mode_api)
+        except Exception as exc:
+            logger.warning(f"dashboard: coordinated settings transaction failed: {exc}")
+            status_var.set("Apply failed — configuration was not changed.")
+            messagebox.showerror(
+                "Agetha — Settings",
+                f"Could not apply settings safely.\n\n{exc}",
+                parent=win,
+            )
+            return
+
+        if not _fast_mode_result_ok(result):
+            status = _fast_mode_result_status(result)
+            error = (
+                result.get("error") if isinstance(result, dict)
+                else getattr(result, "error", None)
+            )
+            logger.warning(f"dashboard: coordinated settings transaction returned {status}")
+            status_var.set(f"Apply failed — Fast Mode status: {status}.")
+            messagebox.showerror(
+                "Agetha — Settings",
+                format_fast_mode_failure(status)
+                + (f"\n{error}" if error else ""),
+                parent=win,
+            )
+            return
+
         try:
             refresh_config_constants()
         except Exception as exc:
             logger.warning(f"dashboard: refresh_config_constants failed: {exc}")
 
-        if failed:
-            status_var.set(f"Applied with errors: {', '.join(failed)}")
-        else:
-            status_var.set(f"Applied {len(updates)} setting(s).")
+        try:
+            latest = dict(_reload_settings(reload=True).raw)
+            raw_cfg.clear()
+            raw_cfg.update(latest)
+            _sync_editor_values(raw_cfg)
+        except Exception as exc:
+            logger.warning(f"dashboard: settings reload after apply failed: {exc}")
+        _refresh_fast_mode_controls()
+
+        changed_keys = tuple(getattr(result, "changed_keys", ()) or ())
+        status_var.set(
+            f"Applied {max(len(updates), len(changed_keys))} setting(s) "
+            f"({_fast_mode_result_status(result)})."
+        )
 
         if restart_changed:
             names = "\n".join(f"  • {k}" for k in restart_changed[:20])
@@ -1037,7 +1391,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
                 "They apply on the next Medic_Checker run (Agetha restart not required).",
                 parent=win,
             )
-        elif not restart_changed and not failed:
+        elif not restart_changed:
             messagebox.showinfo(
                 "Agetha — Settings Applied",
                 "Settings applied. Hot-reload keys are active now.",

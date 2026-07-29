@@ -37,8 +37,11 @@ ENABLE_OPENROUTER = no
 # Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
 OPENROUTER_MODEL = google/gemma-4-31b-it:free
 
-# FASTER_MODE — yes = shorter prompts (less personality, fewer tokens, cheaper).
-FASTER_MODE = yes
+# FASTER_MODE — enables Agetha's reversible performance profile.
+# Selected AI, context, polling, and OCR values are temporarily forced and
+# restored when disabled. Provider, permission, privacy, and security settings
+# are never changed. Recovery metadata stays in memory/fast_mode_snapshot.json.
+FASTER_MODE = no
 
 
 # ── Groq (API keys in .env only) ──────────────────────────────────────────────
@@ -397,7 +400,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 5.5.1
+APP_VERSION = 5.5.5
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
