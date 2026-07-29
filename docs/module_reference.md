@@ -179,7 +179,7 @@ long-lived effects should use the explicit tracked-controller pattern.
 
 ## Tests
 
-The current suite contains 322 tests across 12 files. Counts are a snapshot, not
+The current suite contains 324 tests across 12 files. Counts are a snapshot, not
 a version contract; use the coverage descriptions to select a focused suite.
 
 | File | Current count | Coverage |
@@ -195,7 +195,7 @@ a version contract; use the coverage descriptions to select a focused suite.
 | [test_phase4_realism.py](../tests/test_phase4_realism.py) | 16 | Command wiring, stats/notepad/trivia, prompt suppression, mood/session recap, coding-assist safety, GIF coverage, compile. |
 | [test_phase5_v4.py](../tests/test_phase5_v4.py) | 29 | Config, rhythm, dreams, tasks, prompt/guard/command wiring. |
 | [test_phase6_v5.py](../tests/test_phase6_v5.py) | 87 | Emotion/history/concurrency, audit, autostart, Windows integration/rollback, status, tray, command wiring. |
-| [test_screen_monitoring_reliability.py](../tests/test_screen_monitoring_reliability.py) | 73 | Coordinate/origin/capture/concurrency/change/event/pattern/privacy/stale-result/backward-compatibility matrix. |
+| [test_screen_monitoring_reliability.py](../tests/test_screen_monitoring_reliability.py) | 75 | Coordinate/origin/capture/concurrency/change/event/pattern/privacy/stale-result/backward-compatibility matrix. |
 | [test_time_ui_effects.py](../tests/test_time_ui_effects.py) | 25 | Datetime context, new settings, display scale, glow/motion/CRT lifecycle, shutdown idempotence, optional real-Tk smoke. |
 
 ## Documentation

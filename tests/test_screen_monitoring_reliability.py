@@ -229,6 +229,34 @@ class TestCaptureBehavior(unittest.TestCase):
             name = _linux_process_name_from_window(42)
         self.assertEqual(name, "keepassxc")
 
+    def test_05d_windows_metadata_includes_process_id(self):
+        user32 = MagicMock()
+        kernel32 = MagicMock()
+        native = MagicMock(user32=user32, kernel32=kernel32)
+        user32.GetWindowTextLengthW.return_value = 0
+
+        def set_rect(_hwnd, rect_pointer):
+            rect_pointer._obj.left = 10
+            rect_pointer._obj.top = 20
+            rect_pointer._obj.right = 810
+            rect_pointer._obj.bottom = 620
+            return True
+
+        def set_pid(_hwnd, pid_pointer):
+            pid_pointer._obj.value = 321
+            return 1
+
+        user32.GetWindowRect.side_effect = set_rect
+        user32.GetWindowThreadProcessId.side_effect = set_pid
+        kernel32.OpenProcess.return_value = 0
+        with (
+            patch.object(screen_reader_module, "IS_WINDOWS", True),
+            patch.object(screen_reader_module.ctypes, "windll", native, create=True),
+        ):
+            info = screen_reader_module._get_window_info(77)
+        self.assertEqual(info["process_id"], 321)
+        self.assertEqual(info["hwnd"], 77)
+
     def test_06_focused_capture_success(self):
         reader = _capture_reader()
         reader._foreground_info = lambda: {
@@ -347,15 +375,16 @@ class TestCaptureBehavior(unittest.TestCase):
             "title": "Agetha", "hwnd": 999, "process_name": "python.exe",
         }
         reader.last_capture_metadata = _frame(
-            title="Document", hwnd=77, process_name="reader.exe",
+            title="Document", hwnd=77, process_name="reader.exe", process_id=321,
         )
         external = {
             "left": 25, "top": 35, "width": 640, "height": 480,
             "title": "Document", "hwnd": 77, "process_name": "reader.exe",
+            "process_id": 321,
         }
         captured_frame = _frame(
             left=25, top=35, title="Document", hwnd=77,
-            process_name="reader.exe",
+            process_name="reader.exe", process_id=321,
         )
         with (
             patch.object(screen_reader_module, "_get_window_info", return_value=external),
@@ -375,6 +404,7 @@ class TestCaptureBehavior(unittest.TestCase):
         target = {
             "left": 25, "top": 35, "width": 640, "height": 480,
             "title": "Document", "hwnd": 77, "process_name": "reader.exe",
+            "process_id": 321,
         }
         with (
             patch.object(screen_reader_module, "_get_window_info", return_value=target),
@@ -390,7 +420,32 @@ class TestCaptureBehavior(unittest.TestCase):
         reader._capture_with_backend.assert_not_called()
         self.assertEqual(reader.last_monitor_status, "capture_target_failed")
 
-    def test_12g_linux_preserved_target_refreshes_geometry(self):
+    def test_12g_windows_preserved_target_rejects_reused_hwnd(self):
+        reader = _capture_reader()
+        target = {
+            "left": 25, "top": 35, "width": 640, "height": 480,
+            "title": "Document", "hwnd": 77, "process_name": "reader.exe",
+            "process_id": 321,
+        }
+        reused = dict(target, process_name="other.exe", process_id=654)
+        with (
+            patch.object(
+                screen_reader_module,
+                "_get_window_info",
+                return_value=reused,
+            ),
+            patch.object(screen_reader_module, "_grab_mss_frame") as grab,
+        ):
+            captured = reader._capture_frame(
+                focused_only=True,
+                automatic=False,
+                capture_target=target,
+            )
+        self.assertIsNone(captured)
+        grab.assert_not_called()
+        self.assertEqual(reader.last_monitor_status, "capture_target_unavailable")
+
+    def test_12h_linux_preserved_target_refreshes_geometry(self):
         reader = _capture_reader()
         reader._system = "Linux"
         target = {
@@ -426,7 +481,7 @@ class TestCaptureBehavior(unittest.TestCase):
             {"left": 125, "top": 135, "width": 800, "height": 600},
         )
 
-    def test_12h_linux_preserved_target_rejects_reused_xid(self):
+    def test_12i_linux_preserved_target_rejects_reused_xid(self):
         reader = _capture_reader()
         reader._system = "Linux"
         target = {
@@ -452,7 +507,7 @@ class TestCaptureBehavior(unittest.TestCase):
         grab.assert_not_called()
         self.assertEqual(reader.last_monitor_status, "capture_target_unavailable")
 
-    def test_12i_linux_preserved_target_rejects_closed_window(self):
+    def test_12j_linux_preserved_target_rejects_closed_window(self):
         reader = _capture_reader()
         reader._system = "Linux"
         target = {

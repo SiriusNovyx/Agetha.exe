@@ -417,35 +417,42 @@ def _scan_patterns(
 
 # ── 1. Foreground-window + 4. Multi-monitor helpers (Windows) ─────────────────
 
-def _get_window_process_name(hwnd: int) -> str:
+def _get_window_process(hwnd: int) -> tuple[str, int | None]:
     if not IS_WINDOWS or not hwnd:
-        return ""
+        return "", None
     handle = None
+    pid = None
     try:
         process_id = ctypes.wintypes.DWORD()
         ctypes.windll.user32.GetWindowThreadProcessId(
             hwnd, ctypes.byref(process_id),
         )
         if not process_id.value:
-            return ""
+            return "", None
+        pid = int(process_id.value)
         handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, process_id.value)
         if not handle:
-            return ""
+            return "", pid
         size = ctypes.wintypes.DWORD(1024)
         path_buffer = ctypes.create_unicode_buffer(size.value)
         if not ctypes.windll.kernel32.QueryFullProcessImageNameW(
             handle, 0, path_buffer, ctypes.byref(size),
         ):
-            return ""
-        return Path(path_buffer.value).name[:120]
+            return "", pid
+        return Path(path_buffer.value).name[:120], pid
     except Exception:
-        return ""
+        return "", pid
     finally:
         if handle:
             try:
                 ctypes.windll.kernel32.CloseHandle(handle)
             except Exception:
                 pass
+
+
+def _get_window_process_name(hwnd: int) -> str:
+    """Compatibility wrapper for callers that only need the executable name."""
+    return _get_window_process(hwnd)[0]
 
 
 def _get_window_info(hwnd: int, skip_hwnd: int | None = None) -> dict | None:
@@ -482,6 +489,7 @@ def _get_window_info(hwnd: int, skip_hwnd: int | None = None) -> dict | None:
         if w > 7680 or h > 4320:
             return None   # absurd size — skip to avoid mss crash
 
+        process_name, process_id = _get_window_process(hwnd)
         return {
             "left":   rect.left,
             "top":    rect.top,
@@ -489,7 +497,8 @@ def _get_window_info(hwnd: int, skip_hwnd: int | None = None) -> dict | None:
             "height": h,
             "title":  title,
             "hwnd":   hwnd,
-            "process_name": _get_window_process_name(hwnd),
+            "process_name": process_name,
+            "process_id": process_id,
         }
     except Exception as e:
         logger.debug(f"Window lookup failed: {type(e).__name__}")
@@ -1161,7 +1170,16 @@ class ScreenReader:
         if own_hwnd is None or normalized["hwnd"] == own_hwnd:
             return None
         if self._system == "Windows":
-            return _get_window_info(normalized["hwnd"], skip_hwnd=own_hwnd)
+            refreshed = self._normalized_capture_target(
+                _get_window_info(normalized["hwnd"], skip_hwnd=own_hwnd),
+            )
+            if (
+                refreshed is None
+                or normalized["process_id"] is None
+                or refreshed.get("process_id") != normalized["process_id"]
+            ):
+                return None
+            return refreshed
         if self._system == "Linux":
             refreshed = self._normalized_capture_target(
                 _get_linux_window_info(normalized["hwnd"], skip_hwnd=own_hwnd),
