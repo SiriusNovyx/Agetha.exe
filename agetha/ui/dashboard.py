@@ -903,7 +903,9 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         about_frame,
         text=(
             "Fork support and issue reporting belong to SiriusNovyx. "
-            "The original upstream project does not maintain or support this fork."
+            "Supported platform: Windows 10/11 only. Linux and macOS are "
+            "end-of-life and receive no updates or support. The original "
+            "upstream project does not maintain or support this fork."
         ),
         bg=W95_BG, fg=W95_WARN, font=W95_FONT,
         justify="left", anchor="w", wraplength=_px(500),

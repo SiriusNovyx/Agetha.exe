@@ -5,6 +5,12 @@ Guidance for humans and coding agents working on this fork.
 
 **Version focus:** Overhaul v5.5.5 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
+**Supported platform:** Windows 10/11 only, including Windows 11 ARM64 through
+x64 Python under Prism. Linux and macOS are end-of-life as of v5.5.5 because
+maintaining and validating three desktop platforms in every update is not
+sustainable. Retained non-Windows code is legacy and must not be described as
+tested or supported.
+
 ---
 
 ## Code map

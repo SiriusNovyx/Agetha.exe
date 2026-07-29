@@ -33,18 +33,17 @@ python .\main.py
 Direct launch still creates missing config/runtime state, but it does not run the
 full Medic repair workflow.
 
-### Linux development launch
+### Platform support policy
 
-```bash
-python3 -m venv venv
-venv/bin/python -m pip install -r requirements.txt
-venv/bin/python main.py
-```
+The supported development and release target is Windows 10/11, including
+Windows 11 ARM64/Snapdragon through x64 Python under Prism. Linux and macOS
+reached end of life with v5.5.5. They receive no compatibility updates, release
+testing, bug fixes, or user support because maintaining and validating three
+desktop platforms in every update is not sustainable for this project.
 
-Tkinter and a native Tesseract executable may come from the OS package manager.
-Screen capture also depends on the display server and installed screenshot
-tools. Windows-only operations should report unsupported status rather than
-preventing startup.
+Legacy non-Windows branches may remain in source control and may still run, but
+contributors must not describe them as supported. Linux/macOS-specific failures
+are outside the release-blocking test matrix.
 
 ### Required local inputs
 
@@ -163,8 +162,9 @@ runtime source of truth.
 and `write_file`.
 
 Confirmations deny after timeout. Unknown commands are Danger. Protected
-processes include built-in critical Windows/Linux names plus Python and Agetha;
-user additions extend rather than replace that set. `FORCE_CLOSE_AUTO_ALLOW`
+processes include built-in critical Windows names plus Python and Agetha;
+legacy Linux names remain defensively recognized in retained fallback code.
+User additions extend rather than replace that set. `FORCE_CLOSE_AUTO_ALLOW`
 never authorizes protected/self targets. Dry-run is an additional user-visible
 decision path, not a way around confirmation or feature gates.
 
@@ -408,16 +408,14 @@ paths relevant to the change:
     suppression.
 11. Deny Caution/Danger operations and verify no side effect; test protected/self
     window targets.
-12. Start on Linux with unavailable Windows/alpha/window-control features and
-    verify graceful degradation.
-13. Enable Fast Mode from the dashboard, verify the 13 managed values and local
+12. Enable Fast Mode from the dashboard, verify the 13 managed values and local
     snapshot, restart, then disable it and compare the restored values.
-14. While Fast Mode is active, manually change one managed and one unmanaged
+13. While Fast Mode is active, manually change one managed and one unmanaged
     setting; restart, confirm the forced value is repaired, then confirm both new
     preferences survive restoration as documented.
-15. Run Medic against active, restoration-pending, and deliberately corrupt
+14. Run Medic against active, restoration-pending, and deliberately corrupt
     temporary snapshots; confirm it reports status and asks before mutation.
-16. Observe an unchanged Fast ambient scan and confirm no provider request is
+15. Observe an unchanged Fast ambient scan and confirm no provider request is
     made; then produce a meaningful OCR event and confirm one bounded request.
 
 Record which steps were actually performed and the platform used.
@@ -426,9 +424,8 @@ Record which steps were actually performed and the platform used.
 
 | Area | Current limitation or caveat |
 |---|---|
-| Linux window control | Most external window geometry is implemented for Windows; handlers use limited `wmctrl`/`pkill` fallbacks where available. |
-| Linux/Wayland capture | Depends on compositor permissions and installed Spectacle/grim/GNOME tools; focused-window geometry is less reliable than Win32. |
-| Window alpha/chrome | CRT alpha and borderless native styling are best-effort off Windows; close falls back to immediate cleanup. |
+| Retired platforms | Linux and macOS are end-of-life as of v5.5.5. Remaining fallback code is untested, unsupported, and outside release acceptance. |
+| Window alpha/chrome | Windows alpha support can vary by graphics stack; close falls back to immediate cleanup if the effect is unavailable. |
 | Tesseract | Python package alone is insufficient; the native executable and requested language data must exist. |
 | Voice shutdown | Listener/recognition workers are daemon threads and stop by event/timeouts rather than a blocking UI-thread join. Keep operations bounded. |
 | Screen own-window handle | Own-window exclusion is best when the native handle is cached/passed from Tk; avoid adding worker-side Tk calls to resolve it. |

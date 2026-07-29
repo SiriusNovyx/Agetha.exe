@@ -60,7 +60,7 @@ Keep that side effect in mind in isolated tests.
 | [commands/__init__.py](../agetha/commands/__init__.py) | Package marker only; no eager imports. |
 | [command_guard.py](../agetha/commands/command_guard.py) | `CommandGuard`: Safe/Caution/Danger classification, dry-run descriptions, native/Tk confirmations, timeout-deny behavior, protected-process checks, and force-close policy. Unknown commands default to Danger. |
 | [command_handlers.py](../agetha/commands/command_handlers.py) | `DispatchCtx`, `HANDLERS`, `register()`, and `dispatch()`. Contains registered handlers for UI, files, clipboard, process/window, browser/web, system, memory, effects, tasks/emotions, Windows integration, and OCR. Coordinates feature gates, guard calls, stats/emotion updates, deferred re-query, Tk handoffs, and results. |
-| [system_commands.py](../agetha/commands/system_commands.py) | Cross-platform implementations for URL/clipboard/folder access, system info, volume/wallpaper, scoped file search, typing, lock/shutdown/restart, reminders, notifications, and screenshot paths. Uses bounded, platform-specific fallbacks. |
+| [system_commands.py](../agetha/commands/system_commands.py) | Windows-supported implementations for URL/clipboard/folder access, system info, volume/wallpaper, scoped file search, typing, lock/shutdown/restart, reminders, notifications, and screenshot paths. Historical non-Windows fallbacks are retained but unsupported. |
 
 The complete command change contract is in
 [Adding an AI command](development.md#adding-an-ai-command). Safety policy belongs
@@ -126,7 +126,7 @@ Notes:
 | [screen_reader.py](../agetha/platform/screen_reader.py) | `PatternDef`, `PatternMatch`, pattern registry, focused-window/monitor discovery, capture fallback order, `ScreenReader`, standard/deep OCR orchestration, current matches vs new events, state publication, redaction, stale-result rejection, and stop lifecycle. |
 | [screen_monitoring.py](../agetha/platform/screen_monitoring.py) | Pure reliability helpers: immutable `CapturedFrame`, `ProcessedOCRImage`, per-window/event state, preprocessing/scales, thumbnail difference, `ScreenChangeDetector`, `PatternEventTracker`, exclusions, and secret redaction. |
 | [voice_input.py](../agetha/platform/voice_input.py) | Microphone settings/discovery/probe, PyAudio-to-sounddevice fallback, Win95 `MicPickerDialog`, `VoiceInput` listener, Google STT, and locked singleton faster-whisper loading. |
-| [window_control.py](../agetha/platform/window_control.py) | External-window matching/ranking/picking and move/resize/close/kill operations; Windows Win32 implementation and limited Linux process fallback. Synchronous geometry animation must remain on a worker. |
+| [window_control.py](../agetha/platform/window_control.py) | External-window matching/ranking/picking and move/resize/close/kill operations; supported Windows Win32 implementation plus a retained, unsupported legacy Linux process fallback. Synchronous geometry animation must remain on a worker. |
 | [autostart.py](../agetha/platform/autostart.py) | Visible current-user Startup-folder `.lnk` management. Validates ownership/target containment and refuses foreign/malformed shortcut mutation. No service, task, or Run-key persistence. |
 | [win_integration.py](../agetha/platform/win_integration.py) | Allowlisted Windows Settings pages, current-user light/dark theme with atomic backup/rollback, and aggregate Recycle Bin status. Command gates/audit remain in callers. |
 | [windows_notify.py](../agetha/platform/windows_notify.py) | AppUserModelID, Start Menu shortcut registration, trusted icon, XML-safe WinRT toast. Distinct from autostart. Non-Windows returns false. |
@@ -163,11 +163,11 @@ does not modify Tk widgets.
 | [ui/__init__.py](../agetha/ui/__init__.py) | Package marker only. |
 | [display_scale.py](../agetha/ui/display_scale.py) | `resolve_ui_scale()` and `scale_px()`. Manual `UI_SCALE` clamps to 0.75-2.50; automatic scale considers display/DPI and clamps to 1.0-2.0. |
 | [dashboard.py](../agetha/ui/dashboard.py) | `open_dashboard()`, trusted `open_project_link()`, notepad read/write. Owns System Monitor, Virus Registry, Notepad, About, and typed Settings tabs plus per-window callback cleanup. |
-| [w95_window.py](../agetha/ui/w95_window.py) | Borderless Win95 Toplevel helpers, Windows caption stripping, map/deiconify refresh, and safe cross-platform fallback. |
+| [w95_window.py](../agetha/ui/w95_window.py) | Borderless Win95 Toplevel helpers, Windows caption stripping, map/deiconify refresh, and retained unsupported non-Windows fallbacks. |
 | [mood_effects.py](../agetha/ui/mood_effects.py) | `MOOD_COLOURS`, `mood_colour()`, and `MoodGlowController`: disabled/static/one-job pulse modes, subtle interpolation, slow manic color path, reduced-motion behavior, cancel/close lifecycle. |
 | [motion_effects.py](../agetha/ui/motion_effects.py) | `MOTION_STEPS`, `MOOD_MOTION_MAP`, and `MoodMotionController`: named response-level geometry, probability/cooldown, drag/minimize/close/owner guards, one active job chain, monitor clamp, exact restoration. |
 | [window_effects.py](../agetha/ui/window_effects.py) | `CRTCloseController`: duplicate guard, input/geometry cancellation, centered widen/vertical collapse/horizontal collapse/fade, tracked callbacks, reduced-motion/immediate fallback, exactly-once shutdown callback. |
-| [glitch_overlay.py](../agetha/ui/glitch_overlay.py) | Gated visual-only Canvas effects, style/duration normalization, rare mood trigger, topmost transient overlay, bounded optional NumPy/Pillow static generation, and cross-platform transparency fallback. |
+| [glitch_overlay.py](../agetha/ui/glitch_overlay.py) | Gated visual-only Canvas effects, style/duration normalization, rare mood trigger, topmost transient overlay, bounded optional NumPy/Pillow static generation, and Windows-supported transparency behavior. |
 | [virus_trivia.py](../agetha/ui/virus_trivia.py) | Five-question draggable Win95 trivia Toplevel; visual/gameplay only, no network/system mutation, and no repeating timer. |
 
 Dashboard caveats: multiple instances are possible; its callback-ID list grows

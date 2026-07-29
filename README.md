@@ -11,6 +11,19 @@
 For a code-map-first view of the architecture, runtime flows, module ownership,
 configuration, and focused tests, start with [`docs/README.md`](docs/README.md).
 
+## Platform support
+
+**Agetha Mod is supported only on Windows. Linux and macOS reached end of life
+with v5.5.5.** Maintaining and validating three desktop platforms in every
+update is not sustainable for this project, so development is now focused on
+providing reliable Windows releases.
+
+Linux and macOS receive no further updates, compatibility fixes, testing, or
+support. Existing fallback code may remain and may still run, but it is legacy,
+untested, and unsupported. Linux/macOS bug reports may be closed without
+investigation. Previously published GPLv3 source remains available under the
+same license.
+
 ## About
 
 Agetha is a **desktop AI companion** — a small always-on-top Windows 95–style window with an animated character who lives on your machine. She chats with you, watches your screen via OCR, remembers context across sessions, and can execute real OS actions through a JSON command system powered by **Groq** (default), **OpenRouter** (optional), or **Ollama** (local).
@@ -69,12 +82,9 @@ original OCR text. Use `OCR_EXCLUDED_APPS` and
 `OCR_EXCLUDED_TITLE_PATTERNS` for windows that should never be captured
 automatically; title exclusions accept plain text or a bounded `re:` prefix.
 
-On Windows, focused capture and process names use Win32 APIs and MSS. Linux/X11
-focused-window metadata uses `xdotool` or `wmctrl`; when those utilities are not
-available, capture may fall back to the selected full-display backend. Wayland
-support depends on an available portal-compatible capture tool such as
-Spectacle, Grim, or GNOME Screenshot. These fallbacks report status and do not
-reuse a stale focused-window origin.
+On Windows, focused capture and process names use Win32 APIs and MSS. Legacy
+Linux/X11, Wayland, and macOS fallback paths remain in parts of the codebase for
+historical compatibility, but they are untested and unsupported as of v5.5.5.
 
 Tesseract remains the default real-time backend; Unlimited-OCR is still used
 only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported
@@ -668,6 +678,8 @@ On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used 
 
 ## Requirements
 
+- **Operating system:** Windows 10/11. Windows 11 ARM64/Snapdragon is supported
+  through x64 Python running under Prism.
 - **Python 3.13.x** recommended (3.14 may have compatibility issues)
 - **Tesseract OCR** — [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) (optional, enables screen reading)
 - **Assets** — download from [chocolatebread.ddns.net/agetha.html](https://chocolatebread.ddns.net/agetha.html)
@@ -726,6 +738,9 @@ command_handlers.py → Execute action + update UI
 
 ### v5.5.5 — Reversible Fast Mode 2.0
 
+- Project support is now Windows-only. Linux and macOS are end-of-life because
+  maintaining and validating three desktop platforms in every update is not
+  sustainable; neither platform receives further fixes, testing, or support.
 - Atomic, schema-versioned Fast Mode snapshots preserve only the approved
   non-secret settings and restore them without replacing unrelated config.
 - Startup reconciliation repairs managed drift idempotently, quarantines an
@@ -830,8 +845,8 @@ python -m unittest discover -s tests
 For manual acceptance, verify focused capture and coordinate placement on every
 monitor; own-window and configured-exclusion skips; unchanged, forced-refresh,
 and changed-frame statuses; repeated/cleared error events; rapid standard/deep
-requests; shutdown during OCR; and external-context redaction. On Linux, test
-both the available focused-window utility path and its full-display fallback.
+requests; shutdown during OCR; and external-context redaction. Linux and macOS
+behavior is outside the supported validation matrix as of v5.5.5.
 
 ---
 

@@ -194,10 +194,11 @@ places bounded redacted text and pattern metadata into an ambient AI turn.
 `analyze_screen_deep` is blocked for ambient turns and must pass the command
 guard before an explicit capture/request.
 
-Platform fallbacks are best-effort. Windows uses native foreground-window and
-monitor information plus available capture libraries. Linux considers display
-availability, X11/Wayland, and installed screenshot tools. Unsupported capture
-or OCR returns a safe empty/error result rather than crashing the UI.
+Windows uses native foreground-window and monitor information plus available
+capture libraries. Historical Linux/X11, Wayland, and macOS fallback paths may
+remain in the implementation, but Linux and macOS are end-of-life as of v5.5.5
+and are no longer tested, updated, or supported. Unsupported capture or OCR
+still returns a safe empty/error result rather than crashing the UI.
 
 ## UI architecture
 

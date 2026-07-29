@@ -6,6 +6,14 @@ project-owned source tree so routine work does not require rereading
 
 Last code-map audit: 2026-07-29.
 
+## Supported platform
+
+This fork supports Windows only. Linux and macOS reached end of life with
+v5.5.5 because maintaining and validating three desktop platforms in every
+update is not sustainable for this project. Do not promise fixes, testing,
+compatibility updates, or user support for either retired platform. Legacy
+fallback code may remain, but it is outside the supported release contract.
+
 ## Read by task
 
 | Need | Read first | Then inspect |
