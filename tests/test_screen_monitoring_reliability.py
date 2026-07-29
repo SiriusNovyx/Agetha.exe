@@ -35,10 +35,10 @@ def _image(size=(120, 80), color="white"):
 
 def _frame(
     image=None, *, left=0, top=0, title="Editor", hwnd=10,
-    scope="focused_window", process_name="editor.exe",
+    scope="focused_window", process_name="editor.exe", process_id=None,
 ):
     return CapturedFrame(
-        image or _image(), left, top, title, hwnd, scope, process_name,
+        image or _image(), left, top, title, hwnd, scope, process_name, process_id,
     )
 
 
@@ -179,8 +179,8 @@ class TestCaptureBehavior(unittest.TestCase):
             patch.object(screen_reader_module.subprocess, "run", side_effect=fake_run),
             patch.object(
                 screen_reader_module,
-                "_linux_process_name_from_window",
-                return_value="keepassxc",
+                "_linux_window_process",
+                return_value=("keepassxc", 321),
             ),
         ):
             info = _get_foreground_window_info_linux()
@@ -206,8 +206,8 @@ class TestCaptureBehavior(unittest.TestCase):
             patch.object(screen_reader_module.subprocess, "run", side_effect=fake_run),
             patch.object(
                 screen_reader_module,
-                "_linux_process_name_from_window",
-                return_value="keepassxc",
+                "_linux_window_process",
+                return_value=("keepassxc", 321),
             ),
         ):
             info = _get_foreground_window_info_linux()
@@ -389,6 +389,92 @@ class TestCaptureBehavior(unittest.TestCase):
         self.assertIsNone(captured)
         reader._capture_with_backend.assert_not_called()
         self.assertEqual(reader.last_monitor_status, "capture_target_failed")
+
+    def test_12g_linux_preserved_target_refreshes_geometry(self):
+        reader = _capture_reader()
+        reader._system = "Linux"
+        target = {
+            "left": 25, "top": 35, "width": 640, "height": 480,
+            "title": "Document", "hwnd": 77, "process_name": "reader",
+            "process_id": 321,
+        }
+        refreshed = dict(target, left=125, top=135, width=800, height=600)
+        captured_frame = _frame(
+            left=125, top=135, title="Document", hwnd=77,
+            process_name="reader", process_id=321,
+        )
+        with (
+            patch.object(
+                screen_reader_module,
+                "_get_linux_window_info",
+                return_value=refreshed,
+            ),
+            patch.object(
+                screen_reader_module,
+                "_grab_mss_frame",
+                return_value=captured_frame,
+            ) as grab,
+        ):
+            captured = reader._capture_frame(
+                focused_only=True,
+                automatic=False,
+                capture_target=target,
+            )
+        self.assertIs(captured, captured_frame)
+        self.assertEqual(
+            grab.call_args.args[0],
+            {"left": 125, "top": 135, "width": 800, "height": 600},
+        )
+
+    def test_12h_linux_preserved_target_rejects_reused_xid(self):
+        reader = _capture_reader()
+        reader._system = "Linux"
+        target = {
+            "left": 25, "top": 35, "width": 640, "height": 480,
+            "title": "Document", "hwnd": 77, "process_name": "reader",
+            "process_id": 321,
+        }
+        reused = dict(target, title="Different window")
+        with (
+            patch.object(
+                screen_reader_module,
+                "_get_linux_window_info",
+                return_value=reused,
+            ),
+            patch.object(screen_reader_module, "_grab_mss_frame") as grab,
+        ):
+            captured = reader._capture_frame(
+                focused_only=True,
+                automatic=False,
+                capture_target=target,
+            )
+        self.assertIsNone(captured)
+        grab.assert_not_called()
+        self.assertEqual(reader.last_monitor_status, "capture_target_unavailable")
+
+    def test_12i_linux_preserved_target_rejects_closed_window(self):
+        reader = _capture_reader()
+        reader._system = "Linux"
+        target = {
+            "left": 25, "top": 35, "width": 640, "height": 480,
+            "title": "Document", "hwnd": 77, "process_name": "reader",
+            "process_id": 321,
+        }
+        with (
+            patch.object(
+                screen_reader_module,
+                "_get_linux_window_info",
+                return_value=None,
+            ),
+            patch.object(screen_reader_module, "_grab_mss_frame") as grab,
+        ):
+            captured = reader._capture_frame(
+                focused_only=True,
+                automatic=False,
+                capture_target=target,
+            )
+        self.assertIsNone(captured)
+        grab.assert_not_called()
 
 
 class TestConcurrency(unittest.TestCase):
@@ -590,6 +676,19 @@ class TestPatterns(unittest.TestCase):
     def test_38a_scoped_pattern_is_skipped_without_app_context(self):
         matches = _scan_patterns("is not a valid member of")
         self.assertFalse(any(match.category == "luau_runtime" for match in matches))
+
+    def test_38b_global_confidence_is_a_floor_for_every_pattern(self):
+        line = OCRLine("FATAL ERROR", 0, 0, 100, 20, 35.0)
+        self.assertFalse(_scan_patterns(
+            line.text,
+            [line],
+            minimum_confidence=90.0,
+        ))
+        self.assertTrue(_scan_patterns(
+            line.text,
+            [line],
+            minimum_confidence=20.0,
+        ))
 
     def test_39_custom_patterns_still_load(self):
         original_loaded = screen_reader_module._custom_patterns_loaded

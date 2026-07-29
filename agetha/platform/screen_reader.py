@@ -386,10 +386,9 @@ def _scan_patterns(
                 confidence = (
                     float(line.average_confidence) if line is not None else None
                 )
-                required = (
-                    pdef.minimum_confidence
-                    if pdef.minimum_confidence > 0
-                    else float(minimum_confidence)
+                required = max(
+                    float(minimum_confidence),
+                    float(pdef.minimum_confidence),
                 )
                 if confidence is not None and confidence < required:
                     continue
@@ -509,10 +508,10 @@ def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
     return _get_window_info(hwnd, skip_hwnd=skip_hwnd)
 
 
-def _linux_process_name_from_window(window_id: int) -> str:
-    """Resolve an X11 window's executable without adding a Python dependency."""
+def _linux_window_process(window_id: int) -> tuple[str, int | None]:
+    """Resolve an X11 window's executable and PID without a Python dependency."""
     if not IS_LINUX:
-        return ""
+        return "", None
     pid = None
     try:
         result = subprocess.run(
@@ -536,16 +535,97 @@ def _linux_process_name_from_window(window_id: int) -> str:
         except Exception:
             pass
     if pid is None or pid <= 0:
-        return ""
+        return "", None
     try:
-        return Path(os.readlink(f"/proc/{pid}/exe")).name[:120]
+        name = Path(os.readlink(f"/proc/{pid}/exe")).name[:120]
     except (OSError, ValueError):
         try:
-            return (Path("/proc") / str(pid) / "comm").read_text(
+            name = (Path("/proc") / str(pid) / "comm").read_text(
                 encoding="utf-8", errors="replace",
             ).strip()[:120]
         except OSError:
-            return ""
+            name = ""
+    return name, pid
+
+
+def _linux_process_name_from_window(window_id: int) -> str:
+    """Backward-compatible executable-name helper for one X11 window."""
+    return _linux_window_process(window_id)[0]
+
+
+def _get_linux_window_info(
+    window_id: int,
+    skip_hwnd: int | None = None,
+) -> dict | None:
+    """Refresh geometry and process identity for a specific X11 window ID."""
+    if not IS_LINUX:
+        return None
+    try:
+        window_id = int(window_id)
+    except (TypeError, ValueError):
+        return None
+    if not window_id or (skip_hwnd and window_id == skip_hwnd):
+        return None
+
+    title = ""
+    try:
+        result = subprocess.run(
+            ["xdotool", "getwindowname", str(window_id)],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            title = result.stdout.strip()
+        result = subprocess.run(
+            ["xdotool", "getwindowgeometry", str(window_id)],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            position = re.search(r"Position:\s*(-?\d+),(-?\d+)", result.stdout)
+            size = re.search(r"Geometry:\s*(\d+)x(\d+)", result.stdout)
+            if position and size:
+                process_name, process_id = _linux_window_process(window_id)
+                return {
+                    "left": int(position.group(1)),
+                    "top": int(position.group(2)),
+                    "width": int(size.group(1)),
+                    "height": int(size.group(2)),
+                    "title": title,
+                    "hwnd": window_id,
+                    "process_name": process_name,
+                    "process_id": process_id,
+                }
+    except Exception as exc:
+        logger.debug(f"xdotool window lookup failed: {type(exc).__name__}")
+
+    try:
+        result = subprocess.run(
+            ["wmctrl", "-l", "-G"], capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                parts = line.split(maxsplit=7)
+                if len(parts) < 8:
+                    continue
+                try:
+                    listed_id = int(parts[0], 16)
+                except ValueError:
+                    continue
+                if listed_id != window_id:
+                    continue
+                process_name, process_id = _linux_window_process(window_id)
+                return {
+                    "left": int(parts[2]),
+                    "top": int(parts[3]),
+                    "width": int(parts[4]),
+                    "height": int(parts[5]),
+                    "title": parts[7],
+                    "hwnd": window_id,
+                    "process_name": process_name,
+                    "process_id": process_id,
+                }
+    except Exception as exc:
+        logger.debug(f"wmctrl window lookup failed: {type(exc).__name__}")
+    return None
 
 
 def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | None:
@@ -555,83 +635,39 @@ def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | No
     if not IS_LINUX:
         return None
 
-    # 1. Try xdotool
+    window_id = None
     try:
-        res = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=2)
-        if res.returncode == 0:
-            window_id_str = res.stdout.strip()
-            if window_id_str.isdigit():
-                window_id = int(window_id_str)
-                if skip_hwnd and window_id == skip_hwnd:
-                    return None  # Don't capture ourselves
-
-                title = ""
-                res_title = subprocess.run(["xdotool", "getwindowname", window_id_str], capture_output=True, text=True, timeout=2)
-                if res_title.returncode == 0:
-                    title = res_title.stdout.strip()
-
-                res_geom = subprocess.run(["xdotool", "getwindowgeometry", window_id_str], capture_output=True, text=True, timeout=2)
-                if res_geom.returncode == 0:
-                    geom_out = res_geom.stdout
-                    pos_match = re.search(r"Position:\s*(-?\d+),(-?\d+)", geom_out)
-                    size_match = re.search(r"Geometry:\s*(\d+)x(\d+)", geom_out)
-                    if pos_match and size_match:
-                        left = int(pos_match.group(1))
-                        top = int(pos_match.group(2))
-                        w = int(size_match.group(1))
-                        h = int(size_match.group(2))
-                        return {
-                            "left": left,
-                            "top": top,
-                            "width": w,
-                            "height": h,
-                            "title": title,
-                            "hwnd": window_id,
-                            "process_name": _linux_process_name_from_window(window_id),
-                        }
+        result = subprocess.run(
+            ["xdotool", "getactivewindow"],
+            capture_output=True, text=True, timeout=2,
+        )
+        value = result.stdout.strip()
+        if result.returncode == 0 and value.isdigit():
+            window_id = int(value)
     except Exception as e:
         logger.debug(f"xdotool foreground lookup failed: {type(e).__name__}")
 
-    # 2. Fallback to wmctrl + xprop
-    try:
-        res_xprop = subprocess.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"], capture_output=True, text=True, timeout=2)
-        if res_xprop.returncode == 0:
-            m = re.search(r"_NET_ACTIVE_WINDOW\(WINDOW\):\s*window id #\s*(0x[0-9a-fA-F]+)", res_xprop.stdout)
-            if m:
-                active_hex = m.group(1)
-                active_dec = int(active_hex, 16)
-                if skip_hwnd and active_dec == skip_hwnd:
-                    return None
+    if window_id is None:
+        try:
+            result = subprocess.run(
+                ["xprop", "-root", "_NET_ACTIVE_WINDOW"],
+                capture_output=True, text=True, timeout=2,
+            )
+            match = re.search(
+                r"_NET_ACTIVE_WINDOW\(WINDOW\):\s*window id #\s*"
+                r"(0x[0-9a-fA-F]+)",
+                result.stdout,
+            )
+            if result.returncode == 0 and match:
+                window_id = int(match.group(1), 16)
+        except Exception as e:
+            logger.debug(f"xprop foreground lookup failed: {type(e).__name__}")
 
-                res_wmctrl = subprocess.run(["wmctrl", "-l", "-G"], capture_output=True, text=True, timeout=2)
-                if res_wmctrl.returncode == 0:
-                    for line in res_wmctrl.stdout.splitlines():
-                        parts = line.split(maxsplit=6)
-                        if len(parts) >= 7:
-                            line_hex = parts[0]
-                            try:
-                                line_dec = int(line_hex, 16)
-                            except ValueError:
-                                continue
-                            if line_dec == active_dec:
-                                left = int(parts[2])
-                                top = int(parts[3])
-                                w = int(parts[4])
-                                h = int(parts[5])
-                                title = parts[6]
-                                return {
-                                    "left": left,
-                                    "top": top,
-                                    "width": w,
-                                    "height": h,
-                                    "title": title,
-                                    "hwnd": active_dec,
-                                    "process_name": _linux_process_name_from_window(active_dec),
-                                }
-    except Exception as e:
-        logger.debug(f"wmctrl foreground lookup failed: {type(e).__name__}")
+    if window_id is not None:
+        info = _get_linux_window_info(window_id, skip_hwnd=skip_hwnd)
+        if info is not None:
+            return info
 
-    # Log non-blocking warning and fall back to full screen
     logger.debug("Linux active-window tools unavailable; full capture may be used")
     return None
 
@@ -705,6 +741,7 @@ def _grab_mss_frame(
     hwnd: int | None = None,
     scope: str = "virtual_desktop",
     process_name: str = "",
+    process_id: int | None = None,
 ) -> CapturedFrame | None:
     """Capture through mss and retain the exact desktop origin used."""
     if not PIL_OK:
@@ -723,6 +760,7 @@ def _grab_mss_frame(
                 hwnd=int(hwnd) if hwnd is not None else None,
                 scope=scope,
                 process_name=str(process_name or "")[:120],
+                process_id=int(process_id) if process_id is not None else None,
             )
     except Exception as exc:
         logger.debug(f"mss capture failed ({scope}): {type(exc).__name__}")
@@ -1104,6 +1142,10 @@ class ScreenReader:
                 "title": str(info.get("title", ""))[:60],
                 "hwnd": int(info["hwnd"]) if info.get("hwnd") is not None else None,
                 "process_name": str(info.get("process_name", ""))[:120],
+                "process_id": (
+                    int(info["process_id"])
+                    if info.get("process_id") is not None else None
+                ),
             }
         except (KeyError, TypeError, ValueError):
             return None
@@ -1120,6 +1162,19 @@ class ScreenReader:
             return None
         if self._system == "Windows":
             return _get_window_info(normalized["hwnd"], skip_hwnd=own_hwnd)
+        if self._system == "Linux":
+            refreshed = self._normalized_capture_target(
+                _get_linux_window_info(normalized["hwnd"], skip_hwnd=own_hwnd),
+            )
+            if (
+                refreshed is None
+                or normalized["process_id"] is None
+                or refreshed.get("process_id") != normalized["process_id"]
+                or refreshed["process_name"] != normalized["process_name"]
+                or refreshed["title"] != normalized["title"]
+            ):
+                return None
+            return refreshed
         return normalized
 
     def preserve_external_target(self) -> dict | None:
@@ -1153,6 +1208,7 @@ class ScreenReader:
             "title": previous.title,
             "hwnd": previous.hwnd,
             "process_name": previous.process_name,
+            "process_id": previous.process_id,
         })
 
     # ── 1 + 4. Focused capture ────────────────────────────────────────────────
@@ -1210,6 +1266,7 @@ class ScreenReader:
                     hwnd=hwnd,
                     scope="focused_window",
                     process_name=win.get("process_name", ""),
+                    process_id=win.get("process_id"),
                 )
                 if frame is not None:
                     self.last_monitor_status = "captured_focused_window"
@@ -1227,6 +1284,7 @@ class ScreenReader:
                             hwnd=hwnd,
                             scope="active_monitor",
                             process_name=win.get("process_name", ""),
+                            process_id=win.get("process_id"),
                         )
                         if frame is not None:
                             self.last_monitor_status = "captured_active_monitor"

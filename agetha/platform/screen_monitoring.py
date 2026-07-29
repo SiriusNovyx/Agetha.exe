@@ -18,11 +18,12 @@ class CapturedFrame:
     hwnd: int | None
     scope: str
     process_name: str = ""
+    process_id: int | None = None
 
     @property
     def key(self) -> tuple[object, ...]:
         if self.hwnd is not None:
-            return ("hwnd", int(self.hwnd), self.scope)
+            return ("hwnd", int(self.hwnd), self.process_id, self.scope)
         return ("fallback", self.scope, self.title.strip().casefold()[:120])
 
 
