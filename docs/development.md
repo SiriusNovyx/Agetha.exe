@@ -357,6 +357,9 @@ With the project venv:
 | Change | Command |
 |---|---|
 | Atomic storage/state recovery | `python -m unittest tests.test_atomic_persistence -v` |
+| Fast Mode snapshot/config transactions | `python -m unittest tests.test_fast_mode_profile -v` |
+| Fast Mode adaptive request/runtime behavior | `python -m unittest tests.test_fast_mode_runtime -v` |
+| Fast Mode dashboard and Medic integration | `python -m unittest tests.test_fast_mode_ui_medic -v` |
 | OCR backend/deep service | `python -m unittest tests.test_hybrid_ocr -v` |
 | Windows ARM/Medic architecture | `python -m unittest tests.test_medic_arch -v` |
 | Dashboard/memory/stats | `python -m unittest tests.test_phase1_qa -v` |
@@ -407,6 +410,15 @@ paths relevant to the change:
     window targets.
 12. Start on Linux with unavailable Windows/alpha/window-control features and
     verify graceful degradation.
+13. Enable Fast Mode from the dashboard, verify the 13 managed values and local
+    snapshot, restart, then disable it and compare the restored values.
+14. While Fast Mode is active, manually change one managed and one unmanaged
+    setting; restart, confirm the forced value is repaired, then confirm both new
+    preferences survive restoration as documented.
+15. Run Medic against active, restoration-pending, and deliberately corrupt
+    temporary snapshots; confirm it reports status and asks before mutation.
+16. Observe an unchanged Fast ambient scan and confirm no provider request is
+    made; then produce a meaningful OCR event and confirm one bounded request.
 
 Record which steps were actually performed and the platform used.
 
@@ -421,6 +433,7 @@ Record which steps were actually performed and the platform used.
 | Voice shutdown | Listener/recognition workers are daemon threads and stop by event/timeouts rather than a blocking UI-thread join. Keep operations bounded. |
 | Screen own-window handle | Own-window exclusion is best when the native handle is cached/passed from Tk; avoid adding worker-side Tk calls to resolve it. |
 | Dashboard | Multiple dashboards may open. Its tracked callback list is cleared on close but can grow during a long session; keep new pollers sparse. |
+| Fast Mode snapshot permissions | POSIX permission bits are forced to user read/write. On Windows, the file inherits the current user's directory ACL because portable `chmod` cannot create a new Windows ACL. Reparse-point targets are refused. |
 | Web fetch | Bounded but currently does not reject private/loopback HTTP targets at the transport layer; retain its disabled default and Caution confirmation. |
 | Glitch overlay | Short-lived callbacks rely on Toplevel destruction; use explicit tracked IDs for any new persistent loop. |
 | Dependencies | Voice/DnD packages are installed by current `requirements.txt` even though the features are config-optional; avoid describing package installation and feature enablement as the same thing. |

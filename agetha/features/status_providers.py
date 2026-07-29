@@ -213,3 +213,9 @@ def pop_observations_for_prompt() -> str:
     lines += [f"  - {note}" for note in notes]
     lines.append("  React in character if it fits; never claim deeper access than this.")
     return "\n".join(lines)
+
+
+def has_pending_observations() -> bool:
+    """Return whether an ambient status event is waiting, without consuming it."""
+    with _lock:
+        return bool(_pending) and _enabled() and not _paused

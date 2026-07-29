@@ -2,7 +2,7 @@
 
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
-**Version:** Overhaul v5.5.1 · **Medic_Checker:** v5.5.1 · **Original author:** @tomiszivacs
+**Version:** Overhaul v5.5.5 · **Medic_Checker:** v5.5.5 · **Original author:** @tomiszivacs
 
 ---
 
@@ -147,7 +147,11 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
 | **Ollama** | `USE_LOCAL_AI = yes` | *(none — local)* |
 
 - **Token %** — when using Groq, the input placeholder shows `key 1/3 • 87% tokens left` (estimated daily budget per key); status bar shows the same after each reply
-- **FASTER_MODE** — `FASTER_MODE = yes` uses shorter prompts (less personality, fewer tokens, cheaper). Title bar shows `FAST MODE`
+- **Fast Mode 2.0** — `FASTER_MODE = yes` activates a reversible performance
+  profile plus request-aware prompt budgets. Original managed values are kept in
+  `memory/fast_mode_snapshot.json` and restored when Fast Mode is disabled.
+  Unchanged ambient scans are handled locally instead of spending an AI request.
+  Provider, permission, privacy, and security settings are never changed.
 
 ---
 
@@ -160,23 +164,33 @@ Agetha_Mod/
 ├── config.txt              # User settings only — no API keys
 ├── .env.example            # API key template
 ├── requirements.txt
-├── Medic_Checker.ps1       # Startup health check & launcher (v4.0)
+├── Medic_Checker.ps1       # Startup health check & launcher (v5.5.5)
 ├── Medic_Checker.bat
 ├── Run_Agetha_Admin.ps1
 ├── assets/                 # GIFs, fonts, icons
 ├── memory/                 # soul.md, episodic, stats, notepad
-├── tests/                  # Phase QA test suites
+├── tests/                  # 15 automated suites (full index in docs/module_reference.md)
+│   ├── test_atomic_persistence.py
+│   ├── test_fast_mode_profile.py
+│   ├── test_fast_mode_runtime.py
+│   ├── test_fast_mode_ui_medic.py
+│   ├── test_hybrid_ocr.py
+│   ├── test_medic_arch.py
 │   ├── test_phase1_qa.py
 │   ├── test_phase2_tts.py
 │   ├── test_phase3_web_rag.py
 │   ├── test_phase3b_glitch.py
 │   ├── test_phase4_realism.py
-│   └── test_phase5_v4.py
+│   ├── test_phase5_v4.py
+│   ├── test_phase6_v5.py
+│   ├── test_screen_monitoring_reliability.py
+│   └── test_time_ui_effects.py
 └── agetha/                 # Python package
     ├── app_config.py       # config.txt loader & typed settings
     ├── utils.py            # logging, paths, .env loader
     ├── core/               # AI brain, memory, companion stats
     │   ├── ai_engine.py
+    │   ├── fast_mode_profile.py # reversible Fast Mode snapshot/recovery
     │   ├── memory_system.py
     │   ├── memory_search.py
     │   ├── companion_stats.py
@@ -351,7 +365,10 @@ UNLIMITED_OCR_API_KEY=
 - Groq keys: [console.groq.com](https://console.groq.com)
 - OpenRouter keys: [openrouter.ai/keys](https://openrouter.ai/keys)
 
-`.env` overrides any matching key in `config.txt`. Never commit `.env` to git (already in `.gitignore`).
+`.env` overrides matching keys in `config.txt`, except `FASTER_MODE`, whose
+disk-backed switch remains authoritative. A validated active Fast Mode profile
+also reapplies its 13 approved managed values afterward. Fast Mode never edits
+`.env`. Never commit `.env` to git (already in `.gitignore`).
 
 ### config.txt
 
@@ -365,7 +382,7 @@ All **non-secret** settings live in `config.txt` and are loaded by `app_config.p
 | `ENABLE_GROQ` | `yes` | Enable Groq (default cloud backend) |
 | `ENABLE_OPENROUTER` | `no` | Use OpenRouter instead of Groq |
 | `OPENROUTER_MODEL` | see `config.txt` | OpenRouter model slug |
-| `FASTER_MODE` | `no` | Shorter prompts, less personality, cheaper |
+| `FASTER_MODE` | `no` | Reversible AI/context/polling/OCR performance profile; restores prior managed values when disabled |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model name |
 | `LOCAL_AI_MODEL` | *(empty)* | Ollama model (`ollama list`) |
 | `LOCAL_AI_TIMEOUT` | `30` | Ollama request timeout (seconds) |
@@ -545,7 +562,7 @@ Click the **📊** button in the title bar (beside minimize) to open the **Dashb
 | `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
 | `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
 | `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
-| `APP_VERSION` | `5.5.1` | Shown in window title |
+| `APP_VERSION` | `5.5.5` | Shown in window title |
 | `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
 | `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
 | `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |
@@ -627,7 +644,7 @@ Run **Medic_Checker** after enabling — it installs the package for `VOICE_TTS_
 
 ---
 
-## Medic_Checker v5.5.1 (PowerShell)
+## Medic_Checker v5.5.5 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
@@ -706,6 +723,27 @@ command_handlers.py → Execute action + update UI
 ---
 
 ## Changelog (Overhaul)
+
+### v5.5.5 — Reversible Fast Mode 2.0
+
+- Atomic, schema-versioned Fast Mode snapshots preserve only the approved
+  non-secret settings and restore them without replacing unrelated config.
+- Startup reconciliation repairs managed drift idempotently, quarantines an
+  invalid inactive snapshot, and fails closed when an active snapshot is invalid.
+- Manual third-value edits are preserved as the post-Fast preference; comments,
+  ordering, blank lines, unknown keys, and unmanaged changes survive every write.
+- The dashboard uses one coordinated activation/restoration transaction and
+  identifies managed fields. Medic Checker reports profile health and requires
+  confirmation before recovery changes the configuration. If reconciliation is
+  declined, Medic still launches Agetha but sends a one-launch signal that skips
+  automatic Fast Mode reconciliation, so the declined change remains pending.
+- Adaptive request profiles keep user/command/ambient prompts compact while
+  allowing bounded tool and explicit deep-analysis requests to use the saved
+  pre-Fast output ceiling and a complete-analysis segment rule. Their final
+  answer stays available for follow-up while raw tool/OCR payloads are omitted
+  from retained history. Groq, OpenRouter, and Ollama retain provider parity.
+- Unchanged Fast Mode ambient scans now skip the provider call locally; meaningful
+  OCR events and pending presence observations still reach the AI.
 
 ### v5.5.1 — Reliability, Windows ARM, high-DPI UI, and lifecycle polish
 

@@ -4,7 +4,7 @@ Start here when changing the repository. These documents summarize the
 project-owned source tree so routine work does not require rereading
 `main.py`, `ai_engine.py`, or every supporting module.
 
-Last code-map audit: 2026-07-28.
+Last code-map audit: 2026-07-29.
 
 ## Read by task
 
@@ -21,7 +21,7 @@ Last code-map audit: 2026-07-28.
 | Fix Windows ARM or launcher behavior | [Development guide](development.md#launcher-and-windows-arm) | `Medic_Checker.ps1`, `medic_helper.py`, launcher tests |
 | Choose and run tests | [Development guide — test map](development.md#test-map) | The closest `tests/test_*.py` file |
 | Configure explicit Unlimited-OCR | [Unlimited-OCR service guide](unlimited_ocr_server.md) | `unlimited_ocr_backend.py` |
-| Review the current release | [v5.5.1 release notes](releases/v5.5.1.md) | The linked implementation and test suites |
+| Review the current release | [v5.5.5 release notes](releases/v5.5.5.md) | The linked implementation and test suites |
 
 ## Source-of-truth hierarchy
 

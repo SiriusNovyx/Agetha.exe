@@ -182,17 +182,26 @@ def mark_wake_recall() -> None:
     global _pending_recall
     try:
         dreams = get_recent_dreams(limit=1)
-        _pending_recall = dreams[0] if dreams else None
+        record = dreams[0] if dreams else None
     except Exception:
-        _pending_recall = None
+        record = None
+    with _lock:
+        _pending_recall = record
+
+
+def has_pending_wake_recall() -> bool:
+    """Return whether a one-shot dream recall is armed, without consuming it."""
+    with _lock:
+        return _pending_recall is not None
 
 
 def pop_wake_recall_for_prompt() -> str:
     """Return the armed dream recall block once, then clear it. Never raises."""
     global _pending_recall
     try:
-        record = _pending_recall
-        _pending_recall = None
+        with _lock:
+            record = _pending_recall
+            _pending_recall = None
         if not record:
             return ""
         text = str(record.get("text", "")).strip()
@@ -205,5 +214,6 @@ def pop_wake_recall_for_prompt() -> str:
             f"- {text[:400]}"
         )
     except Exception:
-        _pending_recall = None
+        with _lock:
+            _pending_recall = None
         return ""

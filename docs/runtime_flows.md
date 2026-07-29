@@ -23,12 +23,15 @@ callbacks must retain an ID and be canceled by their owner.
 sequenceDiagram
     participant Entry as __main__
     participant Config as app_config
+    participant Fast as fast_mode_profile
     participant Tk as Tk main thread
     participant Init as init worker
     participant GIF as GIF worker
 
-    Entry->>Config: _early_config_check()
-    Config-->>Entry: defaults + config.txt + .env secrets
+    Entry->>Config: ensure config exists
+    Entry->>Fast: reconcile before runtime imports cache settings
+    Fast-->>Config: validated forced overlay or restored config
+    Config-->>Entry: defaults + config.txt + .env + cached Fast overlay
     Entry->>Entry: Windows AUMID/shortcut, if supported
     Entry->>Tk: CompanionApp()
     Tk->>Tk: DPI awareness, scale, shell widgets
@@ -44,9 +47,10 @@ sequenceDiagram
 
 Detailed sequence:
 
-1. `_early_config_check()` ensures `config.txt` exists, reloads typed settings,
-   refreshes compatibility timing constants, and emits a one-time setup hint if
-   no provider is usable.
+1. A guarded bootstrap ensures `config.txt` exists and reconciles any Fast Mode
+   snapshot before `AIEngine`/legacy utility imports cache settings. The normal
+   `_early_config_check()` then reloads typed settings, refreshes compatibility
+   constants, and emits a one-time setup hint if no provider is usable.
 2. On Windows, notification identity and the Start Menu shortcut are established
    on a best-effort basis.
 3. `CompanionApp.__init__()` establishes DPI awareness before creating Tk,
@@ -132,9 +136,12 @@ deep sleep. Otherwise the poll lifecycle is:
    deduplication.
 6. Excluded/Agetha-focused/unchanged/empty states become compact status markers.
    Only new ambient pattern events are attached, avoiding repeated reactions.
+   In Fast Mode, a no-event state returns locally without a provider request
+   unless a one-shot dream or status observation is pending.
 7. `redact_for_external_context()` removes likely secrets before provider use.
-8. The AI turn uses an empty user message, so the prompt explicitly identifies
-   it as ambient.
+8. A meaningful Fast Mode ambient turn uses the `fast_ambient` profile with no
+   chat history and a tiny event-oriented budget. Normal mode retains the full
+   ambient behavior.
 9. Dispatch may perform attention snap for configured ambient moods; deep OCR is
    rejected before any confirmation dialog or capture.
 10. After the response/speech completes, `_reschedule_screen_poll()` stores the
@@ -216,6 +223,23 @@ All context has configured count/character limits. OCR, retrieved pages, stored
 memory, and documents are data, not instructions or authorization. Date/time
 uses `core.time_context` and an injectable clock, so both direct and ambient
 prompts behave deterministically in tests.
+
+Fast Mode adds request profiles without changing that trust boundary:
+
+| Profile | Purpose | History ceiling | Output ceiling |
+|---|---|---:|---:|
+| `fast_ambient` | New screen/presence event | 0 turns | 96 |
+| `fast_command` | Internal or command follow-up | 2 turns | 180 |
+| `fast_user` | Normal conversation | 3 turns | 220 |
+| `fast_tool_result` | Document/web/memory/tool result | relevant bounded history | saved pre-Fast ceiling |
+| `deep_analysis` | Explicit deep OCR | relevant bounded history | saved pre-Fast ceiling |
+
+Profile ceilings are internal bounds; the first three remain under the forced
+global ceiling. Tool/deep exceptions use cached validated snapshot metadata and
+never re-read credentials or the snapshot for every request. Tool/deep prompts
+permit complete concise analysis rather than the quick-reply word limit. Their
+final answer is retained for follow-up under a synthetic marker; raw source and
+OCR payloads are not copied into conversation history.
 
 ## Provider and parse flow
 

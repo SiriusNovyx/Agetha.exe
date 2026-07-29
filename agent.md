@@ -3,7 +3,7 @@
 Guidance for humans and coding agents working on this fork.  
 **Priorities (locked):** (1) realism — she feels like a living process on this PC; (2) safety — Command Guard / confirmations / no real harm. Spectacle is optional flavor.
 
-**Version focus:** Overhaul v5.5.1 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+**Version focus:** Overhaul v5.5.5 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
 ---
 
@@ -182,7 +182,7 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 | `ENABLE_GLITCH_EFFECTS` | no (safe default) | Cosmetic only |
 | `ENABLE_WEB_RAG` | no (safe default) | Network |
 | `ENABLE_LONGTERM_MEMORY` | yes | BM25 + session recap archive |
-| `FASTER_MODE` | user | Shorter prompts / less personality |
+| `FASTER_MODE` | no | Reversible 13-setting performance profile plus adaptive request budgets; never add safety/provider/privacy keys |
 
 ---
 

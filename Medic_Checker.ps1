@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v5.5.1)
+  Agetha startup health check and launcher (Overhaul Edition v5.5.5)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
@@ -20,6 +20,7 @@ $script:PythonVersionInfo = $null
 $script:PythonCmd = $null
 $script:PreferredPythonExe = $null
 $script:RequireX64Python = $false
+$script:SkipFastModeReconcileForLaunch = $false
 
 function Get-ConfigValue {
     param(
@@ -39,9 +40,9 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.5.1'
+    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.5.5'
     if ($v) { return $v }
-    return '5.5.1'
+    return '5.5.5'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -59,7 +60,7 @@ try {
     $script:AppVersion = Get-AppVersion
     $Host.UI.RawUI.WindowTitle = "Agetha.exe  -  Health Check  |  v$script:AppVersion"
 } catch {
-    $script:AppVersion = '5.5.1'
+    $script:AppVersion = '5.5.5'
 }
 
 function Test-GitHubUpdate {
@@ -134,6 +135,140 @@ function Invoke-PythonHelper {
     $output = & $PythonExe $helper $Command 2>$null
     if ($LASTEXITCODE -ne 0) { return $null }
     return ($output | Select-Object -Last 1).ToString().Trim()
+}
+
+function Get-FastModeHealth {
+    param([Parameter(Mandatory)][string]$Command)
+    try {
+        $raw = Invoke-PythonHelper -PythonExe $script:VenvPython -Command $Command
+        if (-not $raw) { return $null }
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Write-FastModeHealth {
+    param([Parameter(Mandatory)]$Health)
+    $count = [int]$Health.managed_count
+    $changed = @($Health.changed_keys).Count
+    $conflicts = [int]$Health.conflict_count
+    switch -Regex ([string]$Health.status) {
+        '^inactive_clean$' {
+            Write-Info 'Fast Mode: disabled.'
+        }
+        '^active_valid$' {
+            Write-Ok "Fast Mode: active - $count settings temporarily managed."
+        }
+        '^active_repaired$' {
+            Write-Ok "Fast Mode: active - repaired $changed drifted setting(s)."
+        }
+        '^activated$' {
+            Write-Ok "Fast Mode: activated - $count settings temporarily managed."
+        }
+        '^restored$' {
+            Write-Ok 'Fast Mode: saved pre-Fast-Mode settings restored.'
+        }
+        '^restore_conflict_preserved$' {
+            Write-Ok "Fast Mode: restored; preserved $conflicts intentional manual edit(s)."
+        }
+        '^restored_snapshot_retained$' {
+            Write-Warn 'Fast Mode: settings restored, but the recovery snapshot could not be removed.'
+            Write-Info 'Agetha can launch safely. Re-run Medic Checker later to retry snapshot cleanup.'
+        }
+        '^cleanup_pending$' {
+            Write-Warn 'Fast Mode: disabled; recovery snapshot cleanup is still pending.'
+            Write-Info 'Agetha can launch safely and will retry cleanup during startup.'
+        }
+        '^cleanup_completed$' {
+            Write-Ok 'Fast Mode: completed recovery snapshot cleanup.'
+        }
+        '^(activation_required|snapshot_missing)$' {
+            Write-Warn 'Fast Mode: activation pending - config says yes but no active profile is applied.'
+        }
+        '^(active_drift|repair_required)$' {
+            Write-Warn 'Fast Mode: managed settings drifted and can be safely repaired.'
+        }
+        '^(restore_required|restoration_pending)$' {
+            Write-Warn 'Fast Mode: restoration pending.'
+        }
+        '^(snapshot_invalid|invalid_active)$' {
+            Write-Warn 'Fast Mode: snapshot invalid - recovery required; no settings were changed.'
+            Write-Info 'Agetha remains launchable with its currently parsed settings; Fast Mode changes stay fail-closed.'
+        }
+        '^(config_write_failed|snapshot_write_failed|snapshot_cleanup_failed|invalid_updates|unavailable)$' {
+            Write-Warn "Fast Mode: $($Health.status) - recovery state was preserved."
+        }
+        default {
+            if ($Health.active) {
+                Write-Warn "Fast Mode: active with status '$($Health.status)'."
+            } else {
+                Write-Info "Fast Mode: $($Health.status)."
+            }
+        }
+    }
+}
+
+function Skip-FastModeReconcileForLaunch {
+    param([Parameter(Mandatory)][string]$Reason)
+    $script:SkipFastModeReconcileForLaunch = $true
+    Write-Warn $Reason
+    Write-Info 'Agetha will still launch, but Fast Mode reconciliation is skipped for this launch only.'
+    Write-Info 'Re-run Medic Checker later to apply the pending Fast Mode action.'
+}
+
+function Test-FastModeResolutionRequired {
+    param([string]$Status)
+    return $Status -match '^(activation_required|snapshot_missing|active_drift|repair_required|restore_required|restoration_pending)$'
+}
+
+function Invoke-FastModeHealthCheck {
+    $health = Get-FastModeHealth -Command 'fast_mode_status'
+    if (-not $health) {
+        Write-Warn 'Fast Mode: status unavailable (Agetha can still start).'
+        return
+    }
+    Write-FastModeHealth -Health $health
+
+    $status = [string]$health.status
+    if ($status -match '^(activation_required|snapshot_missing|active_drift|repair_required)$') {
+        $answer = Read-Host 'Apply/repair the reversible Fast Mode profile now? [Y/N]'
+        if ($answer -match '^(?i)y(es)?$') {
+            $result = Get-FastModeHealth -Command 'fast_mode_reconcile'
+            if ($result) {
+                Write-FastModeHealth -Health $result
+                if (((-not $result.ok) -and $result.status -ne 'restored_snapshot_retained') -or (Test-FastModeResolutionRequired -Status ([string]$result.status))) {
+                    Write-Warn "Fast Mode reconciliation did not complete ($($result.status))."
+                    Write-Info 'Agetha will still launch and may retry the authorized reconciliation during startup.'
+                }
+            } else {
+                Write-Warn 'Fast Mode reconciliation failed; config and recovery state were preserved.'
+                Write-Info 'Agetha will still launch and may retry the authorized reconciliation during startup.'
+            }
+        } else {
+            Skip-FastModeReconcileForLaunch -Reason 'Fast Mode activation or repair was declined; no profile changes were made by Medic.'
+        }
+        return
+    }
+
+    if ($status -match '^(restore_required|restoration_pending)$') {
+        $answer = Read-Host 'Restore pre-Fast-Mode settings now? [Y/N]'
+        if ($answer -match '^(?i)y(es)?$') {
+            $result = Get-FastModeHealth -Command 'fast_mode_restore'
+            if ($result) {
+                Write-FastModeHealth -Health $result
+                if (((-not $result.ok) -and $result.status -ne 'restored_snapshot_retained') -or (Test-FastModeResolutionRequired -Status ([string]$result.status))) {
+                    Write-Warn "Fast Mode restoration did not complete ($($result.status))."
+                    Write-Info 'Agetha will still launch and may retry the authorized restoration during startup.'
+                }
+            } else {
+                Write-Warn 'Fast Mode restoration failed; the recovery snapshot was retained.'
+                Write-Info 'Agetha will still launch and may retry the authorized restoration during startup.'
+            }
+        } else {
+            Skip-FastModeReconcileForLaunch -Reason 'Pre-Fast-Mode restoration was declined; no recovery changes were made by Medic.'
+        }
+    }
 }
 
 function Get-PythonArchitectureInfo {
@@ -1015,6 +1150,7 @@ function Invoke-StandardChecks {
     } else {
         Write-Ok 'memory\ exists.'
     }
+    Invoke-FastModeHealthCheck
     if (Test-Path -LiteralPath (Join-Path $memoryDir 'soul.md')) {
         Write-Ok 'memory\soul.md present.'
     } else {
@@ -1169,7 +1305,7 @@ function Invoke-StandardChecks {
         'agetha\app_config.py', 'agetha\utils.py',
         'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
         'agetha\core\rhythm.py', 'agetha\core\dreams.py',
-        'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py',
+        'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py', 'agetha\core\fast_mode_profile.py',
         'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
         'agetha\platform\screen_reader.py', 'agetha\platform\screen_monitoring.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
         'agetha\platform\ocr_backends\__init__.py', 'agetha\platform\ocr_backends\base.py', 'agetha\platform\ocr_backends\tesseract_backend.py', 'agetha\platform\ocr_backends\unlimited_ocr_backend.py',
@@ -1193,7 +1329,7 @@ function Invoke-StandardChecks {
     }
     $featStatus = Invoke-PythonHelper -PythonExe $script:VenvPython -Command 'features'
     if ($featStatus -eq 'FEATURE_OK') {
-        Write-Ok 'Phase 1-6 modules import cleanly (memory_search, companion_stats, rhythm, dreams, tasks, emotion_engine, emotional_history, audit_log, autostart, win_integration, status_providers, tray_scaffold, dashboard, tts_player, web_rag, glitch_overlay, virus_trivia, w95_window).'
+        Write-Ok 'Core modules import cleanly (including Fast Mode profile, memory, realism, OCR, dashboard, tray, TTS, and web helpers).'
     } elseif ($featStatus -match '^FEATURE_FAIL:') {
         Write-Warn "Extension module import issue: $($featStatus.Substring(12))"
     }
@@ -1229,7 +1365,7 @@ $coreFiles = @(
     'agetha\app_config.py', 'agetha\utils.py',
     'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
     'agetha\core\rhythm.py', 'agetha\core\dreams.py',
-    'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py',
+    'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py', 'agetha\core\fast_mode_profile.py',
     'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
     'agetha\platform\screen_reader.py', 'agetha\platform\screen_monitoring.py', 'agetha\platform\window_control.py', 'agetha\platform\voice_input.py',
     'agetha\platform\ocr_backends\__init__.py', 'agetha\platform\ocr_backends\base.py', 'agetha\platform\ocr_backends\tesseract_backend.py', 'agetha\platform\ocr_backends\unlimited_ocr_backend.py',
@@ -1245,7 +1381,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (v5.5.1 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (v5.5.5 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut
@@ -1275,8 +1411,24 @@ Write-Head '|  All checks complete.  Launching Agetha...                 |'
 Write-Head '+============================================================+'
 Write-Host ''
 
-& $script:VenvPython (Join-Path $Script:Root 'main.py')
-$exitCode = $LASTEXITCODE
+$previousFastModeSkip = [Environment]::GetEnvironmentVariable('AGETHA_SKIP_FAST_MODE_RECONCILE', 'Process')
+$hadPreviousFastModeSkip = $null -ne $previousFastModeSkip
+if ($script:SkipFastModeReconcileForLaunch) {
+    $env:AGETHA_SKIP_FAST_MODE_RECONCILE = '1'
+}
+$exitCode = 1
+try {
+    & $script:VenvPython (Join-Path $Script:Root 'main.py')
+    $exitCode = $LASTEXITCODE
+} finally {
+    if ($script:SkipFastModeReconcileForLaunch) {
+        if ($hadPreviousFastModeSkip) {
+            $env:AGETHA_SKIP_FAST_MODE_RECONCILE = $previousFastModeSkip
+        } else {
+            Remove-Item -LiteralPath 'Env:AGETHA_SKIP_FAST_MODE_RECONCILE' -ErrorAction SilentlyContinue
+        }
+    }
+}
 if ($exitCode -ne 0) {
     Write-Host ''
     Write-Line "  [----]  Agetha exited with code: $exitCode" 'Red'

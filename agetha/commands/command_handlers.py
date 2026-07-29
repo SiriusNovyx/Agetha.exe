@@ -371,7 +371,11 @@ def handle_get_clipboard(app, response, ctx):
 
     def _requery():
         app.root.after(0, lambda: app._set_state(app.STATE_THINKING))
-        follow = app._ai_query("", doc_content=f"Clipboard contents:\n{content[:500]}")
+        follow = app._ai_query(
+            "",
+            doc_content=f"Clipboard contents:\n{content[:500]}",
+            request_profile="fast_tool_result",
+        )
         if follow:
             dispatch(app, follow, ctx.user_message)
 
@@ -459,7 +463,9 @@ def handle_read_document(app, response, ctx):
     doc_content = app._ai.read_document(doc_path) if app._ai and doc_path else "[no path]"
 
     def _requery():
-        follow = app._ai_query("", doc_content=doc_content)
+        follow = app._ai_query(
+            "", doc_content=doc_content, request_profile="fast_tool_result",
+        )
         if follow:
             dispatch(app, follow, ctx.user_message)
 
@@ -523,7 +529,10 @@ def handle_monitor_process(app, response, ctx):
         status = "running" if running else "not running"
         color = "#44cc66" if running else "#ffaa00"
         app.root.after(0, lambda: app._subtitle.show_message(f"{process_name}: {status}", color))
-        follow = app._ai_query(f"[SYSTEM] Process '{process_name}' is {status}.")
+        follow = app._ai_query(
+            f"[SYSTEM] Process '{process_name}' is {status}.",
+            request_profile="fast_command",
+        )
         if follow:
             dispatch(app, follow, ctx.user_message)
 
@@ -554,7 +563,10 @@ def handle_show_dialog(app, response, ctx):
             ok = guard._native_confirm(dlg_title, dlg_msg, "info", "yesno", default_no=True)
             if ok and app._ai:
                 def _requery_yes():
-                    follow = app._ai_query(f"[SYSTEM] User answered YES to: {dlg_msg[:120]}")
+                    follow = app._ai_query(
+                        f"[SYSTEM] User answered YES to: {dlg_msg[:120]}",
+                        request_profile="fast_command",
+                    )
                     if follow:
                         dispatch(app, follow, ctx.user_message)
                 threading.Thread(target=_requery_yes, daemon=True).start()
@@ -718,7 +730,11 @@ def handle_system_info(app, response, ctx):
     info = system_info()
 
     def _requery():
-        follow = app._ai_query("", doc_content=f"System info:\n{info}")
+        follow = app._ai_query(
+            "",
+            doc_content=f"System info:\n{info}",
+            request_profile="fast_tool_result",
+        )
         if follow:
             dispatch(app, follow, ctx.user_message)
 
@@ -807,7 +823,9 @@ def handle_set_reminder(app, response, ctx):
     def _remind(msg):
         app.root.after(0, lambda: app._subtitle.show_message(msg, "#ff6600"))
         if app._ai:
-            follow = app._ai_query(f"[REMINDER] {msg}")
+            follow = app._ai_query(
+                f"[REMINDER] {msg}", request_profile="fast_command",
+            )
             if follow:
                 dispatch(app, follow, None)
 
@@ -875,6 +893,7 @@ def handle_search_memory(app, response, ctx):
                 ctx.user_message or "",
                 memory_search_context=memory_context,
                 suppress_search_memory=True,
+                request_profile="fast_tool_result",
             )
             if follow:
                 app._dispatch_response(follow, ctx.user_message)
@@ -901,6 +920,7 @@ def handle_search_memory(app, response, ctx):
             ctx.user_message or "",
             memory_search_context=memory_context,
             suppress_search_memory=True,
+            request_profile="fast_tool_result",
         )
         if follow:
             app._dispatch_response(follow, ctx.user_message)
@@ -924,7 +944,9 @@ def _clear_web_rag_pending(app) -> None:
 def _requery_with_web_context(app, ctx, web_context: str) -> None:
     _set_web_rag_pending(app, web_context, suppress=True)
     try:
-        follow = app._ai_query(ctx.user_message or "")
+        follow = app._ai_query(
+            ctx.user_message or "", request_profile="fast_tool_result",
+        )
         if follow:
             app._dispatch_response(follow, ctx.user_message)
     finally:
@@ -1054,6 +1076,7 @@ def handle_read_notepad(app, response, ctx):
             follow = app._ai_query(
                 ctx.user_message or "",
                 suppress_search_memory=True,
+                request_profile="fast_tool_result",
             )
             if follow:
                 app._dispatch_response(follow, ctx.user_message)
@@ -1381,7 +1404,11 @@ def handle_request_screen_read(app, response, ctx):
     app._last_screen_text = screen_text
 
     def _requery():
-        follow = app._ai_query(ctx.user_message or "", screen_context=screen_text)
+        follow = app._ai_query(
+            ctx.user_message or "",
+            screen_context=screen_text,
+            request_profile="fast_tool_result",
+        )
         if follow:
             app._dispatch_response(follow, ctx.user_message)
 
@@ -1442,6 +1469,7 @@ def handle_analyze_screen_deep(app, response, ctx):
             screen_context="",
             doc_content=wrapped,
             reserved_ai_slot=True,
+            request_profile="deep_analysis",
         )
         follow = _block_recursive_deep_ocr(follow)
         if follow:

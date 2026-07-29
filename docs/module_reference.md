@@ -39,7 +39,7 @@ then launch the app. Its architecture selection must stay synchronized with
 | File | Responsibility and important symbols |
 |---|---|
 | [agetha/__init__.py](../agetha/__init__.py) | Package marker and package `__version__`. Do not bump it merely to mirror an unrelated upstream release. |
-| [agetha/app_config.py](../agetha/app_config.py) | Authoritative `DEFAULT_CONFIG`, parser diagnostics, `AppSettings`, `get_settings()`, `ensure_config_file()`, `patch_config_keys()`, secret filtering, type validation, and clamps. |
+| [agetha/app_config.py](../agetha/app_config.py) | Authoritative `DEFAULT_CONFIG`, `FAST_MODE_OVERRIDES`, parser diagnostics, `AppSettings`, cached runtime overlays, structural/atomic config updates, secret filtering, type validation, and clamps. |
 | [agetha/utils.py](../agetha/utils.py) | Logging, `write_atomic()`, icon/native dialog helpers, simple env loading, compatibility config creation, platform flags, and refreshable legacy timing/window constants. |
 
 ### Configuration symbols
@@ -73,6 +73,7 @@ model output.
 |---|---|
 | [core/__init__.py](../agetha/core/__init__.py) | Package marker only; callers import concrete modules. |
 | [ai_engine.py](../agetha/core/ai_engine.py) | `_LocalOllamaClient`, `_OpenRouterClient`, `AIEngine`, `VALID_MOODS`, `VALID_COMMANDS`, system prompts/few shots, screen-context wrapper, provider/retry flow, `_build_prompt()`, `_parse()`, `query()`, and `query_streaming()`. |
+| [fast_mode_profile.py](../agetha/core/fast_mode_profile.py) | Schema/profile-versioned Fast Mode snapshot validation, activation/restoration transactions, startup drift repair, conflict preservation, health inspection, and cached original/forced-value access. |
 | [time_context.py](../agetha/core/time_context.py) | `local_now(clock)` and `build_datetime_context(...)`; injectable local clock, weekday/ISO date, optional seconds, timezone name fallback, and UTC-offset formatting without network calls. |
 | [memory_system.py](../agetha/core/memory_system.py) | Static soul plus bounded episodic memory. `load_soul()`, `log_memory()`, recent/selective clear/display/stat/prompt helpers, and `build_system_prompt()`. Uses a lock and atomic rewrites. |
 | [memory_search.py](../agetha/core/memory_search.py) | Append-only long-term JSONL, mtime/size cache, pure-Python BM25-like search, one-shot session recap, and untrusted bounded prompt formatting. |
@@ -179,13 +180,16 @@ long-lived effects should use the explicit tracked-controller pattern.
 
 ## Tests
 
-The current suite contains 324 tests across 12 files. Counts are a snapshot, not
+The current suite contains 390 tests across 15 files. Counts are a snapshot, not
 a version contract; use the coverage descriptions to select a focused suite.
 
 | File | Current count | Coverage |
 |---|---:|---|
 | [tests/__init__.py](../tests/__init__.py) | - | Test package marker. |
 | [test_atomic_persistence.py](../tests/test_atomic_persistence.py) | 9 | Atomic replacement/failure cleanup and corrupt-state repair/call-site use. |
+| [test_fast_mode_profile.py](../tests/test_fast_mode_profile.py) | 32 | Disabled read-only startup, activation/restoration transactions, durable cleanup-only retry, crash/cache recovery, drift/CAS preference resets, structural preservation, `.env` isolation, migration, validation, permissions, and path safety. |
+| [test_fast_mode_runtime.py](../tests/test_fast_mode_runtime.py) | 16 | Adaptive history/output profiles, complete tool/deep analysis with payload-safe retained answers, provider ceilings, bounded ambient events, command-interface parity, Ollama options, pending presence context, and unchanged-ambient local skip. |
+| [test_fast_mode_ui_medic.py](../tests/test_fast_mode_ui_medic.py) | 18 | Managed dashboard state, fresh-state Apply consent, secret-free Medic JSON/conflict counts, cleanup-state wording, one-launch declined-action skips, and Medic required-file coverage. |
 | [test_hybrid_ocr.py](../tests/test_hybrid_ocr.py) | 35 | OCR settings, Tesseract coordinates/confidence, Unlimited client security/errors/temp cleanup, deep integration and ambient block. |
 | [test_medic_arch.py](../tests/test_medic_arch.py) | 6 | Architecture aliases, build-platform priority, ARM64-native/x64-Prism distinction, JSON output. |
 | [test_phase1_qa.py](../tests/test_phase1_qa.py) | 8 | Dashboard jobs/notepad, memory dual-write/recursion gates, stats/memory basics. |
@@ -208,12 +212,13 @@ a version contract; use the coverage descriptions to select a focused suite.
 | [docs/module_reference.md](module_reference.md) | This repository-wide file and symbol map. |
 | [docs/development.md](development.md) | Setup, configuration, change checklists, validation commands, and platform limits. |
 | [docs/unlimited_ocr_server.md](unlimited_ocr_server.md) | Explicit deep-OCR service configuration, loopback mock, deployment, privacy, and controlled failures. |
-| [docs/releases/v5.5.1.md](releases/v5.5.1.md) | User-facing highlights, safety/privacy notes, upgrade guidance, and attribution for the v5.5.1 fork release. |
+| [docs/releases/v5.5.5.md](releases/v5.5.5.md) | Fast Mode 2.0 profile, recovery, adaptive request budgets, safety boundaries, and v5.5.5 upgrade guidance. |
+| [docs/releases/v5.5.1.md](releases/v5.5.1.md) | Historical reliability, Windows ARM, high-DPI, UI lifecycle, and attribution notes for v5.5.1. |
 
-An external `implementation_plan.md` was used for the screen-monitoring
-reliability work, but it is not checked into this repository and is not a
-canonical ongoing source. The implemented contracts are documented here and
-locked by `test_screen_monitoring_reliability.py` and `test_hybrid_ocr.py`.
+External implementation plans informed the screen-monitoring and Fast Mode 2.0
+work, but they are not checked into this repository and are not canonical
+ongoing sources. The implemented contracts are documented here and locked by
+the focused screen/OCR and Fast Mode test suites above.
 
 ## Assets
 
