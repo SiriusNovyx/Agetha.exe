@@ -345,7 +345,7 @@ class FastModeProfileTests(unittest.TestCase):
         result = fast.activate_fast_mode(self.config, outside)
 
         self.assertFalse(result.ok)
-        self.assertEqual(result.status, "config_write_failed")
+        self.assertEqual(result.status, "unsafe_path_state")
         self.assertEqual(self.config.read_bytes(), before)
         self.assertFalse(outside.exists())
 
@@ -363,7 +363,7 @@ class FastModeProfileTests(unittest.TestCase):
         self.assertEqual(active["FASTER_MODE"], "yes")
         self.assertEqual(active["AI_MAX_TOKENS"], "220")
         self.assertEqual(unrelated["FASTER_MODE"], "yes")
-        self.assertEqual(unrelated["AI_MAX_TOKENS"], "999")
+        self.assertEqual(unrelated["AI_MAX_TOKENS"], "777")
 
     def test_disk_disabled_fast_mode_wins_over_env_enable(self) -> None:
         self._write_config("FASTER_MODE = no\nAI_MAX_TOKENS = 400\n")

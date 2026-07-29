@@ -51,6 +51,10 @@ Detailed sequence:
    snapshot before `AIEngine`/legacy utility imports cache settings. The normal
    `_early_config_check()` then reloads typed settings, refreshes compatibility
    constants, and emits a one-time setup hint if no provider is usable.
+   Mutating reconciliation obtains the bounded cross-process lock and
+   revalidates every owned path after acquisition. Busy, unsafe, or ambiguous
+   verification states fail in a controlled way and retain recovery metadata;
+   see [Fast Mode security and recovery](fast_mode_security.md).
 2. On Windows, notification identity and the Start Menu shortcut are established
    on a best-effort basis.
 3. `CompanionApp.__init__()` establishes DPI awareness before creating Tk,

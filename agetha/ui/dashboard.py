@@ -69,7 +69,9 @@ def _fast_mode_result_ok(result: Any) -> bool:
         return bool(explicit)
     return _fast_mode_result_status(result) not in {
         "snapshot_invalid", "snapshot_write_failed", "snapshot_cleanup_failed",
-        "config_write_failed", "invalid_updates", "restore_failed", "failed",
+        "config_write_failed", "invalid_updates", "profile_busy", "restore_failed",
+        "unsafe_path_state", "unsafe_profile_definition", "verification_pending",
+        "failed",
     }
 
 
@@ -123,6 +125,12 @@ def format_fast_mode_summary(state: FastModeDashboardState) -> str:
         return f"Fast Mode: active — {count} settings temporarily managed"
     if state.status == "snapshot_invalid":
         return "Fast Mode: snapshot invalid — use Medic Checker recovery"
+    if state.status == "profile_busy":
+        return "Fast Mode: another process is updating the profile"
+    if state.status == "verification_pending":
+        return "Fast Mode: write verification interrupted — reconciliation required"
+    if state.status in {"unsafe_path_state", "unsafe_profile_definition"}:
+        return "Fast Mode: safety validation failed"
     if state.status in {"restore_required", "restoration_pending"}:
         return "Fast Mode: restoration pending"
     if state.status in {"cleanup_pending", "restored_snapshot_retained"}:
@@ -183,6 +191,28 @@ def apply_dashboard_config_updates(updates: dict[str, str], api: Any | None = No
     """Apply one coordinated config/Fast-Mode transaction."""
     api = api or _load_fast_mode_api()
     return api.apply_config_updates_with_fast_mode(dict(updates))
+
+
+def format_fast_mode_failure(status: str) -> str:
+    normalized = str(status or "unknown").strip().lower()
+    if normalized == "profile_busy":
+        return (
+            "Fast Mode is currently being updated by another process.\n\n"
+            "Close the other Agetha or Medic Checker instance and try again. "
+            "No settings were changed."
+        )
+    if normalized == "verification_pending":
+        return (
+            "The configuration write may have completed, but verification was interrupted.\n\n"
+            "Recovery metadata was preserved. Run Fast Mode reconciliation again to "
+            "inspect the current disk state safely."
+        )
+    if normalized in {"unsafe_path_state", "unsafe_profile_definition"}:
+        return "Fast Mode safety validation failed. No transaction was started."
+    return (
+        "Could not apply settings safely. The existing configuration and recovery "
+        f"snapshot were preserved.\n\nStatus: {normalized}"
+    )
 
 
 PROJECT_LINKS: dict[str, str] = {
@@ -903,8 +933,9 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         about_frame,
         text=(
             "Fork support and issue reporting belong to SiriusNovyx. "
-            "Supported platform: Windows 10/11 only. Linux and macOS are "
-            "end-of-life and receive no updates or support. The original "
+            "Supported platforms: Windows 10/11 and Linux desktop paths; "
+            "Windows ARM/Snapdragon uses x64 Python under Prism. macOS is "
+            "unsupported. The original "
             "upstream project does not maintain or support this fork."
         ),
         bg=W95_BG, fg=W95_WARN, font=W95_FONT,
@@ -1317,8 +1348,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
             status_var.set(f"Apply failed — Fast Mode status: {status}.")
             messagebox.showerror(
                 "Agetha — Settings",
-                "Could not apply settings safely. The existing configuration and recovery "
-                f"snapshot were preserved.\n\nStatus: {status}"
+                format_fast_mode_failure(status)
                 + (f"\n{error}" if error else ""),
                 parent=win,
             )

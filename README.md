@@ -13,16 +13,15 @@ configuration, and focused tests, start with [`docs/README.md`](docs/README.md).
 
 ## Platform support
 
-**Agetha Mod is supported only on Windows. Linux and macOS reached end of life
-with v5.5.5.** Maintaining and validating three desktop platforms in every
-update is not sustainable for this project, so development is now focused on
-providing reliable Windows releases.
+Official release targets are **Windows 10/11 x64**, **Windows 11 ARM64 or
+Snapdragon using x64 Python under Prism**, and **Linux desktop environments
+covered by the existing Linux paths**. GitHub Actions validates the shared
+Python code and focused Fast Mode recovery paths on Windows and Linux.
 
-Linux and macOS receive no further updates, compatibility fixes, testing, or
-support. Existing fallback code may remain and may still run, but it is legacy,
-untested, and unsupported. Linux/macOS bug reports may be closed without
-investigation. Previously published GPLv3 source remains available under the
-same license.
+**macOS is unsupported as of v5.5.5.** Historical macOS fallback code may
+remain under GPLv3, but it receives no release testing, compatibility fixes, or
+support. Windows-only integrations such as native warning dialogs, Startup
+shortcuts, and Windows Settings remain feature-gated on Linux.
 
 ## About
 
@@ -82,9 +81,10 @@ original OCR text. Use `OCR_EXCLUDED_APPS` and
 `OCR_EXCLUDED_TITLE_PATTERNS` for windows that should never be captured
 automatically; title exclusions accept plain text or a bounded `re:` prefix.
 
-On Windows, focused capture and process names use Win32 APIs and MSS. Legacy
-Linux/X11, Wayland, and macOS fallback paths remain in parts of the codebase for
-historical compatibility, but they are untested and unsupported as of v5.5.5.
+On Windows, focused capture and process names use Win32 APIs and MSS. Linux uses
+the existing X11/desktop-tool fallbacks with safe capture degradation when a
+tool or display facility is unavailable. Historical macOS fallbacks remain
+unsupported as of v5.5.5.
 
 Tesseract remains the default real-time backend; Unlimited-OCR is still used
 only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported
@@ -161,7 +161,8 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
   profile plus request-aware prompt budgets. Original managed values are kept in
   `memory/fast_mode_snapshot.json` and restored when Fast Mode is disabled.
   Unchanged ambient scans are handled locally instead of spending an AI request.
-  Provider, permission, privacy, and security settings are never changed.
+  Provider, permission, privacy, and security settings are never changed. See
+  the [threat model and recovery guide](docs/fast_mode_security.md).
 
 ---
 
@@ -179,10 +180,11 @@ Agetha_Mod/
 ├── Run_Agetha_Admin.ps1
 ├── assets/                 # GIFs, fonts, icons
 ├── memory/                 # soul.md, episodic, stats, notepad
-├── tests/                  # 15 automated suites (full index in docs/module_reference.md)
+├── tests/                  # automated suites (full index in docs/module_reference.md)
 │   ├── test_atomic_persistence.py
 │   ├── test_fast_mode_profile.py
 │   ├── test_fast_mode_runtime.py
+│   ├── test_fast_mode_security.py
 │   ├── test_fast_mode_ui_medic.py
 │   ├── test_hybrid_ocr.py
 │   ├── test_medic_arch.py
@@ -329,13 +331,13 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 
 ## Quick Start
 
-### Option A — Medic_Checker (recommended)
+### Option A — Windows Medic Checker (recommended on Windows)
 
 1. Place all project files in one folder
 2. Double-click **`Medic_Checker.bat`** (or run **`Medic_Checker.ps1`** in PowerShell)
 3. The script runs 7 health checks, installs missing packages, compiles modules, then launches Agetha
 
-### Option B — Manual
+### Option B — Windows manual
 
 ```powershell
 py -3.13 -m venv venv
@@ -345,6 +347,23 @@ copy .env.example .env
 # Edit .env — add your Groq API key
 python main.py
 ```
+
+### Option C — Linux manual
+
+Create a Python 3.13 virtual environment, install the distribution's Tk/native
+Tesseract packages when those features are needed, then run:
+
+```bash
+python3.13 -m venv venv
+source venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+# Edit .env, then:
+python main.py
+```
+
+Medic Checker is Windows-specific. Linux Fast Mode recovery commands are listed
+in the [security and recovery guide](docs/fast_mode_security.md).
 
 ---
 
@@ -375,9 +394,10 @@ UNLIMITED_OCR_API_KEY=
 - Groq keys: [console.groq.com](https://console.groq.com)
 - OpenRouter keys: [openrouter.ai/keys](https://openrouter.ai/keys)
 
-`.env` overrides matching keys in `config.txt`, except `FASTER_MODE`, whose
-disk-backed switch remains authoritative. A validated active Fast Mode profile
-also reapplies its 13 approved managed values afterward. Fast Mode never edits
+`.env` overrides matching non-secret keys in `config.txt`, except `FASTER_MODE`
+and all 13 managed profile keys, whose disk-backed transaction remains
+authoritative. A validated active Fast Mode profile reapplies its approved
+managed values afterward. Fast Mode never edits
 `.env`. Never commit `.env` to git (already in `.gitignore`).
 
 ### config.txt
@@ -738,9 +758,9 @@ command_handlers.py → Execute action + update UI
 
 ### v5.5.5 — Reversible Fast Mode 2.0
 
-- Project support is now Windows-only. Linux and macOS are end-of-life because
-  maintaining and validating three desktop platforms in every update is not
-  sustainable; neither platform receives further fixes, testing, or support.
+- Official support covers Windows 10/11 x64, Windows 11 ARM64/Snapdragon through
+  x64 Python under Prism, and Linux through the existing desktop paths. macOS is
+  retired and unsupported.
 - Atomic, schema-versioned Fast Mode snapshots preserve only the approved
   non-secret settings and restore them without replacing unrelated config.
 - Startup reconciliation repairs managed drift idempotently, quarantines an
@@ -845,8 +865,9 @@ python -m unittest discover -s tests
 For manual acceptance, verify focused capture and coordinate placement on every
 monitor; own-window and configured-exclusion skips; unchanged, forced-refresh,
 and changed-frame statuses; repeated/cleared error events; rapid standard/deep
-requests; shutdown during OCR; and external-context redaction. Linux and macOS
-behavior is outside the supported validation matrix as of v5.5.5.
+requests; shutdown during OCR; and external-context redaction. Linux desktop
+fallbacks are additionally covered by mocked headless tests. macOS behavior is
+outside the supported validation matrix as of v5.5.5.
 
 ---
 

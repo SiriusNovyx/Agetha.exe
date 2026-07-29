@@ -115,6 +115,13 @@ active metadata fails closed instead of inventing new originals. A completed
 restoration is marked inactive before snapshot deletion so cleanup failure can
 only retry cleanup, never replay restoration.
 
+Cross-process transactions use a persistent operating-system lock, bounded
+retry, no-follow/reparse-aware opening, and a second validation of every owned
+path after the lock is held. Config and snapshot replacements use exclusive
+same-directory temporary files plus flush/fsync/replace. See
+[Fast Mode security and recovery](fast_mode_security.md) for the threat model,
+audit events, ambiguous-write semantics, and operator commands.
+
 ## AI engine and prompt composition
 
 [ai_engine.py](../agetha/core/ai_engine.py) supports three provider modes behind
@@ -195,10 +202,10 @@ places bounded redacted text and pattern metadata into an ambient AI turn.
 guard before an explicit capture/request.
 
 Windows uses native foreground-window and monitor information plus available
-capture libraries. Historical Linux/X11, Wayland, and macOS fallback paths may
-remain in the implementation, but Linux and macOS are end-of-life as of v5.5.5
-and are no longer tested, updated, or supported. Unsupported capture or OCR
-still returns a safe empty/error result rather than crashing the UI.
+capture libraries. Linux desktop environments use the existing X11/desktop-tool
+paths, which are exercised with mocks in headless CI and return safe empty/error
+results when capture facilities are unavailable. Historical macOS paths may
+remain, but macOS is retired and unsupported as of v5.5.5.
 
 ## UI architecture
 

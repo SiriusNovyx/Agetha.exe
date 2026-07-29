@@ -19,9 +19,18 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class _FakeFastModeAPI:
-    def __init__(self, *, active: bool = True, status: str = "active_valid") -> None:
+    def __init__(
+        self,
+        *,
+        active: bool = True,
+        status: str = "active_valid",
+        apply_status: str = "active_valid",
+        apply_ok: bool = True,
+    ) -> None:
         self.active = active
         self.status = status
+        self.apply_status = apply_status
+        self.apply_ok = apply_ok
         self.applied: list[dict[str, str]] = []
         self.inspect_calls = 0
         self.reconcile_calls = 0
@@ -54,7 +63,11 @@ class _FakeFastModeAPI:
     def apply_config_updates_with_fast_mode(self, updates: dict[str, str]) -> SimpleNamespace:
         self.applied.append(updates)
         return SimpleNamespace(
-            status="active_valid", changed_keys=tuple(updates), warnings=(), error=None, ok=True,
+            status=self.apply_status,
+            changed_keys=tuple(updates),
+            warnings=(),
+            error=None if self.apply_ok else "controlled failure",
+            ok=self.apply_ok,
         )
 
     def reconcile_fast_mode_profile(self) -> SimpleNamespace:
@@ -127,9 +140,65 @@ class DashboardFastModeTests(unittest.TestCase):
         self.assertEqual(api.applied, [updates])
         self.assertIsNot(api.applied[0], updates)
 
+    def test_enabling_and_disabling_use_the_coordinated_transaction(self) -> None:
+        enabling = _FakeFastModeAPI(active=False, status="inactive_clean")
+        disabling = _FakeFastModeAPI(active=True, status="active_valid", apply_status="restored")
+
+        enabled = dashboard.apply_dashboard_config_updates({"FASTER_MODE": "yes"}, enabling)
+        disabled = dashboard.apply_dashboard_config_updates({"FASTER_MODE": "no"}, disabling)
+
+        self.assertTrue(enabled.ok)
+        self.assertTrue(disabled.ok)
+        self.assertEqual(enabling.applied, [{"FASTER_MODE": "yes"}])
+        self.assertEqual(disabling.applied, [{"FASTER_MODE": "no"}])
+
+    def test_validation_and_lock_failures_are_not_reported_as_saved(self) -> None:
+        invalid = _FakeFastModeAPI(apply_status="invalid_updates", apply_ok=False)
+        busy = _FakeFastModeAPI(apply_status="profile_busy", apply_ok=False)
+
+        invalid_result = dashboard.apply_dashboard_config_updates(
+            {"FASTER_MODE": "maybe"}, invalid,
+        )
+        busy_result = dashboard.apply_dashboard_config_updates(
+            {"ENABLE_TASKS": "no"}, busy,
+        )
+
+        self.assertFalse(dashboard._fast_mode_result_ok(invalid_result))
+        self.assertFalse(dashboard._fast_mode_result_ok(busy_result))
+        self.assertEqual(invalid.applied, [{"FASTER_MODE": "maybe"}])
+        self.assertEqual(busy.applied, [{"ENABLE_TASKS": "no"}])
+
+    def test_snapshot_quarantine_and_unrelated_active_save_stay_coordinated(self) -> None:
+        quarantined = _FakeFastModeAPI(
+            active=False,
+            status="snapshot_invalid",
+            apply_status="snapshot_quarantined",
+        )
+        active = _FakeFastModeAPI(active=True, status="active_valid")
+
+        quarantine_result = dashboard.apply_dashboard_config_updates(
+            {"ENABLE_TASKS": "yes"}, quarantined,
+        )
+        unrelated_result = dashboard.apply_dashboard_config_updates(
+            {"ENABLE_TASKS": "no"}, active,
+        )
+
+        self.assertTrue(dashboard._fast_mode_result_ok(quarantine_result))
+        self.assertTrue(dashboard._fast_mode_result_ok(unrelated_result))
+        self.assertEqual(quarantined.applied, [{"ENABLE_TASKS": "yes"}])
+        self.assertEqual(active.applied, [{"ENABLE_TASKS": "no"}])
+
     def test_snapshot_write_failure_is_not_reported_as_success(self) -> None:
         result = SimpleNamespace(status="snapshot_write_failed", error="locked")
         self.assertFalse(dashboard._fast_mode_result_ok(result))
+
+    def test_busy_and_verification_failures_have_actionable_messages(self) -> None:
+        busy = dashboard.format_fast_mode_failure("profile_busy")
+        pending = dashboard.format_fast_mode_failure("verification_pending")
+        self.assertIn("another process", busy)
+        self.assertIn("No settings were changed", busy)
+        self.assertIn("may have completed", pending)
+        self.assertIn("reconciliation", pending)
 
     def test_pending_activation_requires_confirmation_without_checkbox_change(self) -> None:
         api = _FakeFastModeAPI(active=False, status="snapshot_missing")
@@ -186,11 +255,14 @@ class DashboardFastModeTests(unittest.TestCase):
                 )
 
                 labels: dict[str, tk.Label] = {}
+                close_buttons: list[tk.Button] = []
 
                 def collect(widget: tk.Misc) -> None:
                     for child in widget.winfo_children():
                         if isinstance(child, tk.Label):
                             labels[str(child.cget("text"))] = child
+                        if isinstance(child, tk.Button) and str(child.cget("text")) == "✕":
+                            close_buttons.append(child)
                         collect(child)
 
                 collect(top)
@@ -206,6 +278,52 @@ class DashboardFastModeTests(unittest.TestCase):
                 )
                 self.assertEqual(str(managed_entry.cget("state")), "disabled")
                 self.assertEqual(str(unmanaged_entry.cget("state")), "normal")
+                self.assertEqual(len(close_buttons), 1)
+                close_buttons[0].invoke()
+        finally:
+            for widget in root.winfo_children():
+                try:
+                    widget.destroy()
+                except tk.TclError:
+                    pass
+            root.destroy()
+
+    def test_closing_dashboard_after_edit_does_not_apply_settings(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk unavailable: {exc}")
+        root.withdraw()
+        api = _FakeFastModeAPI(active=False, status="inactive_clean")
+        try:
+            with patch.object(dashboard, "_load_fast_mode_api", return_value=api):
+                dashboard.open_dashboard(root, SimpleNamespace(raw={}))
+                root.update_idletasks()
+                top = next(
+                    widget for widget in root.winfo_children()
+                    if isinstance(widget, tk.Toplevel)
+                )
+
+                descendants: list[tk.Widget] = []
+
+                def collect(widget: tk.Misc) -> None:
+                    for child in widget.winfo_children():
+                        descendants.append(child)
+                        collect(child)
+
+                collect(top)
+                entry = next(widget for widget in descendants if isinstance(widget, tk.Entry))
+                entry.delete(0, "end")
+                entry.insert(0, "unsaved-change")
+                close = next(
+                    widget for widget in descendants
+                    if isinstance(widget, tk.Button) and str(widget.cget("text")) == "✕"
+                )
+                close.invoke()
+                root.update_idletasks()
+
+                self.assertEqual(api.applied, [])
+                self.assertFalse(top.winfo_exists())
         finally:
             for widget in root.winfo_children():
                 try:

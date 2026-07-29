@@ -5,10 +5,10 @@ Guidance for humans and coding agents working on this fork.
 
 **Version focus:** Overhaul v5.5.5 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
-**Supported platform:** Windows 10/11 only, including Windows 11 ARM64 through
-x64 Python under Prism. Linux and macOS are end-of-life as of v5.5.5 because
-maintaining and validating three desktop platforms in every update is not
-sustainable. Retained non-Windows code is legacy and must not be described as
+**Supported platforms:** Windows 10/11 x64; Windows 11 ARM64/Snapdragon through
+x64 Python under Prism; and Linux desktop environments through the existing
+Linux paths. macOS is retired and unsupported as of v5.5.5. Do not describe
+Windows-only integrations as available on Linux, or retained macOS fallbacks as
 tested or supported.
 
 ---
@@ -22,7 +22,10 @@ priorities.
 
 ## What this project is
 
-Windows desktop AI companion: always-on-top Win95-style window, animated GIF avatar, Groq/OpenRouter/Ollama chat, spatial OCR, dual memory, OS commands with native confirmation tiers.
+Desktop AI companion with a Windows-first Win95-style UI, animated GIF avatar,
+Groq/OpenRouter/Ollama chat, spatial OCR, dual memory, and guarded OS commands.
+Linux uses the existing platform paths and degrades safely when a Windows-only
+integration is unavailable.
 
 Original upstream: Agetha.exe (chocolatebread / @tomiszivacs). This repo is a **fork** that owns the companion / virus-registry direction.
 

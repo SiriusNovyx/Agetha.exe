@@ -533,7 +533,9 @@ def _fast_mode_result_ok(result: object) -> bool:
         return bool(explicit)
     return status not in {
         "snapshot_invalid", "snapshot_write_failed", "snapshot_cleanup_failed",
-        "config_write_failed", "invalid_updates", "restore_failed", "failed",
+        "config_write_failed", "invalid_updates", "profile_busy", "restore_failed",
+        "unsafe_path_state", "unsafe_profile_definition", "verification_pending",
+        "failed",
     }
 
 

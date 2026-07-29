@@ -196,6 +196,17 @@ function Write-FastModeHealth {
             Write-Warn 'Fast Mode: snapshot invalid - recovery required; no settings were changed.'
             Write-Info 'Agetha remains launchable with its currently parsed settings; Fast Mode changes stay fail-closed.'
         }
+        '^profile_busy$' {
+            Write-Warn 'Fast Mode is currently being updated by another process.'
+            Write-Info 'Close the other Agetha or Medic Checker instance and try again. No settings were changed.'
+        }
+        '^verification_pending$' {
+            Write-Warn 'The configuration write may have completed, but verification was interrupted.'
+            Write-Info 'Recovery metadata was preserved. Run reconciliation again to inspect the current disk state safely.'
+        }
+        '^(unsafe_path_state|unsafe_profile_definition)$' {
+            Write-Warn "Fast Mode: $($Health.status) - safety validation failed; no transaction was started."
+        }
         '^(config_write_failed|snapshot_write_failed|snapshot_cleanup_failed|invalid_updates|unavailable)$' {
             Write-Warn "Fast Mode: $($Health.status) - recovery state was preserved."
         }
@@ -219,7 +230,7 @@ function Skip-FastModeReconcileForLaunch {
 
 function Test-FastModeResolutionRequired {
     param([string]$Status)
-    return $Status -match '^(activation_required|snapshot_missing|active_drift|repair_required|restore_required|restoration_pending)$'
+    return $Status -match '^(activation_required|snapshot_missing|active_drift|repair_required|restore_required|restoration_pending|verification_pending)$'
 }
 
 function Invoke-FastModeHealthCheck {
