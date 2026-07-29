@@ -432,7 +432,7 @@ class TestDeepOCRIntegration(unittest.TestCase):
     def test_deep_output_is_redacted_before_follow_up_ai_request(self):
         app = MagicMock()
         app.root.after.side_effect = lambda _delay, callback: callback()
-        app._defer_after_ai_tick.side_effect = lambda callback: callback()
+        app._defer_exclusive_ai_operation.side_effect = lambda callback: callback()
         app._screen.capture_deep_text.return_value = OCRResult(
             "password=hunter2", [], "unlimited_ocr",
         )
@@ -457,6 +457,7 @@ class TestDeepOCRIntegration(unittest.TestCase):
         document = app._ai_query.call_args.kwargs["doc_content"]
         self.assertNotIn("hunter2", document)
         self.assertIn("[REDACTED]", document)
+        self.assertTrue(app._ai_query.call_args.kwargs["reserved_ai_slot"])
         app._screen.capture_deep_text.assert_called_once_with(
             focused_only=True,
             prompt="<image>document parsing.",
@@ -467,7 +468,7 @@ class TestDeepOCRIntegration(unittest.TestCase):
     def test_recursive_deep_follow_up_is_blocked_before_dispatch(self):
         app = MagicMock()
         app.root.after.side_effect = lambda _delay, callback: callback()
-        app._defer_after_ai_tick.side_effect = lambda callback: callback()
+        app._defer_exclusive_ai_operation.side_effect = lambda callback: callback()
         app._screen.capture_deep_text.return_value = OCRResult(
             "document text", [], "unlimited_ocr",
         )
@@ -489,6 +490,72 @@ class TestDeepOCRIntegration(unittest.TestCase):
         follow = app._dispatch_response.call_args.args[0]
         self.assertEqual(follow["command"], "idle")
         self.assertNotIn("focused_only", follow)
+
+    def test_exclusive_deep_operation_queues_input_without_cancelling(self):
+        from main import CompanionApp
+
+        app = CompanionApp.__new__(CompanionApp)
+        app._closing = False
+        app._ai_busy = False
+        app._ai_busy_noninterruptible = False
+        app._speech_active = False
+        app._ai_tick_lock = __import__("threading").Lock()
+        app._cancel_event = __import__("threading").Event()
+        app._pending_user_message = None
+        app._post_ai_tick_callbacks = []
+        app.root = MagicMock()
+        app.root.after.side_effect = lambda _delay, callback: callback()
+        app._input_box = MagicMock()
+        app._re_enable_input = MagicMock()
+        app._drain_pending_user_message = MagicMock()
+        observed = []
+
+        def operation():
+            app._ai_tick(user_message="queued while OCR runs")
+            observed.append((
+                app._ai_busy,
+                app._ai_busy_noninterruptible,
+                app._cancel_event.is_set(),
+                app._pending_user_message,
+            ))
+
+        with patch("main.threading.Thread", _ImmediateThread):
+            app._defer_exclusive_ai_operation(operation)
+            app._run_deferred_ai_tick_callbacks()
+
+        self.assertEqual(
+            observed,
+            [(True, True, False, "queued while OCR runs")],
+        )
+        self.assertFalse(app._ai_busy)
+        self.assertFalse(app._ai_busy_noninterruptible)
+        app._drain_pending_user_message.assert_called_once()
+
+    def test_reserved_query_uses_existing_ai_slot_without_releasing_it(self):
+        import main
+
+        app = main.CompanionApp.__new__(main.CompanionApp)
+        app._ai = MagicMock()
+        app._ai.query.return_value = {"command": "idle"}
+        app._screen = None
+        app._last_screen_text = ""
+        app._cancel_event = __import__("threading").Event()
+        app._ai_tick_lock = __import__("threading").Lock()
+        app._ai_busy = True
+        app._ai_busy_noninterruptible = True
+        app._speech_active = False
+        app.root = MagicMock()
+        app.root.after.side_effect = lambda _delay, callback: callback()
+        app._set_state = MagicMock()
+        app._drain_pending_user_message = MagicMock()
+
+        settings = MagicMock(enable_streaming=False)
+        with patch.object(main, "_SETTINGS", settings):
+            result = app._ai_query("analyze", reserved_ai_slot=True)
+
+        self.assertEqual(result, {"command": "idle"})
+        self.assertTrue(app._ai_busy)
+        app._drain_pending_user_message.assert_not_called()
 
 
 if __name__ == "__main__":

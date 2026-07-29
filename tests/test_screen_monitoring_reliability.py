@@ -23,6 +23,8 @@ from agetha.platform import screen_reader as screen_reader_module
 from agetha.platform.screen_reader import (
     PatternMatch,
     ScreenReader,
+    _get_foreground_window_info_linux,
+    _linux_process_name_from_window,
     _scan_patterns,
 )
 
@@ -161,6 +163,72 @@ class TestCoordinateTransformation(unittest.TestCase):
 
 
 class TestCaptureBehavior(unittest.TestCase):
+    def test_05a_linux_xdotool_metadata_includes_process_name(self):
+        def fake_run(command, **_kwargs):
+            lookup = {
+                ("xdotool", "getactivewindow"): "42\n",
+                ("xdotool", "getwindowname", "42"): "Database.kdbx\n",
+                ("xdotool", "getwindowgeometry", "42"): (
+                    "Position: 10,20 (screen: 0)\nGeometry: 800x600\n"
+                ),
+            }
+            return MagicMock(returncode=0, stdout=lookup[tuple(command)])
+
+        with (
+            patch.object(screen_reader_module, "IS_LINUX", True),
+            patch.object(screen_reader_module.subprocess, "run", side_effect=fake_run),
+            patch.object(
+                screen_reader_module,
+                "_linux_process_name_from_window",
+                return_value="keepassxc",
+            ),
+        ):
+            info = _get_foreground_window_info_linux()
+        self.assertEqual(info["process_name"], "keepassxc")
+        self.assertEqual(info["hwnd"], 42)
+
+    def test_05b_linux_wmctrl_metadata_includes_process_name(self):
+        def fake_run(command, **_kwargs):
+            if command[:2] == ["xdotool", "getactivewindow"]:
+                raise FileNotFoundError
+            if command[:3] == ["xprop", "-root", "_NET_ACTIVE_WINDOW"]:
+                return MagicMock(
+                    returncode=0,
+                    stdout="_NET_ACTIVE_WINDOW(WINDOW): window id # 0x2a\n",
+                )
+            return MagicMock(
+                returncode=0,
+                stdout="0x0000002a 0 10 20 800 600 host Database.kdbx\n",
+            )
+
+        with (
+            patch.object(screen_reader_module, "IS_LINUX", True),
+            patch.object(screen_reader_module.subprocess, "run", side_effect=fake_run),
+            patch.object(
+                screen_reader_module,
+                "_linux_process_name_from_window",
+                return_value="keepassxc",
+            ),
+        ):
+            info = _get_foreground_window_info_linux()
+        self.assertEqual(info["process_name"], "keepassxc")
+        self.assertEqual(info["hwnd"], 42)
+
+    def test_05c_linux_process_resolver_falls_back_to_xprop_pid(self):
+        missing = MagicMock(returncode=1, stdout="")
+        xprop = MagicMock(returncode=0, stdout="_NET_WM_PID(CARDINAL) = 321\n")
+        with (
+            patch.object(screen_reader_module, "IS_LINUX", True),
+            patch.object(
+                screen_reader_module.subprocess,
+                "run",
+                side_effect=[missing, xprop],
+            ),
+            patch.object(screen_reader_module.os, "readlink", return_value="/usr/bin/keepassxc"),
+        ):
+            name = _linux_process_name_from_window(42)
+        self.assertEqual(name, "keepassxc")
+
     def test_06_focused_capture_success(self):
         reader = _capture_reader()
         reader._foreground_info = lambda: {
@@ -640,6 +708,20 @@ class TestStaleResults(unittest.TestCase):
         reader._focused_target_is_current = lambda _frame: False
         reader.capture_text()
         self.assertEqual(reader.last_new_pattern_events, [])
+
+    def test_50a_skipped_capture_clears_only_transient_events(self):
+        reader = _ocr_reader(OCRResult("", [], "tesseract"))
+        previous = PatternMatch(
+            "python_error", "angry", "Python error", "old", confidence=90.0,
+        )
+        reader.last_new_pattern_events = [previous]
+        reader.last_pattern_matches = [previous]
+        reader.last_word_positions = [{"text": "old"}]
+        reader._capture_frame.return_value = None
+        self.assertEqual(reader.capture_text(), "")
+        self.assertEqual(reader.last_new_pattern_events, [])
+        self.assertEqual(reader.last_pattern_matches, [previous])
+        self.assertEqual(reader.last_word_positions, [{"text": "old"}])
 
 
 class TestBackwardCompatibility(unittest.TestCase):

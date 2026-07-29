@@ -509,6 +509,45 @@ def _get_foreground_window_info(skip_hwnd: int | None = None) -> dict | None:
     return _get_window_info(hwnd, skip_hwnd=skip_hwnd)
 
 
+def _linux_process_name_from_window(window_id: int) -> str:
+    """Resolve an X11 window's executable without adding a Python dependency."""
+    if not IS_LINUX:
+        return ""
+    pid = None
+    try:
+        result = subprocess.run(
+            ["xdotool", "getwindowpid", str(int(window_id))],
+            capture_output=True, text=True, timeout=2,
+        )
+        value = result.stdout.strip()
+        if result.returncode == 0 and value.isdigit():
+            pid = int(value)
+    except Exception:
+        pass
+    if pid is None:
+        try:
+            result = subprocess.run(
+                ["xprop", "-id", f"0x{int(window_id):x}", "_NET_WM_PID"],
+                capture_output=True, text=True, timeout=2,
+            )
+            match = re.search(r"_NET_WM_PID(?:\([^)]*\))?\s*=\s*(\d+)", result.stdout)
+            if result.returncode == 0 and match:
+                pid = int(match.group(1))
+        except Exception:
+            pass
+    if pid is None or pid <= 0:
+        return ""
+    try:
+        return Path(os.readlink(f"/proc/{pid}/exe")).name[:120]
+    except (OSError, ValueError):
+        try:
+            return (Path("/proc") / str(pid) / "comm").read_text(
+                encoding="utf-8", errors="replace",
+            ).strip()[:120]
+        except OSError:
+            return ""
+
+
 def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | None:
     """Return mss-compatible capture dict + metadata for the focused window on Linux.
     Uses xdotool, xprop, or wmctrl.
@@ -548,6 +587,7 @@ def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | No
                             "height": h,
                             "title": title,
                             "hwnd": window_id,
+                            "process_name": _linux_process_name_from_window(window_id),
                         }
     except Exception as e:
         logger.debug(f"xdotool foreground lookup failed: {type(e).__name__}")
@@ -586,6 +626,7 @@ def _get_foreground_window_info_linux(skip_hwnd: int | None = None) -> dict | No
                                     "height": h,
                                     "title": title,
                                     "hwnd": active_dec,
+                                    "process_name": _linux_process_name_from_window(active_dec),
                                 }
     except Exception as e:
         logger.debug(f"wmctrl foreground lookup failed: {type(e).__name__}")
@@ -1242,6 +1283,12 @@ class ScreenReader:
             scan_lock = threading.Lock()
             self._standard_scan_lock = scan_lock
         with scan_lock:
+            state_lock = getattr(self, "_state_lock", None)
+            if state_lock is None:
+                state_lock = threading.RLock()
+                self._state_lock = state_lock
+            with state_lock:
+                self.last_new_pattern_events = []
             if not getattr(self, "_available", False):
                 return ""
             if not self._ensure_tesseract():
@@ -1365,10 +1412,6 @@ class ScreenReader:
                         now=now,
                     )
 
-                state_lock = getattr(self, "_state_lock", None)
-                if state_lock is None:
-                    state_lock = threading.RLock()
-                    self._state_lock = state_lock
                 with state_lock:
                     self._capture_left = frame.left
                     self._capture_top = frame.top

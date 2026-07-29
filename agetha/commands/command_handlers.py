@@ -1441,6 +1441,7 @@ def handle_analyze_screen_deep(app, response, ctx):
             ctx.user_message or "",
             screen_context="",
             doc_content=wrapped,
+            reserved_ai_slot=True,
         )
         follow = _block_recursive_deep_ocr(follow)
         if follow:
@@ -1448,9 +1449,7 @@ def handle_analyze_screen_deep(app, response, ctx):
         else:
             app.root.after(0, app._reschedule_screen_poll)
 
-    app._defer_after_ai_tick(
-        lambda: threading.Thread(target=_analyze_and_requery, daemon=True).start()
-    )
+    app._defer_exclusive_ai_operation(_analyze_and_requery)
     return True
 
 

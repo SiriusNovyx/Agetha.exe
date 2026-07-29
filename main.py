@@ -1120,6 +1120,7 @@ class CompanionApp:
         self._guard = CommandGuard(self.root)
         self._cancel_event = threading.Event()
         self._ai_busy = False
+        self._ai_busy_noninterruptible = False
         self._ai_tick_lock = threading.Lock()
         self._pending_user_message: str | None = None
         self._post_ai_tick_callbacks: list[Callable[[], None]] = []
@@ -2409,7 +2410,8 @@ class CompanionApp:
         with self._ai_tick_lock:
             if self._ai_busy or self._speech_active:
                 if is_user:
-                    self._cancel_event.set()
+                    if not self._ai_busy_noninterruptible:
+                        self._cancel_event.set()
                     self._pending_user_message = user_message
                 else:
                     self._reschedule_screen_poll()
@@ -2590,6 +2592,40 @@ class CompanionApp:
     def _defer_after_ai_tick(self, callback: Callable[[], None]) -> None:
         """Run callback after the current _ai_tick releases _ai_busy (avoids _ai_query races)."""
         self._post_ai_tick_callbacks.append(callback)
+
+    def _defer_exclusive_ai_operation(self, callback: Callable[[], None]) -> None:
+        """Run one deferred operation while retaining the app-wide AI slot."""
+        def _start() -> None:
+            if self._closing:
+                return
+            with self._ai_tick_lock:
+                if self._ai_busy or self._speech_active:
+                    logger.warning("Deferred exclusive AI operation could not reserve its slot")
+                    return
+                self._ai_busy = True
+                self._ai_busy_noninterruptible = True
+            self._cancel_event.clear()
+            self.root.after(0, lambda: self._input_box.config(state="disabled"))
+
+            def _run() -> None:
+                try:
+                    callback()
+                except Exception as exc:
+                    logger.warning(f"Deferred exclusive AI operation failed: {exc}")
+                finally:
+                    with self._ai_tick_lock:
+                        self._ai_busy_noninterruptible = False
+                        self._ai_busy = False
+                    try:
+                        self.root.after(0, self._re_enable_input)
+                    except Exception:
+                        pass
+                    self._run_deferred_ai_tick_callbacks()
+                    self._drain_pending_user_message()
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        self._defer_after_ai_tick(_start)
 
     def _run_deferred_ai_tick_callbacks(self) -> None:
         if self._closing:
@@ -2845,13 +2881,19 @@ class CompanionApp:
         doc_content: str = "",
         memory_search_context: str = "",
         suppress_search_memory: bool = False,
+        reserved_ai_slot: bool = False,
     ):
         if self._cancel_event.is_set() or not self._ai:
             return None
+        owns_ai_slot = not reserved_ai_slot
         with self._ai_tick_lock:
-            if self._ai_busy or self._speech_active:
-                return None
-            self._ai_busy = True
+            if reserved_ai_slot:
+                if not self._ai_busy or not self._ai_busy_noninterruptible:
+                    return None
+            else:
+                if self._ai_busy or self._speech_active:
+                    return None
+                self._ai_busy = True
         self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
 
         def _on_token(raw):
@@ -2886,8 +2928,9 @@ class CompanionApp:
             logger.error(f"_ai_query failed: {exc}")
             return None
         finally:
-            self._ai_busy = False
-            self._drain_pending_user_message()
+            if owns_ai_slot:
+                self._ai_busy = False
+                self._drain_pending_user_message()
 
     def _try_short_mood_speak(self, command: str, ctx) -> bool:
         try:
