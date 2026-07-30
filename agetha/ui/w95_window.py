@@ -64,22 +64,24 @@ def apply_borderless_win95(
     win: tk.Toplevel,
     parent: tk.Misc | None = None,
     *,
+    win: tk.Toplevel,
+    parent: tk.Misc | None = None,
+    *,
     topmost: bool = True,
 ) -> None:
     """
     Prepare a Toplevel for custom Win95 chrome only (no native title bar).
     Call before packing widgets; call refresh_borderless() after minimize restore.
     """
-    if not IS_WINDOWS:
-        return
-    try:
-        win.withdraw()
-    except Exception:
-        pass
-    try:
-        win.overrideredirect(True)
-    except Exception:
-        pass
+    if IS_WINDOWS:
+        try:
+            win.withdraw()
+        except Exception:
+            pass
+        try:
+            win.overrideredirect(True)
+        except Exception:
+            pass
     if parent is not None:
         try:
             win.transient(parent)

@@ -1542,7 +1542,10 @@ class ScreenReader:
             if frame is not None:
                 self.last_monitor_status = f"captured_{frame.scope}"
                 return frame
-            self._clear_stale_capture_state("capture_failed")
+            if automatic:
+                self._clear_stale_capture_state("capture_failed")
+            else:
+                self.last_monitor_status = "capture_failed"
             return None
 
     def _clear_stale_capture_state(self, status: str) -> None:

@@ -2423,6 +2423,13 @@ class CompanionApp:
         if self._is_minimized or not self._window_mapped:
             self._reschedule_screen_poll()
             return
+        if (
+            self._screen is not None
+            and get_settings().enable_screen_reader
+            and not self._screen.automatic_capture_supported
+        ):
+            self._reschedule_screen_poll()
+            return
         threading.Thread(target=self._ai_tick, daemon=True).start()
 
     def _reschedule_screen_poll(self):

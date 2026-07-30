@@ -21,6 +21,9 @@ class _FakeWindow:
         self.deiconify_calls = 0
         self.lift_calls = 0
 
+        self.transient_calls: list[object] = []
+        self.attribute_calls: list[tuple] = []
+
     def state(self):
         return self.current_state
 
@@ -38,11 +41,11 @@ class _FakeWindow:
     def withdraw(self):
         self.current_state = "withdrawn"
 
-    def transient(self, _parent):
-        pass
+    def transient(self, parent):
+        self.transient_calls.append(parent)
 
-    def attributes(self, *_args):
-        pass
+    def attributes(self, *args):
+        self.attribute_calls.append(args)
 
     def update_idletasks(self):
         pass
@@ -158,10 +161,13 @@ class TestLinuxCapabilities(unittest.TestCase):
 class TestManagedWindowPolicy(unittest.TestCase):
     def test_linux_never_enables_override_redirect(self):
         win = _FakeWindow()
+        parent = object()
         with patch.object(w95_window, "IS_WINDOWS", False):
-            w95_window.apply_borderless_win95(win, object(), topmost=True)
+            w95_window.apply_borderless_win95(win, parent, topmost=True)
             w95_window.refresh_borderless(win)
         self.assertEqual(win.override_calls, [])
+        self.assertEqual(win.transient_calls, [parent])
+        self.assertEqual(win.attribute_calls, [("-topmost", True)])
 
     def test_windows_keeps_borderless_behavior(self):
         win = _FakeWindow()
@@ -250,6 +256,31 @@ class TestCaptureValidation(unittest.TestCase):
         self.assertIsNone(reader.last_capture_metadata)
         self.assertEqual(reader.last_word_positions, [])
         self.assertEqual(reader.last_monitor_status, "skipped_invalid_geometry")
+
+    def test_explicit_capture_failure_preserves_ocr_state(self):
+        reader = screen_reader.ScreenReader.__new__(screen_reader.ScreenReader)
+        reader._capture_lock = __import__("threading").RLock()
+        reader._state_lock = __import__("threading").RLock()
+        reader._app_closing = False
+        reader._stopped = False
+        reader._capture_available = True
+        reader._explicit_capture_available = True
+        reader._get_own_hwnd = lambda: 999
+        reader._resolve_capture_target = lambda _t: None
+        reader._foreground_info = lambda: None
+        reader._capture_with_backend = MagicMock(return_value=None)
+
+        reader.last_active_window_title = "Active window"
+        metadata = object()
+        reader.last_capture_metadata = metadata
+        reader.last_word_positions = [{"text": "word"}]
+
+        result = reader._capture_frame(automatic=False)
+        self.assertIsNone(result)
+        self.assertEqual(reader.last_monitor_status, "capture_failed")
+        self.assertEqual(reader.last_active_window_title, "Active window")
+        self.assertIs(reader.last_capture_metadata, metadata)
+        self.assertEqual(reader.last_word_positions, [{"text": "word"}])
 
     def test_wayland_automatic_backend_list_is_empty(self):
         reader = screen_reader.ScreenReader.__new__(screen_reader.ScreenReader)

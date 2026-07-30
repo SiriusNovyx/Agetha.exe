@@ -13,31 +13,6 @@ the custom borderless Win95 chrome behavior. macOS remains unsupported.
 | Active-window metadata | Supported with X11 tools | Limited by the compositor |
 | Global window control | X11-dependent | Restricted |
 
-## Ubuntu installation
-
-Create an isolated Python environment and install the project requirements:
-
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-tk tesseract-ocr tesseract-ocr-eng \
-  libtesseract-dev scrot xdotool wmctrl x11-utils
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python main.py
-```
-
-Thai OCR is optional:
-
-```bash
-sudo apt install tesseract-ocr-tha
-```
-
-After installing it, set `OCR_LANGUAGES = eng+tha` in `config.txt`. Run package
-installation with `sudo` when required, but always run `python main.py` as the
-signed-in desktop user.
-
 ## Session and capture behavior
 
 At startup, the screen reader reports a concise capability line without
@@ -80,29 +55,6 @@ printf 'session=%s display=%s wayland=%s\n' \
   "${DISPLAY:+present}" \
   "${WAYLAND_DISPLAY:+present}"
 ```
-
-On Xorg, confirm that the display is reachable:
-
-```bash
-xdpyinfo >/dev/null && echo "X11 display is available"
-```
-
-`DISPLAY` normally comes from the desktop session and must name the display used
-by the signed-in user. `XAUTHORITY`, when set, must point to that session's
-readable authority file. Do not invent either value, copy another user's file,
-or hardcode a path from a previous login. If they are missing in a terminal,
-open a new terminal from the desktop session. For SSH, use trusted X forwarding
-or launch Agetha locally instead of weakening X server access controls.
-
-PyAutoGUI is optional. Test it without exposing authority contents:
-
-```bash
-python -c "import pyautogui; image=pyautogui.screenshot(); print(image.size)"
-```
-
-An import or screenshot failure does not prevent chat from starting; use the
-backend diagnostic described below or disable screen reading while correcting
-the desktop-session setup.
 
 Test Tesseract independently:
 

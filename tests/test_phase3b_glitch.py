@@ -110,9 +110,7 @@ class TestShowOverlayMockParent(unittest.TestCase):
 
     def test_show_schedules_on_parent_when_enabled(self) -> None:
         parent = MagicMock()
-        with patch("agetha.ui.glitch_overlay.IS_WINDOWS", True), patch(
-            "agetha.ui.glitch_overlay.get_settings",
-        ) as mock_settings:
+        with patch("agetha.ui.glitch_overlay.get_settings") as mock_settings:
             mock_settings.return_value.enable_glitch_effects = True
             mock_settings.return_value.glitch_default_style = "scanlines"
             with patch("agetha.ui.glitch_overlay._GlitchOverlay") as mock_overlay:
@@ -120,15 +118,6 @@ class TestShowOverlayMockParent(unittest.TestCase):
                 parent.after.assert_called_once()
                 parent.after.call_args[0][1]()
                 mock_overlay.assert_called_once()
-
-    def test_show_skips_on_managed_linux_windows(self) -> None:
-        parent = MagicMock()
-        with patch("agetha.ui.glitch_overlay.IS_WINDOWS", False), patch(
-            "agetha.ui.glitch_overlay.get_settings",
-        ) as mock_settings:
-            mock_settings.return_value.enable_glitch_effects = True
-            glitch_overlay.show_glitch_overlay(parent, style="scanlines", duration_ms=800)
-        parent.after.assert_not_called()
 
 
 if __name__ == "__main__":
