@@ -64,9 +64,6 @@ def apply_borderless_win95(
     win: tk.Toplevel,
     parent: tk.Misc | None = None,
     *,
-    win: tk.Toplevel,
-    parent: tk.Misc | None = None,
-    *,
     topmost: bool = True,
 ) -> None:
     """
