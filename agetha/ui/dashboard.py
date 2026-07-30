@@ -628,7 +628,12 @@ def _system_snapshot() -> dict[str, str | float]:
 def open_dashboard(parent: tk.Misc, app_settings) -> None:
     """Open a Toplevel dashboard with System / Virus / Notepad / Settings tabs."""
     import sys
-    from agetha.ui.w95_window import apply_borderless_win95, refresh_borderless, show_borderless
+    from agetha.ui.w95_window import (
+        apply_borderless_win95,
+        minimize_managed,
+        refresh_borderless,
+        show_borderless,
+    )
 
     try:
         ui_scale = float(getattr(parent, "_agetha_ui_scale", 1.0))
@@ -639,6 +644,7 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         return max(1, int(round(value * ui_scale)))
 
     win = tk.Toplevel(parent)
+    win.title("Agetha — Dashboard")
     apply_borderless_win95(win, parent, topmost=True)
     try:
         from agetha.utils import apply_window_icon
@@ -707,6 +713,8 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
         _save_notepad()
         win.destroy()
 
+    win.protocol("WM_DELETE_WINDOW", _close_dashboard)
+
     tk.Button(
         title_bar, text="✕", command=_close_dashboard, **_btn_kw,
     ).pack(side="right", padx=(0, 2), pady=1)
@@ -733,23 +741,10 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
             _schedule(250, _bind_restore)
         else:
             try:
-                win.withdraw()
+                win.grab_release()
             except Exception:
-                return
-
-            def _bind_restore() -> None:
-                def _on_map(_e: tk.Event | None = None) -> None:
-                    try:
-                        if win.winfo_exists():
-                            win.deiconify()
-                            refresh_borderless(win)
-                            win.unbind("<Map>")
-                    except Exception:
-                        pass
-
-                win.bind("<Map>", _on_map)
-
-            _schedule(250, _bind_restore)
+                pass
+            minimize_managed(win)
 
     tk.Button(
         title_bar, text="─", command=_minimize, **_btn_kw,

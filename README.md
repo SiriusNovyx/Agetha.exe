@@ -81,10 +81,13 @@ original OCR text. Use `OCR_EXCLUDED_APPS` and
 `OCR_EXCLUDED_TITLE_PATTERNS` for windows that should never be captured
 automatically; title exclusions accept plain text or a bounded `re:` prefix.
 
-On Windows, focused capture and process names use Win32 APIs and MSS. Linux uses
-the existing X11/desktop-tool fallbacks with safe capture degradation when a
-tool or display facility is unavailable. Historical macOS fallbacks remain
-unsupported as of v5.5.5.
+On Windows, focused capture and process names use Win32 APIs and MSS. Ubuntu
+Xorg supports managed Tk windows and automatic OCR through validated optional
+backends. GNOME Wayland supports the interactive GUI and normal minimize/restore
+behavior, while screen capture remains compositor-dependent and automatic OCR
+fails closed when unrestricted capture is unavailable. See
+[Linux desktop support](docs/linux_support.md). Historical macOS fallbacks
+remain unsupported as of v5.5.5.
 
 Tesseract remains the default real-time backend; Unlimited-OCR is still used
 only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported

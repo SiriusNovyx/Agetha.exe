@@ -183,6 +183,8 @@ agree. See [Adding an AI command](development.md#adding-an-ai-command).
 
 The screen subsystem deliberately separates capture policy from OCR backends:
 
+- [linux_session.py](../agetha/platform/linux_session.py) detects X11/Wayland
+  capabilities without making a live display connection during import.
 - [screen_reader.py](../agetha/platform/screen_reader.py) coordinates active
   window discovery, platform capture fallbacks, OCR, exclusion/redaction,
   pattern scanning, and stale-result protection.

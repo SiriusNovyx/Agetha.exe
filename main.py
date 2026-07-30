@@ -862,6 +862,7 @@ class AgethaPopup:
         from agetha.ui.w95_window import apply_borderless_win95, show_borderless
 
         self._win = tk.Toplevel(parent)
+        self._win.title("Agetha")
         apply_borderless_win95(self._win, parent, topmost=True)
         self._win.configure(bg=W95_BG)
         self._win.resizable(False, False)
@@ -954,7 +955,10 @@ class AgethaPopup:
         self._win.bind("<Return>", lambda _: self._win.destroy())
         self._win.bind("<Escape>", lambda _: self._win.destroy())
         try:
-            self._win.focus_force()
+            if IS_WINDOWS:
+                self._win.focus_force()
+            else:
+                self._win.after_idle(self._win.focus_set)
         except Exception:
             pass
 
@@ -1112,7 +1116,8 @@ class CompanionApp:
             f"{WINDOW_W}x{WINDOW_H}+{_SETTINGS.window_start_x}+{_SETTINGS.window_start_y}"
         )
         self.root.configure(bg=W95_BG)
-        self.root.overrideredirect(True)
+        if IS_WINDOWS:
+            self.root.overrideredirect(True)
         self.root.resizable(False, False)
         apply_window_icon(self.root)
         try:
@@ -1162,11 +1167,15 @@ class CompanionApp:
         self._shutdown_complete = False
         self._is_dragging = False
         self._is_minimized = False
+        self._window_mapped = bool(IS_WINDOWS)
         self._drag_x = self._drag_y = 0
         self._win_x, self._win_y = _SETTINGS.window_start_x, _SETTINGS.window_start_y
         self._geom_anim_job = None
 
         self._build_ui()
+        if not IS_WINDOWS:
+            self.root.bind("<Map>", self._on_linux_map, add="+")
+            self.root.bind("<Unmap>", self._on_linux_unmap, add="+")
         self._mood_glow = MoodGlowController(
             self.root,
             self._gif_border,
@@ -1704,6 +1713,50 @@ class CompanionApp:
         if self._current_gif_player:
             self._current_gif_player.resume()
 
+    def _sync_screen_window_state(self) -> None:
+        screen = getattr(self, "_screen", None)
+        if screen is not None:
+            try:
+                screen.set_app_window_state(
+                    mapped=self._window_mapped,
+                    minimized=self._is_minimized,
+                    closing=self._closing,
+                )
+            except Exception:
+                pass
+
+    def _on_linux_unmap(self, _event=None) -> None:
+        if IS_WINDOWS or self._closing:
+            return
+        self._window_mapped = False
+        try:
+            self._is_minimized = self.root.state() == "iconic"
+        except Exception:
+            pass
+        self._cancel_geometry_animation()
+        if hasattr(self, "_mood_glow"):
+            self._mood_glow.cancel(reset=False)
+        self._pause_gif_playback()
+        try:
+            self.root.grab_release()
+        except Exception:
+            pass
+        self._sync_screen_window_state()
+
+    def _on_linux_map(self, _event=None) -> None:
+        if IS_WINDOWS or self._closing:
+            return
+        try:
+            if self.root.state() == "iconic":
+                return
+        except Exception:
+            return
+        self._window_mapped = True
+        self._is_minimized = False
+        self._resume_gif_playback()
+        self._refresh_mood_glow()
+        self._sync_screen_window_state()
+
     def _minimize(self):
         """Minimize the overrideredirect window.
         Handles Windows and Linux (compositors/window managers) safely."""
@@ -1740,26 +1793,11 @@ class CompanionApp:
                 self.root.bind("<Map>", _on_map)
             self._restore_job = self.root.after(250, _bind_restore)
         else:
-            try:
-                self.root.overrideredirect(False)
-                self.root.iconify()
-            except Exception:
-                pass
-            def _bind_restore_linux():
-                self._restore_job = None
-                def _on_map(event):
-                    try:
-                        if self.root.state() != "iconic":
-                            self.root.overrideredirect(True)
-                            self.root.lift()
-                            self._is_minimized = False
-                            self._resume_gif_playback()
-                            self._refresh_mood_glow()
-                            self.root.unbind("<Map>")
-                    except Exception:
-                        pass
-                self.root.bind("<Map>", _on_map)
-            self._restore_job = self.root.after(250, _bind_restore_linux)
+            from agetha.ui.w95_window import minimize_managed
+            self._window_mapped = False
+            self._sync_screen_window_state()
+            if not minimize_managed(self.root):
+                self._is_minimized = False
 
     def _on_gif_click(self, event=None):
         """Handle a click on the Agetha gif — sends a hidden touch message to the AI.
@@ -1992,6 +2030,7 @@ class CompanionApp:
                     self._screen = screen
                     self._ai = ai
                     if self._screen:
+                        self._sync_screen_window_state()
                         try:
                             self._screen.cache_own_window_handle()
                         except Exception as exc:
@@ -2381,6 +2420,9 @@ class CompanionApp:
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
             self._poll_job = None
+        if self._is_minimized or not self._window_mapped:
+            self._reschedule_screen_poll()
+            return
         threading.Thread(target=self._ai_tick, daemon=True).start()
 
     def _reschedule_screen_poll(self):
@@ -2574,9 +2616,10 @@ class CompanionApp:
             )
 
             if get_settings().enable_screen_reader and not recently_active:
-                screen_text = self._screen.capture_text(
-                    focused_only=_SETTINGS.ocr_focused_window_only,
-                )
+                if self._screen.automatic_capture_supported:
+                    screen_text = self._screen.capture_text(
+                        focused_only=_SETTINGS.ocr_focused_window_only,
+                    )
                 raw_screen_text = screen_text
                 monitor_status = getattr(self._screen, "last_monitor_status", "")
                 preserve_previous_context = False
@@ -2594,6 +2637,17 @@ class CompanionApp:
                 elif monitor_status == "unchanged" and not is_user:
                     screen_text = "[Screen unchanged; no new OCR event.]"
                     preserve_previous_context = True
+                elif monitor_status in {
+                    "skipped_capture_unavailable",
+                    "skipped_wayland_capture_restricted",
+                    "skipped_minimized",
+                    "skipped_unmapped",
+                    "skipped_invalid_geometry",
+                    "skipped_fully_offscreen",
+                    "capture_backend_unavailable",
+                    "capture_failed",
+                }:
+                    self._last_screen_text = ""
                 if screen_text and not preserve_previous_context:
                     self._last_screen_text = screen_text
 
@@ -3148,11 +3202,19 @@ class CompanionApp:
     def _restore_from_tray(self) -> None:
         if self._closing:
             return
-        try:
-            self.root.deiconify()
-            self.root.lift()
-        except Exception:
-            return
+        if IS_WINDOWS:
+            try:
+                self.root.deiconify()
+                self.root.lift()
+            except Exception:
+                return
+        else:
+            from agetha.ui.w95_window import restore_managed
+            if not restore_managed(self.root):
+                return
+            self._window_mapped = True
+            self._is_minimized = False
+            self._sync_screen_window_state()
         self._resume_gif_playback()
         self._refresh_mood_glow()
 

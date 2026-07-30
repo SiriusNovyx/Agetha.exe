@@ -91,6 +91,9 @@ def show_glitch_overlay(
         if parent is None:
             logger.warning("glitch_overlay: parent is None")
             return
+        if not IS_WINDOWS:
+            logger.info("glitch_overlay skipped (unsupported on managed Linux windows)")
+            return
 
         settings = get_settings()
         if not settings.enable_glitch_effects:

@@ -23,6 +23,7 @@ validation target because hosted Windows runners are x64.
 | Add or change an AI command | [Runtime flows — command dispatch](runtime_flows.md#ai-response-and-command-dispatch) | `ai_engine.py`, `command_handlers.py`, `command_guard.py` |
 | Change startup, shutdown, timers, or threads | [Runtime flows](runtime_flows.md) | `main.py`, relevant controller |
 | Change OCR or screen context | [Architecture — screen monitoring](architecture.md#screen-monitoring-and-ocr) | `screen_reader.py`, `screen_monitoring.py`, `ocr_backends/` |
+| Diagnose Ubuntu Xorg/Wayland GUI or OCR | [Linux desktop support](linux_support.md) | `linux_session.py`, `screen_reader.py`, `w95_window.py` |
 | Change moods, GIFs, glow, motion, or window chrome | [Module reference — UI](module_reference.md#agethaui) | `main.py`, `agetha/ui/`, root `agent.md` |
 | Change memory, dreams, tasks, or emotions | [Architecture — persisted state](architecture.md#persisted-state) | `agetha/core/`, `agetha/features/tasks.py` |
 | Change configuration | [Development guide](development.md#configuration-and-secrets) | `app_config.py`, `config.txt`, dashboard settings |
