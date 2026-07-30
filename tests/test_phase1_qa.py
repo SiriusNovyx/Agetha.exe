@@ -153,13 +153,14 @@ class TestLongtermAppendSource(unittest.TestCase):
         repo = Path(__file__).resolve().parent.parent
         callers: list[str] = []
         for path in sorted(repo.rglob("*.py")):
+            relative_parts = path.relative_to(repo).parts
             excluded = {"tests", "venv", ".venv"}
             is_codex_worktree = any(
                 part.startswith(".codex-") and part.endswith("-worktree")
-                for part in path.parts
+                for part in relative_parts
             )
             if (
-                excluded.intersection(path.parts)
+                excluded.intersection(relative_parts)
                 or is_codex_worktree
                 or path.name.startswith("test_")
             ):
