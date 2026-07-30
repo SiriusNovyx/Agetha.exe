@@ -26,6 +26,7 @@ import re
 import subprocess
 import tempfile
 import hashlib
+import importlib
 import threading
 import time
 from dataclasses import dataclass
@@ -53,6 +54,7 @@ def _setup_dpi_awareness() -> None:
 _setup_dpi_awareness()
 
 from agetha.utils import logger
+from agetha.platform.linux_session import detect_linux_desktop
 from agetha.platform.ocr_backends.base import OCRLine, OCRResult
 from agetha.platform.ocr_backends.tesseract_backend import TesseractOCRBackend
 from agetha.platform.screen_monitoring import (
@@ -92,11 +94,24 @@ try:
 except ImportError:
     TESSERACT_OK = False
 
-try:
-    import pyautogui
-    PYAUTOGUI_OK = True
-except ImportError:
-    PYAUTOGUI_OK = False
+pyautogui = None
+PYAUTOGUI_OK = False
+
+
+def _load_optional_pyautogui(importer=importlib.import_module):
+    """Load PyAutoGUI without allowing display-runtime failures to abort import."""
+    try:
+        module = importer("pyautogui")
+    except Exception as exc:
+        logger.warning(
+            "PyAutoGUI unavailable; continuing without it: %s",
+            type(exc).__name__,
+        )
+        return None, False
+    return module, True
+
+
+pyautogui, PYAUTOGUI_OK = _load_optional_pyautogui()
 
 
 # ── Tesseract path helper (Windows) ──────────────────────────────────────────
@@ -477,6 +492,9 @@ def _get_window_info(hwnd: int, skip_hwnd: int | None = None) -> dict | None:
         except Exception:
             pass
 
+        minimized = bool(ctypes.windll.user32.IsIconic(hwnd))
+        mapped = bool(ctypes.windll.user32.IsWindowVisible(hwnd))
+
         # Bounding rect in physical pixels (DPI awareness is already set)
         rect = ctypes.wintypes.RECT()
         if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -484,8 +502,6 @@ def _get_window_info(hwnd: int, skip_hwnd: int | None = None) -> dict | None:
 
         w = rect.right  - rect.left
         h = rect.bottom - rect.top
-        if w <= 20 or h <= 20:
-            return None   # minimised or invisible
         if w > 7680 or h > 4320:
             return None   # absurd size — skip to avoid mss crash
 
@@ -499,6 +515,8 @@ def _get_window_info(hwnd: int, skip_hwnd: int | None = None) -> dict | None:
             "hwnd":   hwnd,
             "process_name": process_name,
             "process_id": process_id,
+            "minimized": minimized,
+            "mapped": mapped,
         }
     except Exception as e:
         logger.debug(f"Window lookup failed: {type(e).__name__}")
@@ -562,6 +580,26 @@ def _linux_process_name_from_window(window_id: int) -> str:
     return _linux_window_process(window_id)[0]
 
 
+def _linux_window_state(window_id: int) -> tuple[bool | None, bool]:
+    """Return (mapped, minimized) from X11 metadata without importing Xlib."""
+    try:
+        result = subprocess.run(
+            [
+                "xprop", "-id", f"0x{int(window_id):x}",
+                "WM_STATE", "_NET_WM_STATE",
+            ],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None, False
+        output = result.stdout.casefold()
+        minimized = "_net_wm_state_hidden" in output or "iconic state" in output
+        mapped = True if "normal state" in output or "iconic state" in output else None
+        return mapped, minimized
+    except Exception:
+        return None, False
+
+
 def _get_linux_window_info(
     window_id: int,
     skip_hwnd: int | None = None,
@@ -593,6 +631,7 @@ def _get_linux_window_info(
             size = re.search(r"Geometry:\s*(\d+)x(\d+)", result.stdout)
             if position and size:
                 process_name, process_id = _linux_window_process(window_id)
+                mapped, minimized = _linux_window_state(window_id)
                 return {
                     "left": int(position.group(1)),
                     "top": int(position.group(2)),
@@ -602,6 +641,8 @@ def _get_linux_window_info(
                     "hwnd": window_id,
                     "process_name": process_name,
                     "process_id": process_id,
+                    "mapped": mapped,
+                    "minimized": minimized,
                 }
     except Exception as exc:
         logger.debug(f"xdotool window lookup failed: {type(exc).__name__}")
@@ -622,6 +663,7 @@ def _get_linux_window_info(
                 if listed_id != window_id:
                     continue
                 process_name, process_id = _linux_window_process(window_id)
+                mapped, minimized = _linux_window_state(window_id)
                 return {
                     "left": int(parts[2]),
                     "top": int(parts[3]),
@@ -631,6 +673,8 @@ def _get_linux_window_info(
                     "hwnd": window_id,
                     "process_name": process_name,
                     "process_id": process_id,
+                    "mapped": mapped,
+                    "minimized": minimized,
                 }
     except Exception as exc:
         logger.debug(f"wmctrl window lookup failed: {type(exc).__name__}")
@@ -743,6 +787,59 @@ def _is_wayland() -> bool:
             os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland")
 
 
+def _validate_capture_target(info: dict | None) -> tuple[dict | None, str]:
+    """Normalize one window target and reject unsafe state or geometry."""
+    if not info:
+        return None, "skipped_capture_target_missing"
+    if info.get("minimized") is True:
+        return None, "skipped_minimized"
+    if info.get("mapped") is False:
+        return None, "skipped_unmapped"
+    try:
+        target = {
+            "left": int(info["left"]),
+            "top": int(info["top"]),
+            "width": int(info["width"]),
+            "height": int(info["height"]),
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None, "skipped_invalid_geometry"
+    if target["width"] <= 0 or target["height"] <= 0:
+        return None, "skipped_invalid_geometry"
+    return target, ""
+
+
+def _clip_capture_rect(
+    rect: dict | None,
+    display: dict | None,
+) -> tuple[dict | None, str]:
+    """Clip a capture rectangle to a positive virtual-display rectangle."""
+    target, status = _validate_capture_target(rect)
+    if target is None:
+        return None, status
+    bounds, status = _validate_capture_target(display)
+    if bounds is None:
+        return None, "skipped_invalid_display"
+    left = max(target["left"], bounds["left"])
+    top = max(target["top"], bounds["top"])
+    right = min(
+        target["left"] + target["width"],
+        bounds["left"] + bounds["width"],
+    )
+    bottom = min(
+        target["top"] + target["height"],
+        bounds["top"] + bounds["height"],
+    )
+    if right <= left or bottom <= top:
+        return None, "skipped_fully_offscreen"
+    return {
+        "left": left,
+        "top": top,
+        "width": right - left,
+        "height": bottom - top,
+    }, ""
+
+
 def _grab_mss_frame(
     monitor_dict: dict | None = None,
     *,
@@ -758,9 +855,26 @@ def _grab_mss_frame(
     try:
         import mss
         with mss.mss() as sct:
-            target = dict(monitor_dict) if monitor_dict else dict(sct.monitors[0])
+            virtual_display = dict(sct.monitors[0])
+            if monitor_dict:
+                target, _status = _clip_capture_rect(
+                    dict(monitor_dict), virtual_display,
+                )
+                if target is None:
+                    return None
+            else:
+                target, _status = _clip_capture_rect(
+                    virtual_display, virtual_display,
+                )
+                if target is None:
+                    return None
             raw = sct.grab(target)
+            raw_width, raw_height = raw.size
+            if int(raw_width) <= 0 or int(raw_height) <= 0:
+                return None
             image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            if image.width <= 0 or image.height <= 0:
+                return None
             return CapturedFrame(
                 image=image,
                 left=int(target.get("left", 0)),
@@ -785,9 +899,16 @@ def _grab_mss(monitor_dict: dict | None = None) -> "Image.Image | None":
 def _grab_imagegrab(bbox: tuple | None = None) -> "Image.Image | None":
     if not IMAGEGRAB_OK:
         return None
+    if bbox is not None:
+        try:
+            left, top, right, bottom = (int(value) for value in bbox)
+        except (TypeError, ValueError):
+            return None
+        if right <= left or bottom <= top:
+            return None
     try:
         img = ImageGrab.grab(bbox=bbox)
-        return img if img else None
+        return img if img and img.width > 0 and img.height > 0 else None
     except Exception:
         return None
 
@@ -796,7 +917,8 @@ def _grab_pyautogui() -> "Image.Image | None":
     if not PYAUTOGUI_OK:
         return None
     try:
-        return pyautogui.screenshot()
+        image = pyautogui.screenshot()
+        return image if image and image.width > 0 and image.height > 0 else None
     except Exception:
         return None
 
@@ -811,7 +933,8 @@ def _grab_scrot() -> "Image.Image | None":
         result = subprocess.run(["scrot", "--silent", tmp], capture_output=True, timeout=10)
         if result.returncode != 0:
             return None
-        return Image.open(tmp).copy()
+        image = Image.open(tmp).copy()
+        return image if image.width > 0 and image.height > 0 else None
     except Exception:
         return None
     finally:
@@ -832,7 +955,10 @@ def _grab_temp_png(grabber_fn) -> "Image.Image | None":
             tmp = f.name
         if not grabber_fn(tmp):
             return None
-        return Image.open(tmp).copy()
+        if not Path(tmp).is_file() or Path(tmp).stat().st_size <= 0:
+            return None
+        image = Image.open(tmp).copy()
+        return image if image.width > 0 and image.height > 0 else None
     except Exception:
         return None
     finally:
@@ -901,6 +1027,9 @@ class ScreenReader:
         self._state_lock = threading.RLock()
         self._stopped = False
         self._clock = time.monotonic
+        self._app_mapped = True
+        self._app_minimized = False
+        self._app_closing = False
 
         # Capture origin — used to translate Tesseract pixel coords → screen coords
         self._capture_left: int = 0
@@ -968,9 +1097,34 @@ class ScreenReader:
 
         self._backend_name = "lazy"
         self._backend_fn = None
-        self._backend_candidates = self._ordered_backends()
-        self._capture_available = _cfg.enable_screen_reader and _has_display()
-        self._available = self._capture_available and TESSERACT_OK
+        self._explicit_backend_name = "lazy"
+        self._explicit_backend_fn = None
+        self._disabled_backends: set[str] = set()
+        self._capture_warning_emitted = False
+        self._linux_capabilities = None
+        if self._system == "Linux":
+            self._linux_capabilities = detect_linux_desktop(
+                pyautogui_ok=PYAUTOGUI_OK,
+                imagegrab_ok=IMAGEGRAB_OK,
+            )
+            logger.info(self._linux_capabilities.diagnostic_summary())
+        self._backend_candidates = self._ordered_backends(automatic=True)
+        self._explicit_backend_candidates = self._ordered_backends(automatic=False)
+        display_available = _has_display()
+        if self._linux_capabilities is not None:
+            automatic_policy = self._linux_capabilities.automatic_ocr_supported
+            explicit_policy = self._linux_capabilities.explicit_capture_supported
+        else:
+            automatic_policy = display_available
+            explicit_policy = display_available
+        self._automatic_capture_available = bool(
+            _cfg.enable_screen_reader and display_available and automatic_policy
+        )
+        self._explicit_capture_available = bool(
+            _cfg.enable_screen_reader and display_available and explicit_policy
+        )
+        self._capture_available = self._automatic_capture_available
+        self._available = self._automatic_capture_available and TESSERACT_OK
         self._tesseract_checked = False
         self._tesseract_ready = False
 
@@ -982,6 +1136,15 @@ class ScreenReader:
                 reasons.append("pytesseract package missing")
             if not _has_display():
                 reasons.append("no display")
+            if self._system == "Linux" and self._linux_capabilities is not None:
+                if self._linux_capabilities.session_type == "wayland":
+                    reasons.append("automatic Wayland capture unavailable")
+                    self.last_monitor_status = "skipped_wayland_capture_restricted"
+                else:
+                    reasons.append("capture backend unavailable")
+                    self.last_monitor_status = "skipped_capture_unavailable"
+            else:
+                self.last_monitor_status = "capture_disabled"
             logger.warning(f"Screen capture disabled: {', '.join(reasons)}")
         else:
             logger.info("[ScreenReader] Phase 3 ready — backend: lazy (first capture)")
@@ -1064,27 +1227,59 @@ class ScreenReader:
             process_name="",
         )
 
-    def _capture_with_backend(self) -> CapturedFrame | None:
+    def _capture_with_backend(self, *, automatic: bool = True) -> CapturedFrame | None:
         """Select a screenshot backend without throwing away its first frame."""
-        pending = getattr(self, "_pending_backend_frame", None)
-        if pending is not None:
+        prefix = "_backend" if automatic else "_explicit_backend"
+        pending_attr = f"{prefix}_pending_frame"
+        pending = getattr(self, pending_attr, None)
+        if pending is None and automatic:
+            pending = getattr(self, "_pending_backend_frame", None)
             self._pending_backend_frame = None
+        if pending is not None:
+            setattr(self, pending_attr, None)
             return pending
-        if self._backend_fn is not None:
-            return self._as_frame(
-                self._backend_fn(), backend_name=self._backend_name,
-            )
-        for name, fn in self._backend_candidates:
+        disabled_backends = getattr(self, "_disabled_backends", None)
+        if disabled_backends is None:
+            disabled_backends = set()
+            self._disabled_backends = disabled_backends
+        backend_fn = getattr(self, f"{prefix}_fn", None)
+        backend_name = getattr(self, f"{prefix}_name", "lazy")
+        if backend_fn is not None:
+            try:
+                frame = self._as_frame(backend_fn(), backend_name=backend_name)
+            except Exception as exc:
+                frame = None
+                logger.debug(
+                    f"Backend {backend_name} failed: {type(exc).__name__}"
+                )
+            if frame is not None:
+                return frame
+            disabled_backends.add(backend_name)
+            setattr(self, f"{prefix}_fn", None)
+            setattr(self, f"{prefix}_name", "unavailable")
+        candidates = (
+            self._backend_candidates if automatic
+            else getattr(self, "_explicit_backend_candidates", [])
+        )
+        for name, fn in candidates:
+            if name in disabled_backends:
+                continue
             try:
                 frame = self._as_frame(fn(), backend_name=name)
-                if frame is not None:
-                    self._backend_name = name
-                    self._backend_fn = fn
-                    logger.info(f"[ScreenReader] Selected backend: {name}")
-                    return frame
             except Exception as exc:
+                frame = None
                 logger.debug(f"Backend {name} failed: {type(exc).__name__}")
+            if frame is None:
+                disabled_backends.add(name)
+                continue
+            setattr(self, f"{prefix}_name", name)
+            setattr(self, f"{prefix}_fn", fn)
+            logger.info(f"[ScreenReader] Selected backend: {name}")
+            return frame
         self.last_monitor_status = "capture_backend_unavailable"
+        if not getattr(self, "_capture_warning_emitted", False):
+            self._capture_warning_emitted = True
+            logger.warning("[ScreenReader] capture backend unavailable for this session")
         return None
 
     def _ensure_backend(self) -> bool:
@@ -1097,7 +1292,7 @@ class ScreenReader:
 
     # ── Backend selection ─────────────────────────────────────────────────────
 
-    def _ordered_backends(self) -> list[tuple]:
+    def _ordered_backends(self, *, automatic: bool = True) -> list[tuple]:
         # mss is always first on Windows — it supports partial capture dicts
         head = [("mss", lambda: _grab_mss_frame(scope="virtual_desktop"))]
         if self._system == "Windows":
@@ -1106,9 +1301,14 @@ class ScreenReader:
             return head + [("screencapture", _grab_screencapture), ("pyautogui", _grab_pyautogui)]
         else:
             if _is_wayland():
-                return [("spectacle", _grab_spectacle), ("grim", _grab_grim),
-                        ("gnome-screenshot", _grab_gnome_screenshot), ("pyautogui", _grab_pyautogui)]
-            return head + [("scrot", _grab_scrot), ("pyautogui", _grab_pyautogui)]
+                if automatic:
+                    return []
+                return [("spectacle", _grab_spectacle), ("grim", _grab_grim)]
+            return head + [
+                ("imagegrab", _grab_imagegrab),
+                ("scrot", _grab_scrot),
+                ("pyautogui", _grab_pyautogui),
+            ]
 
     # ── 1. Own-window HWND cache ──────────────────────────────────────────────
 
@@ -1142,12 +1342,12 @@ class ScreenReader:
     def _normalized_capture_target(info: dict | None) -> dict | None:
         if not info:
             return None
+        geometry, _status = _validate_capture_target(info)
+        if geometry is None:
+            return None
         try:
             target = {
-                "left": int(info["left"]),
-                "top": int(info["top"]),
-                "width": int(info["width"]),
-                "height": int(info["height"]),
+                **geometry,
                 "title": str(info.get("title", ""))[:60],
                 "hwnd": int(info["hwnd"]) if info.get("hwnd") is not None else None,
                 "process_name": str(info.get("process_name", ""))[:120],
@@ -1155,6 +1355,8 @@ class ScreenReader:
                     int(info["process_id"])
                     if info.get("process_id") is not None else None
                 ),
+                "mapped": info.get("mapped"),
+                "minimized": bool(info.get("minimized", False)),
             }
         except (KeyError, TypeError, ValueError):
             return None
@@ -1247,8 +1449,32 @@ class ScreenReader:
     ) -> CapturedFrame | None:
         """Return an immutable image/origin/title snapshot for one operation."""
         with self._capture_lock:
-            if self._stopped or not self._capture_available:
-                self.last_monitor_status = "capture_disabled"
+            if getattr(self, "_app_closing", False):
+                self._clear_stale_capture_state("capture_disabled")
+                return None
+            if automatic and getattr(self, "_app_minimized", False):
+                self._clear_stale_capture_state("skipped_minimized")
+                return None
+            if automatic and not getattr(self, "_app_mapped", True):
+                self._clear_stale_capture_state("skipped_unmapped")
+                return None
+            capture_available = (
+                getattr(
+                    self, "_automatic_capture_available",
+                    getattr(self, "_capture_available", False),
+                )
+                if automatic else
+                getattr(
+                    self, "_explicit_capture_available",
+                    getattr(self, "_capture_available", False),
+                )
+            )
+            if self._stopped or not capture_available:
+                if automatic and self._system == "Linux" and _is_wayland():
+                    status = "skipped_wayland_capture_restricted"
+                else:
+                    status = "skipped_capture_unavailable"
+                self._clear_stale_capture_state(status)
                 return None
             strict_target = focused_only and capture_target is not None
             if strict_target:
@@ -1259,9 +1485,14 @@ class ScreenReader:
             else:
                 win = self._foreground_info() if focused_only or automatic else None
             if win is not None:
+                geometry, invalid_status = _validate_capture_target(win)
+                if geometry is None:
+                    self._clear_stale_capture_state(invalid_status)
+                    return None
+                win = {**win, **geometry}
                 hwnd = win.get("hwnd")
                 if hwnd is not None and hwnd == self._get_own_hwnd():
-                    self.last_monitor_status = "skipped_own_window"
+                    self._clear_stale_capture_state("skipped_own_window")
                     return None
                 if automatic and is_capture_excluded(
                     title=win.get("title", ""),
@@ -1269,7 +1500,7 @@ class ScreenReader:
                     excluded_apps=self._excluded_apps,
                     title_exclusions=self._title_exclusions,
                 ):
-                    self.last_monitor_status = "skipped_excluded_window"
+                    self._clear_stale_capture_state("skipped_excluded_window")
                     return None
             if focused_only and win is not None:
                 hwnd = win.get("hwnd")
@@ -1307,12 +1538,53 @@ class ScreenReader:
                         if frame is not None:
                             self.last_monitor_status = "captured_active_monitor"
                             return frame
-            frame = self._capture_with_backend()
+            frame = self._capture_with_backend(automatic=automatic)
             if frame is not None:
                 self.last_monitor_status = f"captured_{frame.scope}"
                 return frame
-            self.last_monitor_status = "capture_failed"
+            if automatic:
+                self._clear_stale_capture_state("capture_failed")
+            else:
+                self.last_monitor_status = "capture_failed"
             return None
+
+    def _clear_stale_capture_state(self, status: str) -> None:
+        """Fail closed so skipped captures cannot reuse another window's OCR."""
+        state_lock = getattr(self, "_state_lock", None)
+        if state_lock is None:
+            self.last_monitor_status = status
+            self.last_active_window_title = ""
+            self.last_capture_metadata = None
+            self.last_word_positions = []
+            self.last_angry_keywords = []
+            self.last_pattern_matches = []
+            self.last_new_pattern_events = []
+            return
+        with state_lock:
+            self.last_monitor_status = status
+            self.last_active_window_title = ""
+            self.last_capture_metadata = None
+            self.last_word_positions = []
+            self.last_angry_keywords = []
+            self.last_pattern_matches = []
+            self.last_new_pattern_events = []
+
+    @property
+    def automatic_capture_supported(self) -> bool:
+        return bool(getattr(self, "_automatic_capture_available", False))
+
+    def set_app_window_state(
+        self,
+        *,
+        mapped: bool,
+        minimized: bool,
+        closing: bool = False,
+    ) -> None:
+        """Receive Tk window state from the UI thread without touching widgets."""
+        with self._state_lock:
+            self._app_mapped = bool(mapped)
+            self._app_minimized = bool(minimized)
+            self._app_closing = bool(closing)
 
     def _commit_capture_metadata(self, frame: CapturedFrame) -> None:
         with self._state_lock:
@@ -1366,6 +1638,8 @@ class ScreenReader:
             with state_lock:
                 self.last_new_pattern_events = []
             if not getattr(self, "_available", False):
+                status = getattr(self, "last_monitor_status", "capture_disabled")
+                self._clear_stale_capture_state(status)
                 return ""
             if not self._ensure_tesseract():
                 return ""

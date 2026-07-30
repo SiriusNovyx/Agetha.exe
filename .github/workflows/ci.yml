@@ -38,6 +38,13 @@ jobs:
           "pytesseract>=0.3.10,<1.0.0"
           "requests>=2.28.0,<3.0.0"
 
+      - name: Install Linux desktop smoke dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb openbox
+          python -m pip install "mss>=9.0.0,<11.0.0"
+
       - name: Compile shared modules
         run: python -m compileall agetha main.py
 
@@ -107,3 +114,14 @@ jobs:
           tests.test_screen_monitoring_reliability.TestCaptureBehavior.test_12h_linux_preserved_target_refreshes_geometry
           tests.test_screen_monitoring_reliability.TestCaptureBehavior.test_12i_linux_preserved_target_rejects_reused_xid
           tests.test_screen_monitoring_reliability.TestCaptureBehavior.test_12j_linux_preserved_target_rejects_closed_window
+
+      - name: Run managed Tk and X11 capture smokes under Xvfb
+        if: runner.os == 'Linux'
+        shell: bash
+        run: >-
+          xvfb-run -a sh -c '
+          openbox >/tmp/agetha-openbox.log 2>&1 &
+          sleep 1;
+          python -m unittest -v
+          tests.test_linux_desktop_support.TestLinuxTkLifecycle
+          tests.test_linux_desktop_support.TestLinuxX11Screenshot'

@@ -70,14 +70,15 @@ def apply_borderless_win95(
     Prepare a Toplevel for custom Win95 chrome only (no native title bar).
     Call before packing widgets; call refresh_borderless() after minimize restore.
     """
-    try:
-        win.withdraw()
-    except Exception:
-        pass
-    try:
-        win.overrideredirect(True)
-    except Exception:
-        pass
+    if IS_WINDOWS:
+        try:
+            win.withdraw()
+        except Exception:
+            pass
+        try:
+            win.overrideredirect(True)
+        except Exception:
+            pass
     if parent is not None:
         try:
             win.transient(parent)
@@ -92,6 +93,8 @@ def apply_borderless_win95(
 
 def refresh_borderless(win: tk.Misc) -> None:
     """Re-apply borderless chrome after map/deiconify (e.g. after minimize)."""
+    if not IS_WINDOWS:
+        return
     try:
         win.overrideredirect(True)
     except Exception:
@@ -108,8 +111,30 @@ def show_borderless(win: tk.Misc) -> None:
     """Finalize and show a borderless window."""
     try:
         win.update_idletasks()
-        strip_native_caption(win)
+        if IS_WINDOWS:
+            strip_native_caption(win)
         win.deiconify()
-        win.lift()
+        if IS_WINDOWS:
+            win.lift()
     except Exception as exc:
         logger.warning(f"w95_window: show_borderless failed: {exc}")
+
+
+def minimize_managed(win: tk.Misc) -> bool:
+    """Use the platform window manager's ordinary minimize transition."""
+    try:
+        if win.state() != "iconic":
+            win.iconify()
+        return True
+    except Exception:
+        return False
+
+
+def restore_managed(win: tk.Misc) -> bool:
+    """Restore a managed window without changing its decoration policy."""
+    try:
+        if win.state() != "normal":
+            win.deiconify()
+        return True
+    except Exception:
+        return False

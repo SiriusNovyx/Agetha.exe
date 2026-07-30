@@ -131,7 +131,10 @@ class _GlitchOverlay:
         sh = int(parent.winfo_screenheight() or 600)
 
         self._win = tk.Toplevel(parent)
-        self._win.overrideredirect(True)
+        if IS_WINDOWS:
+            self._win.overrideredirect(True)
+        else:
+            self._win.title("Agetha — Visual effect")
         try:
             self._win.attributes("-topmost", True)
         except Exception:

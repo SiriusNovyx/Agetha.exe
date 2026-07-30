@@ -123,6 +123,7 @@ Notes:
 | File | Responsibility and important symbols |
 |---|---|
 | [platform/__init__.py](../agetha/platform/__init__.py) | Package marker only. |
+| [linux_session.py](../agetha/platform/linux_session.py) | Side-effect-free X11/Wayland environment and screenshot-capability policy; never connects to X or exposes Xauthority data during import. |
 | [screen_reader.py](../agetha/platform/screen_reader.py) | `PatternDef`, `PatternMatch`, pattern registry, focused-window/monitor discovery, capture fallback order, `ScreenReader`, standard/deep OCR orchestration, current matches vs new events, state publication, redaction, stale-result rejection, and stop lifecycle. |
 | [screen_monitoring.py](../agetha/platform/screen_monitoring.py) | Pure reliability helpers: immutable `CapturedFrame`, `ProcessedOCRImage`, per-window/event state, preprocessing/scales, thumbnail difference, `ScreenChangeDetector`, `PatternEventTracker`, exclusions, and secret redaction. |
 | [voice_input.py](../agetha/platform/voice_input.py) | Microphone settings/discovery/probe, PyAudio-to-sounddevice fallback, Win95 `MicPickerDialog`, `VoiceInput` listener, Google STT, and locked singleton faster-whisper loading. |

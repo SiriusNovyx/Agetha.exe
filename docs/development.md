@@ -43,6 +43,10 @@ Tesseract are distribution packages on many Linux systems. Then launch:
 python main.py
 ```
 
+Linux window management and Xorg/Wayland capture policy are documented in
+[Linux desktop support](linux_support.md). Run without `sudo`; never use
+`xhost +` or hardcode a GNOME XWayland authority filename.
+
 Medic Checker is Windows-specific. Linux Fast Mode recovery uses the Python CLI
 documented in [Fast Mode security and recovery](fast_mode_security.md).
 

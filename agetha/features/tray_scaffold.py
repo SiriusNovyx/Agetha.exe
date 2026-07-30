@@ -19,6 +19,7 @@ Import-safe on all platforms. Never raises.
 from __future__ import annotations
 
 import importlib.util
+import sys
 import threading
 from typing import Any
 
@@ -94,7 +95,8 @@ def start_tray(app: Any) -> bool:
             try:
                 restore = getattr(app, "_restore_from_tray", app.root.deiconify)
                 app.root.after(0, restore)
-                app.root.after(0, lambda: app.root.attributes("-topmost", True))
+                if sys.platform == "win32":
+                    app.root.after(0, lambda: app.root.attributes("-topmost", True))
             except Exception:
                 pass
 
