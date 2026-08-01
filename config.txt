@@ -32,9 +32,9 @@ ENABLE_GROQ = yes
 # Tip: keep ENABLE_GROQ=yes for free tier first; use OpenRouter when Groq is exhausted.
 ENABLE_OPENROUTER = no
 
-# OPENROUTER_MODEL — model slug from openrouter.ai/models
-# Use exact IDs from https://openrouter.ai/models (many ":free" variants are retired).
 # Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
+# Recommended for Agetha: deepseek/deepseek-v4-flash-0731
+# Model availability and pricing may change; verify them on OpenRouter before use.
 OPENROUTER_MODEL = google/gemma-4-31b-it:free
 
 # FASTER_MODE — enables Agetha's reversible performance profile.
