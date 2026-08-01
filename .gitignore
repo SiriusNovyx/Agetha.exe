@@ -2,8 +2,8 @@
 .env
 conversation.txt
 
-# Character / UI media (third-party; not covered by this repo's LICENSE — keep local only)
-assets/
+# Character / UI media is committed for complete project downloads.
+# It remains excluded from the repository's GPLv3 license; see assets/README.md.
 
 # Runtime
 memory/
