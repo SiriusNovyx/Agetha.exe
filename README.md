@@ -649,10 +649,13 @@ Run `ollama list` to see installed models.
 
 ```ini
 ENABLE_OPENROUTER = yes
-OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+OPENROUTER_MODEL = google/gemma-4-31b-it:free
 ```
 
 Add `OPENROUTER_API_KEY=…` to `.env`. Ignored when `USE_LOCAL_AI = yes`.
+Gemma 4 31B Free is the safe default. For users who accept paid OpenRouter
+usage, the recommended model is `deepseek/deepseek-v4-flash-0731`. Model
+availability and pricing may change, so verify both on OpenRouter before use.
 
 ### Voice + drag-and-drop (optional)
 
