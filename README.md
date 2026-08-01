@@ -4,6 +4,11 @@
 
 **Version:** Overhaul v5.5.5 · **Medic_Checker:** v5.5.5 · **Original author:** @tomiszivacs
 
+> **Asset notice:** The bundled files in [`assets/`](assets/) are provided so a
+> normal clone or source download runs with the complete UI. They are not
+> covered by this repository's GPLv3 license. See
+> [`assets/README.md`](assets/README.md) for details.
+
 ---
 
 ## Developer documentation
@@ -702,7 +707,7 @@ On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used 
   through x64 Python running under Prism.
 - **Python 3.13.x** recommended (3.14 may have compatibility issues)
 - **Tesseract OCR** — [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) (optional, enables screen reading)
-- **Assets** — download from [chocolatebread.ddns.net/agetha.html](https://chocolatebread.ddns.net/agetha.html)
+- **Assets** — included in this repository; keep the `assets` folder beside the application files
 - **Groq API key** (in `.env`), **OpenRouter** (optional), or **Ollama** for AI responses
 - **Microphone** — optional, for voice input (`ENABLE_VOICE = yes`)
 - **PyAudio** — optional, required for microphone (installed by Medic_Checker)
