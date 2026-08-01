@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
 from agetha.commands.command_guard import CommandGuard
+from agetha.core.request_context import (
+    REQUEST_ORIGINS,
+    RequestOrigin,
+    normalize_request_origin,
+)
 from agetha.commands.system_commands import (
     copy_to_clipboard, get_clipboard, lock_screen, open_folder, open_url,
     restart_system, screenshot_path, search_files, set_reminder, set_volume,
@@ -50,9 +55,51 @@ class DispatchCtx:
     mood: str
     segments: list
     shutdown_requested: bool
+    origin: RequestOrigin = "user"
+
+
+def _command_result_ok(result: str) -> bool:
+    value = str(result or "").casefold()
+    return bool(value) and not any(
+        marker in value
+        for marker in (
+            " error:", "[error", "not supported", "[no ",
+            "failed", "missing ", "not found", "unavailable",
+        )
+    )
+
+
+def _finish_verified_command(app, ctx: DispatchCtx, result: str) -> None:
+    """Speak success text only after the OS operation reports success."""
+    if _command_result_ok(result):
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        return
+    message = str(result or "The operation failed.").strip("[]")[:140]
+    app._show_op_error(message)
+    app._speak_and_continue(
+        [{"text": "That didn't work.", "pause": 0.0}],
+        "neutral",
+        False,
+    )
 
 
 HANDLERS: dict[str, HandlerFn] = {}
+
+
+def _start_app_worker(app: "CompanionApp", target: Callable[[], None], name: str) -> None:
+    """Use CompanionApp lifecycle tracking while preserving lightweight test doubles."""
+    starter = getattr(type(app), "_start_worker", None)
+    if callable(starter):
+        starter(app, target, name=name)
+    else:
+        threading.Thread(target=target, daemon=True).start()
+
+
+def _call_app_ui_sync(app: "CompanionApp", callback: Callable[[], object]) -> object | None:
+    caller = getattr(type(app), "_call_ui_sync", None)
+    if callable(caller):
+        return caller(app, callback)
+    return callback()
 
 
 def register(command: str) -> Callable[[HandlerFn], HandlerFn]:
@@ -81,11 +128,34 @@ def _block_recursive_deep_ocr(response: dict | None) -> dict | None:
     return safe
 
 
-def dispatch(app: "CompanionApp", response: dict, user_message: str | None = None) -> None:
+def dispatch(
+    app: "CompanionApp",
+    response: dict,
+    user_message: str | None = None,
+    *,
+    origin: RequestOrigin | None = None,
+) -> None:
     """Route a parsed AI response to the appropriate handler."""
+    resolved_origin = normalize_request_origin(
+        origin,
+        default="ambient" if user_message is None else "user",
+    )
+    if not isinstance(response, dict):
+        logger.warning("Blocked malformed AI response before command dispatch")
+        app.root.after(0, lambda: app._set_state(app.STATE_IDLE))
+        app._reschedule_screen_poll()
+        return
     command = response.get("command", "idle")
+    if not isinstance(command, str) or command not in (
+        set(HANDLERS) | {"idle", "speak", "wake_user", "popup"}
+    ):
+        logger.warning("Blocked unknown AI command before Command Guard")
+        app.root.after(0, lambda: app._set_state(app.STATE_IDLE))
+        app._reschedule_screen_poll()
+        return
     ctx = DispatchCtx(
         user_message=user_message,
+        origin=resolved_origin,
         mood=response.get("mood", "neutral"),
         segments=response.get("segments", []),
         shutdown_requested=bool(response.get("shutdown", False)),
@@ -100,9 +170,7 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
 
     # Defense in depth: an ambient model turn must not even open a confirmation
     # dialog for deep OCR, let alone capture or transmit a screenshot.
-    if command == "analyze_screen_deep" and (
-        not user_message or user_message == "__touch__"
-    ):
+    if command == "analyze_screen_deep" and resolved_origin != "user":
         logger.info("analyze_screen_deep ignored during an ambient turn")
         app.root.after(0, app._reschedule_screen_poll)
         return
@@ -117,7 +185,7 @@ def dispatch(app: "CompanionApp", response: dict, user_message: str | None = Non
             except Exception as exc:
                 logger.warning(f"Could not preserve deep-OCR target: {exc}")
 
-    if not user_message and ctx.mood in app._ATTENTION_MOODS:
+    if resolved_origin == "ambient" and ctx.mood in app._ATTENTION_MOODS:
         app._maybe_snap_to_center(ctx.mood)
     elif hasattr(app, "_play_response_motion"):
         app._play_response_motion(ctx.mood)
@@ -270,13 +338,15 @@ def handle_request_path(app, response, ctx):
 @register("create_folder")
 def handle_create_folder(app, response, ctx):
     path = response.get("path", "").strip()
+    result = "[no path]"
     if path:
         try:
             os.makedirs(path, exist_ok=True)
-            logger.info(f"Created folder: {path}")
+            logger.info("Created folder: name=%s", Path(path).name)
+            result = "[folder created]"
         except Exception as exc:
-            app._show_op_error(f"Could not create folder: {exc}")
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+            result = f"[create folder error: {type(exc).__name__}]"
+    _finish_verified_command(app, ctx, result)
     return True
 
 
@@ -287,6 +357,7 @@ def handle_create_file(app, response, ctx):
         p, fn = response.get("path", "").strip(), response.get("file_name", "").strip()
         if p and fn:
             file_path = os.path.join(p, fn)
+    result = "[no path]"
     if file_path:
         try:
             parent = os.path.dirname(file_path)
@@ -294,40 +365,46 @@ def handle_create_file(app, response, ctx):
                 os.makedirs(parent, exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as fh:
                 fh.write(response.get("content", ""))
-            logger.info(f"Created file: {file_path}")
+            logger.info("Created file: name=%s", Path(file_path).name)
+            result = "[file created]"
         except Exception as exc:
-            app._show_op_error(f"Could not create file: {exc}")
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+            result = f"[create file error: {type(exc).__name__}]"
+    _finish_verified_command(app, ctx, result)
     return True
 
 
 @register("delete_file")
 def handle_delete_file(app, response, ctx):
     path = response.get("path", "").strip()
+    result = "[no path]"
     if path:
         try:
             p = Path(path)
             if p.is_dir():
                 shutil.rmtree(p)
+                result = "[folder deleted]"
             elif p.exists():
                 p.unlink()
+                result = "[file deleted]"
             else:
-                app._show_op_error(f"Not found: {path}")
+                result = "[delete error: not found]"
         except Exception as exc:
-            app._show_op_error(f"Delete failed: {exc}")
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+            result = f"[delete error: {type(exc).__name__}]"
+    _finish_verified_command(app, ctx, result)
     return True
 
 
 @register("rename_file")
 def handle_rename_file(app, response, ctx):
     path, new_name = response.get("path", "").strip(), response.get("new_name", "").strip()
+    result = "[missing path or name]"
     if path and new_name:
         try:
             Path(path).rename(Path(path).parent / new_name)
+            result = "[file renamed]"
         except Exception as exc:
-            app._show_op_error(f"Rename failed: {exc}")
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+            result = f"[rename error: {type(exc).__name__}]"
+    _finish_verified_command(app, ctx, result)
     return True
 
 
@@ -358,8 +435,8 @@ def handle_list_dir(app, response, ctx):
 def handle_clipboard_set(app, response, ctx):
     text = response.get("text", "").strip()
     if text:
-        msg = copy_to_clipboard(text, app.root)
-        if msg.startswith("["):
+        msg = _call_app_ui_sync(app, lambda: copy_to_clipboard(text, app.root))
+        if isinstance(msg, str) and msg.startswith("["):
             logger.info(msg)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
@@ -367,7 +444,8 @@ def handle_clipboard_set(app, response, ctx):
 
 @register("get_clipboard")
 def handle_get_clipboard(app, response, ctx):
-    content = get_clipboard(app.root)
+    content = _call_app_ui_sync(app, lambda: get_clipboard(app.root))
+    content = str(content or "[clipboard unavailable]")
 
     def _requery():
         app.root.after(0, lambda: app._set_state(app.STATE_THINKING))
@@ -377,9 +455,9 @@ def handle_get_clipboard(app, response, ctx):
             request_profile="fast_tool_result",
         )
         if follow:
-            dispatch(app, follow, ctx.user_message)
+            dispatch(app, follow, ctx.user_message, origin="tool_result")
 
-    threading.Thread(target=_requery, daemon=True).start()
+    _start_app_worker(app, _requery, "clipboard-requery")
     return True
 
 
@@ -440,20 +518,25 @@ def handle_notification(app, response, ctx):
 @register("run_command")
 def handle_run_command(app, response, ctx):
     cmd_str = response.get("cmd", "").strip()
+    result = "[no command]"
     if cmd_str:
         try:
             if re.search(r"[|&;<>$`(){}]", cmd_str):
-                app._show_op_error("Shell metacharacters are not allowed in commands.")
+                result = "[command error: shell metacharacters are not allowed]"
             else:
                 args = shlex.split(cmd_str, posix=not IS_WINDOWS)
                 r = subprocess.run(
                     args, shell=False,
                     capture_output=True, text=True, timeout=15,
                 )
-                logger.info(f"run_command: {cmd_str} exit={r.returncode}")
+                logger.info("run_command completed: exit=%s", r.returncode)
+                result = (
+                    "[command completed]" if r.returncode == 0
+                    else f"[command error: exit {r.returncode}]"
+                )
         except Exception as exc:
-            app._show_op_error(f"Command failed: {exc}")
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+            result = f"[command error: {type(exc).__name__}]"
+    _finish_verified_command(app, ctx, result)
     return True
 
 
@@ -467,9 +550,9 @@ def handle_read_document(app, response, ctx):
             "", doc_content=doc_content, request_profile="fast_tool_result",
         )
         if follow:
-            dispatch(app, follow, ctx.user_message)
+            dispatch(app, follow, ctx.user_message, origin="tool_result")
 
-    threading.Thread(target=_requery, daemon=True).start()
+    _start_app_worker(app, _requery, "document-requery")
     return True
 
 
@@ -507,11 +590,10 @@ def handle_open_folder(app, response, ctx):
 @register("write_file")
 def handle_write_file(app, response, ctx):
     file_path = response.get("file_path", "").strip()
+    msg = "[no path]"
     if file_path and app._ai:
         msg = app._ai.write_file(file_path, response.get("content", ""), response.get("mode", "overwrite"))
-        if "error" in msg.lower():
-            app._show_op_error(msg)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    _finish_verified_command(app, ctx, msg)
     return True
 
 
@@ -534,19 +616,16 @@ def handle_monitor_process(app, response, ctx):
             request_profile="fast_command",
         )
         if follow:
-            dispatch(app, follow, ctx.user_message)
+            dispatch(app, follow, ctx.user_message, origin="tool_result")
 
-    threading.Thread(target=_check, daemon=True).start()
+    _start_app_worker(app, _check, "process-monitor")
     return True
 
 
 @register("play_emotion_sound")
 def handle_emotion_sound(app, response, ctx):
-    threading.Thread(
-        target=app._play_emotion_sound,
-        args=(response.get("emotion", "angry").strip(),),
-        daemon=True,
-    ).start()
+    emotion = response.get("emotion", "angry").strip()
+    _start_app_worker(app, lambda: app._play_emotion_sound(emotion), "emotion-sound")
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
@@ -568,8 +647,8 @@ def handle_show_dialog(app, response, ctx):
                         request_profile="fast_command",
                     )
                     if follow:
-                        dispatch(app, follow, ctx.user_message)
-                threading.Thread(target=_requery_yes, daemon=True).start()
+                        dispatch(app, follow, ctx.user_message, origin="tool_result")
+                _start_app_worker(app, _requery_yes, "dialog-requery")
         elif dlg_type == "warning":
             guard._native_confirm(dlg_title, dlg_msg, "warning", "okcancel", False)
         elif dlg_type == "error":
@@ -645,7 +724,7 @@ def handle_target_close(app, response, ctx):
             return
         _finish_target_op(app, ctx, ok, msg)
 
-    threading.Thread(target=_close, daemon=True).start()
+    _start_app_worker(app, _close, "window-close")
     return True
 
 
@@ -693,7 +772,7 @@ def handle_force_close(app, response, ctx):
                 return
             _finish_target_op(app, ctx, ok, msg)
 
-        threading.Thread(target=_kill, daemon=True).start()
+        _start_app_worker(app, _kill, "force-close")
         return True
     segs = ctx.segments or [{"text": "Gone.", "pause": 0.0}]
     app._speak_and_continue(segs, ctx.mood, ctx.shutdown_requested)
@@ -736,9 +815,9 @@ def handle_system_info(app, response, ctx):
             request_profile="fast_tool_result",
         )
         if follow:
-            dispatch(app, follow, ctx.user_message)
+            dispatch(app, follow, ctx.user_message, origin="tool_result")
 
-    threading.Thread(target=_requery, daemon=True).start()
+    _start_app_worker(app, _requery, "system-info-requery")
     return True
 
 
@@ -785,8 +864,7 @@ def handle_type_text(app, response, ctx):
 
 @register("lock_screen")
 def handle_lock_screen(app, response, ctx):
-    lock_screen()
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    _finish_verified_command(app, ctx, lock_screen())
     return True
 
 
@@ -796,8 +874,7 @@ def handle_shutdown(app, response, ctx):
         delay = int(response.get("delay", 60))
     except (TypeError, ValueError):
         delay = 60
-    shutdown_system(delay)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    _finish_verified_command(app, ctx, shutdown_system(delay))
     return True
 
 
@@ -807,8 +884,7 @@ def handle_restart(app, response, ctx):
         delay = int(response.get("delay", 60))
     except (TypeError, ValueError):
         delay = 60
-    restart_system(delay)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    _finish_verified_command(app, ctx, restart_system(delay))
     return True
 
 
@@ -824,10 +900,12 @@ def handle_set_reminder(app, response, ctx):
         app.root.after(0, lambda: app._subtitle.show_message(msg, "#ff6600"))
         if app._ai:
             follow = app._ai_query(
-                f"[REMINDER] {msg}", request_profile="fast_command",
+                msg,
+                request_profile="fast_command",
+                origin="reminder",
             )
             if follow:
-                dispatch(app, follow, None)
+                dispatch(app, follow, None, origin="reminder")
 
     set_reminder(seconds, text, _remind)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
@@ -896,9 +974,9 @@ def handle_search_memory(app, response, ctx):
                 request_profile="fast_tool_result",
             )
             if follow:
-                app._dispatch_response(follow, ctx.user_message)
+                app._dispatch_response(follow, ctx.user_message, origin="tool_result")
 
-        threading.Thread(target=_requery_disabled, daemon=True).start()
+        _start_app_worker(app, _requery_disabled, "memory-requery")
         return True
 
     query = (response.get("query") or ctx.user_message or "").strip()
@@ -923,9 +1001,9 @@ def handle_search_memory(app, response, ctx):
             request_profile="fast_tool_result",
         )
         if follow:
-            app._dispatch_response(follow, ctx.user_message)
+            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
 
-    threading.Thread(target=_requery, daemon=True).start()
+    _start_app_worker(app, _requery, "memory-requery")
     return True
 
 
@@ -948,7 +1026,7 @@ def _requery_with_web_context(app, ctx, web_context: str) -> None:
             ctx.user_message or "", request_profile="fast_tool_result",
         )
         if follow:
-            app._dispatch_response(follow, ctx.user_message)
+            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
     finally:
         _clear_web_rag_pending(app)
 
@@ -964,7 +1042,7 @@ def handle_search_web(app, response, ctx):
         def _requery_disabled():
             _requery_with_web_context(app, ctx, web_context)
 
-        threading.Thread(target=_requery_disabled, daemon=True).start()
+        _start_app_worker(app, _requery_disabled, "web-search-requery")
         return True
 
     query = (response.get("query") or ctx.user_message or "").strip()
@@ -984,7 +1062,7 @@ def handle_search_web(app, response, ctx):
     def _requery():
         _requery_with_web_context(app, ctx, web_context)
 
-    threading.Thread(target=_requery, daemon=True).start()
+    _start_app_worker(app, _requery, "web-search-requery")
     return True
 
 
@@ -1079,11 +1157,11 @@ def handle_read_notepad(app, response, ctx):
                 request_profile="fast_tool_result",
             )
             if follow:
-                app._dispatch_response(follow, ctx.user_message)
+                app._dispatch_response(follow, ctx.user_message, origin="tool_result")
         finally:
             _clear_notepad_pending(app)
 
-    threading.Thread(target=_requery, daemon=True).start()
+    _start_app_worker(app, _requery, "notepad-requery")
     return True
 
 
@@ -1366,7 +1444,7 @@ def handle_fetch_webpage(app, response, ctx):
         def _requery_disabled():
             _requery_with_web_context(app, ctx, web_context)
 
-        threading.Thread(target=_requery_disabled, daemon=True).start()
+        _start_app_worker(app, _requery_disabled, "web-fetch-requery")
         return True
 
     url = (response.get("url") or "").strip()
@@ -1376,7 +1454,7 @@ def handle_fetch_webpage(app, response, ctx):
         def _requery_empty():
             _requery_with_web_context(app, ctx, web_context)
 
-        threading.Thread(target=_requery_empty, daemon=True).start()
+        _start_app_worker(app, _requery_empty, "web-fetch-requery")
         return True
 
     try:
@@ -1390,7 +1468,7 @@ def handle_fetch_webpage(app, response, ctx):
     def _requery():
         _requery_with_web_context(app, ctx, web_context)
 
-    threading.Thread(target=_requery, daemon=True).start()
+    _start_app_worker(app, _requery, "web-fetch-requery")
     return True
 
 
@@ -1410,10 +1488,10 @@ def handle_request_screen_read(app, response, ctx):
             request_profile="fast_tool_result",
         )
         if follow:
-            app._dispatch_response(follow, ctx.user_message)
+            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
 
     app._defer_after_ai_tick(
-        lambda: threading.Thread(target=_requery, daemon=True).start()
+        lambda: _start_app_worker(app, _requery, "screen-requery")
     )
     return True
 
@@ -1421,7 +1499,10 @@ def handle_request_screen_read(app, response, ctx):
 @register("analyze_screen_deep")
 def handle_analyze_screen_deep(app, response, ctx):
     """Run optional deep OCR only after a direct user-triggered AI turn."""
-    if not ctx.user_message or ctx.user_message == "__touch__":
+    ctx_origin = getattr(ctx, "origin", None)
+    if ctx_origin not in REQUEST_ORIGINS:
+        ctx_origin = "user" if ctx.user_message else "ambient"
+    if not ctx.user_message or ctx_origin != "user":
         logger.info("analyze_screen_deep ignored without an explicit user request")
         app.root.after(0, lambda: app._subtitle.show_message(
             "Deep OCR only runs after you ask for it.", "#ff6600",
@@ -1473,7 +1554,7 @@ def handle_analyze_screen_deep(app, response, ctx):
         )
         follow = _block_recursive_deep_ocr(follow)
         if follow:
-            app._dispatch_response(follow, ctx.user_message)
+            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
         else:
             app.root.after(0, app._reschedule_screen_poll)
 
@@ -1570,4 +1651,4 @@ def _target_window_op(app, response, ctx, move: bool):
             return
         _finish_target_op(app, ctx, False, "Not supported on this platform")
 
-    threading.Thread(target=_do, daemon=True).start()
+    _start_app_worker(app, _do, "target-window-operation")

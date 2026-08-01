@@ -13,7 +13,6 @@ from tkinter import font as tkfont
 import threading
 import time
 import random
-import json
 import math
 import os
 import platform
@@ -72,6 +71,14 @@ except ImportError:
     PYGAME_OK = False
 
 from agetha.core.ai_engine import AIEngine
+from agetha.core.external_context import prepare_external_context
+from agetha.core.file_drop import prepare_file_drop
+from agetha.core.request_context import (
+    RequestOrigin,
+    normalize_request_origin,
+    render_request_message,
+    request_profile_for_origin,
+)
 from agetha.platform.screen_reader import ScreenReader
 from agetha.commands.command_guard import CommandGuard
 from agetha.platform.voice_input import (
@@ -1155,8 +1162,13 @@ class CompanionApp:
         self._ai_busy = False
         self._ai_busy_noninterruptible = False
         self._ai_tick_lock = threading.Lock()
+        self._ai_operation_token: object | None = None
         self._pending_user_message: str | None = None
+        self._pending_user_origin: RequestOrigin = "user"
         self._post_ai_tick_callbacks: list[Callable[[], None]] = []
+        self._worker_lock = threading.Lock()
+        self._workers: set[threading.Thread] = set()
+        self._active_picker_cancellers: set[Callable[[], None]] = set()
         self._speech_active = False
         self._state_lock = threading.Lock()
         self._voice: VoiceInput | None = None
@@ -1228,7 +1240,85 @@ class CompanionApp:
             pass
 
         # Start heavy init (audio, screen reader, AI) on a background thread
-        threading.Thread(target=self._init_background, daemon=True).start()
+        self._start_worker(self._init_background, name="background-init")
+
+    def _schedule_ui(self, callback: Callable[[], None]) -> object | None:
+        """Schedule Tk work without ever falling back to the calling worker."""
+        if getattr(self, "_closing", False):
+            return None
+        try:
+            return self.root.after(0, callback)
+        except Exception:
+            return None
+
+    def _call_ui_sync(self, callback: Callable[[], object], timeout: float = 5.0) -> object | None:
+        """Run a short Tk operation on the owner thread and return its result."""
+        if threading.current_thread() is threading.main_thread():
+            return callback()
+        done = threading.Event()
+        result: list[object | None] = [None]
+
+        def _run() -> None:
+            try:
+                result[0] = callback()
+            finally:
+                done.set()
+
+        if self._schedule_ui(_run) is None:
+            return None
+        done.wait(timeout=max(0.0, float(timeout)))
+        return result[0] if done.is_set() else None
+
+    def _start_worker(
+        self,
+        target: Callable[..., None],
+        *,
+        name: str,
+        args: tuple = (),
+        kwargs: dict | None = None,
+    ) -> threading.Thread | None:
+        """Start and track one application-owned daemon worker."""
+        if getattr(self, "_closing", False):
+            return None
+        if not hasattr(self, "_worker_lock"):
+            self._worker_lock = threading.Lock()
+            self._workers = set()
+        worker: threading.Thread
+
+        def _run() -> None:
+            try:
+                target(*args, **(kwargs or {}))
+            finally:
+                with self._worker_lock:
+                    self._workers.discard(worker)
+
+        worker = threading.Thread(target=_run, daemon=True)
+        try:
+            worker.name = f"agetha-{name}"
+        except Exception:
+            pass
+        with self._worker_lock:
+            if getattr(self, "_closing", False):
+                return None
+            self._workers.add(worker)
+        worker.start()
+        return worker
+
+    def _join_workers(self, timeout: float = 0.75) -> None:
+        """Wait briefly for owned workers without joining the current thread."""
+        if not hasattr(self, "_worker_lock"):
+            return
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        current = threading.current_thread()
+        with self._worker_lock:
+            workers = tuple(self._workers)
+        for worker in workers:
+            if worker is current or not worker.is_alive():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            worker.join(remaining)
 
     def _build_ui(self):
         # Patch font constants now that Tk is alive and tkfont.families() is valid
@@ -1558,43 +1648,51 @@ class CompanionApp:
 
     def _on_file_drop(self, event=None) -> None:
         self._dragging_file = False
-        try:
-            file_path = getattr(event, "data", "") or ""
-            file_path = file_path.strip().strip("{}")
-            filename = Path(file_path).name if file_path else "unknown file"
-        except Exception:
-            filename = "a file"
-            file_path = ""
-        logger.info(f"[DnD] File dropped: {filename} at {file_path}")
-        self._last_dragged_file = file_path if file_path else filename
-        sampled = 0
-        try:
-            from agetha.core.companion_stats import update_stats
-            if file_path and Path(file_path).exists():
-                update_stats("file_drop", path=file_path)
-                try:
-                    from agetha.core.companion_stats import get_stats_summary
-                    sampled = int(get_stats_summary().get("last_feed_bytes", 0))
-                except Exception:
-                    pass
-            else:
-                update_stats("file_drop", file_size=0)
-        except Exception:
-            pass
-        try:
-            from agetha.core.emotion_engine import note
-            note("file_shared", summary=f"user shared a file: {filename}")
-        except Exception:
-            pass
+        prepared = prepare_file_drop(getattr(event, "data", "") if event else "")
+        logger.info(
+            "[DnD] File drop received: filename=%s status=%s",
+            prepared.filename,
+            prepared.reason or "accepted",
+        )
+        self._last_dragged_file = prepared.filename
+        if prepared.accepted:
+            try:
+                from agetha.core.companion_stats import update_stats
+                if prepared.local_path is not None:
+                    update_stats("file_drop", path=str(prepared.local_path))
+                else:
+                    update_stats("file_drop", file_size=0)
+            except Exception:
+                pass
+            try:
+                from agetha.core.emotion_engine import note
+                note("file_shared", summary=f"user shared a file: {prepared.filename}")
+            except Exception:
+                pass
+        else:
+            message = {
+                "missing_path": "That file path was empty.",
+                "not_found": "I couldn't find that file.",
+                "not_regular_file": "Drop a regular file, not a folder or device.",
+                "symlink_rejected": "I won't follow file links. Drop the original file.",
+                "file_too_large": "That file is too large for drag-and-drop.",
+                "unreadable": "I couldn't safely read that file.",
+            }.get(prepared.reason, "I couldn't safely accept that file.")
+            try:
+                self._subtitle.show_message(message, "#ff6600")
+            except Exception:
+                pass
+            self._set_state(self.STATE_IDLE)
+            return
         self._set_state(self.STATE_IDLE)
         if self._input_box["state"] == "disabled":
             return
-        msg = (
-            f'[system] file_dragged: "{filename}" (path: {file_path}; bytes_devoured: {sampled})'
-            if file_path
-            else f'[system] file_dragged: "{filename}"'
+        context = prepared.provider_context.text or "metadata withheld locally"
+        self._start_worker(
+            self._ai_tick,
+            name="file-drop-ai",
+            kwargs={"user_message": context, "origin": "file_drop"},
         )
-        threading.Thread(target=self._ai_tick, kwargs={"user_message": msg}, daemon=True).start()
 
     def _update_token_status(self) -> None:
         try:
@@ -1798,6 +1896,10 @@ class CompanionApp:
             self._sync_screen_window_state()
             if not minimize_managed(self.root):
                 self._is_minimized = False
+                self._window_mapped = True
+                self._resume_gif_playback()
+                self._refresh_mood_glow()
+                self._sync_screen_window_state()
 
     def _on_gif_click(self, event=None):
         """Handle a click on the Agetha gif — sends a hidden touch message to the AI.
@@ -1817,11 +1919,11 @@ class CompanionApp:
         except Exception:
             pass
         self._persistent_mood = None
-        threading.Thread(
-            target=self._ai_tick,
-            kwargs={"user_message": "__touch__"},
-            daemon=True,
-        ).start()
+        self._start_worker(
+            self._ai_tick,
+            name="touch-ai",
+            kwargs={"user_message": "avatar touched", "origin": "touch"},
+        )
 
     def _on_user_input(self, event=None):
         self._last_direct_interaction_time = time.time()  # Phase 2: any key = direct interaction
@@ -1844,7 +1946,11 @@ class CompanionApp:
             self._placeholder_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
         # Clear any sticky mood — new interaction resets expression
         self._persistent_mood = None
-        threading.Thread(target=self._ai_tick, kwargs={"user_message": text}, daemon=True).start()
+        self._start_worker(
+            self._ai_tick,
+            name="user-ai",
+            kwargs={"user_message": text, "origin": "user"},
+        )
 
     def _re_enable_input(self):
         if self._closing:
@@ -1946,11 +2052,15 @@ class CompanionApp:
                 except Exception as exc:
                     logger.warning(f"Failed to decode {name}: {exc}")
             try:
-                self.root.after(0, lambda: self._apply_gif_load(preloaded, missing))
+                scheduled = self._schedule_ui(
+                    lambda: self._apply_gif_load(preloaded, missing),
+                )
             except Exception:
-                self._apply_gif_load(preloaded, missing)
+                scheduled = None
+            if scheduled is None:
+                logger.debug("Discarded decoded GIFs because Tk is closing")
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._start_worker(_worker, name="gif-loader")
 
     def _apply_gif_load(self, preloaded: dict, missing: list):
         for name, (pil_frames, delays) in preloaded.items():
@@ -1985,14 +2095,19 @@ class CompanionApp:
             ai = None
 
             def _show_error_popup(lines: list):
-                """Thread-safe error reporter — native OS dialog only, no custom UI."""
-                native_error_popup("Agetha — Error", "\n".join(lines))
+                """Marshal native error reporting onto the Tk owner thread."""
+                self._schedule_ui(
+                    lambda: native_error_popup("Agetha — Error", "\n".join(lines)),
+                )
 
             try:
                 bleep = BleepPlayer()
             except Exception as e:
                 print(f"[BackgroundInit] Bleep init failed: {e}")
-                native_error_popup("Agetha — Audio Error", f"Audio init failed:\n{e}\n\nSound will be disabled.")
+                message = f"Audio init failed:\n{e}\n\nSound will be disabled."
+                self._schedule_ui(lambda msg=message: native_error_popup(
+                    "Agetha — Audio Error", msg,
+                ))
             try:
                 self._advance_progress("Audio engine ready…")
             except Exception:
@@ -2001,7 +2116,10 @@ class CompanionApp:
                 screen = ScreenReader(own_tk_root=self.root)
             except Exception as e:
                 print(f"[BackgroundInit] ScreenReader init failed: {e}")
-                native_error_popup("Agetha — Screen Reader Error", f"Screen reader failed to start:\n{e}\n\nScreen reading will be disabled.")
+                message = f"Screen reader failed to start:\n{e}\n\nScreen reading will be disabled."
+                self._schedule_ui(lambda msg=message: native_error_popup(
+                    "Agetha — Screen Reader Error", msg,
+                ))
             try:
                 self._advance_progress("Screen reader ready…")
             except Exception:
@@ -2010,7 +2128,10 @@ class CompanionApp:
                 ai = AIEngine(on_error=_show_error_popup)
             except Exception as e:
                 print(f"[BackgroundInit] AIEngine init failed: {e}")
-                native_error_popup("Agetha — AI Engine Error", f"AI engine failed to start:\n{e}")
+                message = f"AI engine failed to start:\n{e}"
+                self._schedule_ui(lambda msg=message: native_error_popup(
+                    "Agetha — AI Engine Error", msg,
+                ))
             try:
                 self._advance_progress("AI engine ready…")
             except Exception:
@@ -2071,7 +2192,10 @@ class CompanionApp:
                     pass
         except Exception as e:
             print(f"[BackgroundInit] Unexpected error: {e}")
-            native_error_popup("Agetha — Unexpected Error", f"Unexpected startup error:\n{e}")
+            message = f"Unexpected startup error:\n{e}"
+            self._schedule_ui(lambda msg=message: native_error_popup(
+                "Agetha — Unexpected Error", msg,
+            ))
 
     def _pick_idle_gif(self) -> str:
         """Pick idle-1/2/3 from host affection/heat so all three idle clips matter."""
@@ -2358,7 +2482,7 @@ class CompanionApp:
                 # v4.0.0 — she dreams while deep-sleeping (memory/ only, no OS)
                 try:
                     from agetha.core.dreams import generate_dream
-                    threading.Thread(target=generate_dream, daemon=True).start()
+                    self._start_worker(generate_dream, name="dream")
                 except Exception:
                     pass
                 try:
@@ -2430,10 +2554,17 @@ class CompanionApp:
         ):
             self._reschedule_screen_poll()
             return
-        threading.Thread(target=self._ai_tick, daemon=True).start()
+        self._start_worker(
+            self._ai_tick,
+            name="ambient-ai",
+            kwargs={"origin": "ambient"},
+        )
 
     def _reschedule_screen_poll(self):
         if self._closing:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            self._schedule_ui(self._reschedule_screen_poll)
             return
         if not get_settings().enable_ambient_polls:
             if self._poll_job:
@@ -2466,7 +2597,7 @@ class CompanionApp:
         try:
             if get_settings().enable_status_providers:
                 from agetha.features.status_providers import poll as _status_poll
-                threading.Thread(target=_status_poll, daemon=True).start()
+                self._start_worker(_status_poll, name="status-poll")
         except Exception:
             pass
 
@@ -2541,10 +2672,52 @@ class CompanionApp:
         except Exception:
             return False
 
-    def _ai_tick(self, user_message: str | None = None):
+    def _reserve_ai_operation(
+        self,
+        *,
+        direct: bool,
+        user_message: str | None,
+        origin: RequestOrigin,
+        noninterruptible: bool = False,
+    ) -> object | None:
+        """Reserve the single provider slot or safely queue direct input."""
+        with self._ai_tick_lock:
+            if self._ai_busy or self._speech_active:
+                if direct:
+                    if not self._ai_busy_noninterruptible:
+                        self._cancel_event.set()
+                    self._pending_user_message = user_message
+                    self._pending_user_origin = origin
+                return None
+            token = object()
+            self._cancel_event.clear()
+            self._ai_busy = True
+            self._ai_busy_noninterruptible = noninterruptible
+            self._ai_operation_token = token
+            return token
+
+    def _release_ai_operation(self, token: object, *, noninterruptible: bool = False) -> bool:
+        """Release only the slot owned by *token*."""
+        with self._ai_tick_lock:
+            if getattr(self, "_ai_operation_token", None) is not token:
+                return False
+            self._ai_busy_noninterruptible = False
+            self._ai_busy = False
+            self._ai_operation_token = None
+            return True
+
+    def _ai_tick(
+        self,
+        user_message: str | None = None,
+        origin: RequestOrigin | None = None,
+    ):
         if self._closing:
             return
-        is_user = user_message is not None
+        origin = normalize_request_origin(
+            origin,
+            default="ambient" if user_message is None else "user",
+        )
+        is_user = origin != "ambient"
         fast_mode = self._fast_mode_runtime_active()
 
         # Deep sleep: skip ambient polls (presence rest). User interaction still wakes her.
@@ -2552,36 +2725,29 @@ class CompanionApp:
             self._reschedule_screen_poll()
             return
 
-        with self._ai_tick_lock:
-            if self._ai_busy or self._speech_active:
-                if is_user:
-                    if not self._ai_busy_noninterruptible:
-                        self._cancel_event.set()
-                    self._pending_user_message = user_message
-                else:
-                    self._reschedule_screen_poll()
-                return
-            self._ai_busy = True
+        operation_token = self._reserve_ai_operation(
+            direct=is_user,
+            user_message=user_message,
+            origin=origin,
+        )
+        if operation_token is None:
+            if not is_user:
+                self._reschedule_screen_poll()
+            return
 
         if not self._ai:
-            self._ai_busy = False
-            self.root.after(0, self._re_enable_input)
+            self._release_ai_operation(operation_token)
+            self._schedule_ui(self._re_enable_input)
             self._reschedule_screen_poll()
             self._drain_pending_user_message()
             return
 
         if self._closing:
-            self._ai_busy = False
+            self._release_ai_operation(operation_token)
             return
-        self._cancel_event.clear()
-
         if is_user:
-            self.root.after(0, lambda: self._input_box.config(state="disabled"))
-            if (
-                user_message
-                and user_message != "__touch__"
-                and not str(user_message).strip().lower().startswith("[system]")
-            ):
+            self._schedule_ui(lambda: self._input_box.config(state="disabled"))
+            if origin == "user" and user_message:
                 try:
                     from agetha.core.companion_stats import classify_user_tone, update_stats
                     update_stats("user_chat")
@@ -2595,7 +2761,7 @@ class CompanionApp:
                     note(tone or "user_chat")
                 except Exception:
                     pass
-            self.root.after(0, self._wake_from_presence_rest)
+            self._schedule_ui(self._wake_from_presence_rest)
 
         screen_text = ""
         raw_screen_text = ""
@@ -2714,110 +2880,114 @@ class CompanionApp:
             and not self._has_pending_fast_ambient_context()
         ):
             logger.debug(f"Fast ambient local idle: {monitor_status or 'repeated'}")
-            self._ai_busy = False
+            self._release_ai_operation(operation_token)
 
             def _finish_local_idle() -> None:
                 self._reschedule_screen_poll()
                 self._drain_pending_user_message()
 
-            self.root.after(0, _finish_local_idle)
+            self._schedule_ui(_finish_local_idle)
             return
 
         ai_screen_context = screen_text or self._last_screen_text
         if fast_mode and not is_user:
             ai_screen_context = self._compact_fast_ambient_context(ai_screen_context)
-        if self._screen:
-            ai_screen_context = self._screen.redact_for_external_context(
-                ai_screen_context,
-            )
+        screen_redactor = (
+            self._screen.redact_for_external_context if self._screen else None
+        )
+        ai_screen_context = prepare_external_context(
+            ai_screen_context,
+            source="screen",
+            max_chars=4000,
+            redactor=screen_redactor,
+        ).text
 
-        self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
+        self._schedule_ui(lambda: self._set_state(self.STATE_THINKING))
 
         def _on_token(raw_so_far: str):
             if not self._cancel_event.is_set():
-                self.root.after(0, lambda r=raw_so_far: self._subtitle.show_thinking(r))
+                self._schedule_ui(
+                    lambda r=raw_so_far: self._subtitle.show_thinking(r),
+                )
 
-        normalized_message = (user_message or "").strip().lower()
-        if not is_user:
-            request_profile = "fast_ambient"
-        elif (
-            normalized_message == "__touch__"
-            or normalized_message.startswith("[system]")
-            or normalized_message.startswith("[reminder]")
-        ):
-            request_profile = "fast_command"
-        else:
-            request_profile = "fast_user"
+        provider_message = render_request_message(origin, user_message or "")
+        request_profile = request_profile_for_origin(origin)
 
         try:
             if _SETTINGS.enable_streaming:
                 response = self._ai.query_streaming(
                     screen_context=ai_screen_context,
-                    user_message=user_message or "",
+                    user_message=provider_message,
                     on_token=_on_token,
                     request_profile=request_profile,
                 )
             else:
                 response = self._ai.query(
                     screen_context=ai_screen_context,
-                    user_message=user_message or "",
+                    user_message=provider_message,
                     request_profile=request_profile,
                 )
         except Exception as exc:
             if self._closing:
-                self._ai_busy = False
+                self._release_ai_operation(operation_token)
                 return
             err_str = str(exc)
-            logger.error(f"AI tick failed: {err_str}")
+            logger.error("AI tick failed: %s", type(exc).__name__)
             _groq_limit_keywords = ("rate_limit", "rate limit", "429", "quota", "groq_exhausted")
             if not any(kw in err_str.lower() for kw in _groq_limit_keywords):
                 _short = err_str[:200] if len(err_str) > 200 else err_str
-                native_error_popup("Agetha — Error", f"An error occurred:\n{_short}")
-            self.root.after(0, self._re_enable_input)
-            self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
-            self._ai_busy = False
+                message = f"An error occurred:\n{_short}"
+                self._schedule_ui(
+                    lambda msg=message: native_error_popup("Agetha — Error", msg),
+                )
+            self._schedule_ui(self._re_enable_input)
+            self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
+            self._release_ai_operation(operation_token)
             self._reschedule_screen_poll()
             self._drain_pending_user_message()
             return
 
         if self._cancel_event.is_set():
-            self._ai_busy = False
-            self.root.after(0, self._re_enable_input)
+            self._release_ai_operation(operation_token)
+            self._schedule_ui(self._re_enable_input)
             self._drain_pending_user_message()
             return
 
-        print("\n" + "-" * 52)
-        if user_message and user_message != "__touch__":
-            print(f"[USER]  {user_message}")
-        print(f"[AI]    {json.dumps(response, ensure_ascii=False)}")
-        print("-" * 52)
+        logger.info(
+            "AI response received: origin=%s command=%s",
+            origin,
+            response.get("command", "invalid") if isinstance(response, dict) else "invalid",
+        )
 
-        self.root.after(0, self._re_enable_input)
-        self.root.after(0, self._update_token_status)
+        self._schedule_ui(self._re_enable_input)
+        self._schedule_ui(self._update_token_status)
         try:
-            self._dispatch_response(response, user_message)
+            self._dispatch_response(response, user_message, origin=origin)
         finally:
-            self._ai_busy = False
+            self._release_ai_operation(operation_token)
             self._run_deferred_ai_tick_callbacks()
             self._drain_pending_user_message()
 
     def _defer_after_ai_tick(self, callback: Callable[[], None]) -> None:
         """Run callback after the current _ai_tick releases _ai_busy (avoids _ai_query races)."""
-        self._post_ai_tick_callbacks.append(callback)
+        with self._ai_tick_lock:
+            self._post_ai_tick_callbacks.append(callback)
 
     def _defer_exclusive_ai_operation(self, callback: Callable[[], None]) -> None:
         """Run one deferred operation while retaining the app-wide AI slot."""
         def _start() -> None:
             if self._closing:
                 return
-            with self._ai_tick_lock:
-                if self._ai_busy or self._speech_active:
-                    logger.warning("Deferred exclusive AI operation could not reserve its slot")
-                    return
-                self._ai_busy = True
-                self._ai_busy_noninterruptible = True
-            self._cancel_event.clear()
-            self.root.after(0, lambda: self._input_box.config(state="disabled"))
+            token = self._reserve_ai_operation(
+                direct=False,
+                user_message=None,
+                origin="tool_result",
+                noninterruptible=True,
+            )
+            if token is None:
+                logger.warning("Deferred exclusive AI operation could not reserve its slot")
+                return
+            self._schedule_ui(lambda: self._input_box.config(state="disabled"))
 
             def _run() -> None:
                 try:
@@ -2825,47 +2995,55 @@ class CompanionApp:
                 except Exception as exc:
                     logger.warning(f"Deferred exclusive AI operation failed: {exc}")
                 finally:
-                    with self._ai_tick_lock:
-                        self._ai_busy_noninterruptible = False
-                        self._ai_busy = False
-                    try:
-                        self.root.after(0, self._re_enable_input)
-                    except Exception:
-                        pass
+                    self._release_ai_operation(token, noninterruptible=True)
+                    self._schedule_ui(self._re_enable_input)
                     self._run_deferred_ai_tick_callbacks()
                     self._drain_pending_user_message()
 
-            threading.Thread(target=_run, daemon=True).start()
+            self._start_worker(_run, name="exclusive-ai")
 
         self._defer_after_ai_tick(_start)
 
     def _run_deferred_ai_tick_callbacks(self) -> None:
-        if self._closing:
+        with self._ai_tick_lock:
+            if self._closing:
+                self._post_ai_tick_callbacks.clear()
+                return
+            callbacks = self._post_ai_tick_callbacks[:]
             self._post_ai_tick_callbacks.clear()
-            return
-        callbacks = self._post_ai_tick_callbacks[:]
-        self._post_ai_tick_callbacks.clear()
-        for cb in callbacks:
-            try:
-                cb()
-            except Exception as exc:
-                logger.debug(f"deferred ai tick callback failed: {exc}")
+
+        def _run_callbacks() -> None:
+            for cb in callbacks:
+                try:
+                    cb()
+                except Exception as exc:
+                    logger.debug(f"deferred ai tick callback failed: {exc}")
+
+        if threading.current_thread() is threading.main_thread():
+            _run_callbacks()
+        else:
+            self._schedule_ui(_run_callbacks)
 
     def _drain_pending_user_message(self) -> None:
         if self._closing:
             with self._ai_tick_lock:
                 self._pending_user_message = None
+                self._pending_user_origin = "user"
             return
         pending: str | None
         with self._ai_tick_lock:
+            if self._ai_busy or self._speech_active:
+                return
             pending = self._pending_user_message
+            pending_origin = getattr(self, "_pending_user_origin", "user")
             self._pending_user_message = None
+            self._pending_user_origin = "user"
         if pending is not None:
-            threading.Thread(
-                target=self._ai_tick,
-                kwargs={"user_message": pending},
-                daemon=True,
-            ).start()
+            self._start_worker(
+                self._ai_tick,
+                name="queued-ai",
+                kwargs={"user_message": pending, "origin": pending_origin},
+            )
 
     # ── Emotion Sound Player ──────────────────────────────────────────────────
     def _play_emotion_sound(self, emotion: str) -> None:
@@ -2980,26 +3158,62 @@ class CompanionApp:
         msg = str(message)[:140]
         self.root.after(0, lambda: self._subtitle.show_message(msg, "#44cc66"))
 
-    def pick_window_sync(self, matches: list[tuple[int, str]]) -> int | None:
+    def pick_window_sync(
+        self,
+        matches: list[tuple[int, str]],
+        timeout_seconds: float = 60.0,
+    ) -> int | None:
         """Block until user picks a window (main-thread dialog)."""
-        if not matches:
+        if not matches or self._closing:
             return None
         if len(matches) == 1:
             return matches[0][0]
+        if threading.current_thread() is threading.main_thread():
+            return self._show_window_picker_dialog(matches)
         result: list[int | None] = [None]
         done = threading.Event()
+        cancelled = threading.Event()
+        cancel_lock = threading.Lock()
+        cancel_ui: list[Callable[[], None] | None] = [None]
+
+        def _register_cancel(callback: Callable[[], None]) -> None:
+            with cancel_lock:
+                cancel_ui[0] = callback
+            if cancelled.is_set():
+                self._schedule_ui(callback)
 
         def _ui():
+            if cancelled.is_set() or self._closing:
+                done.set()
+                return
             try:
-                result[0] = self._show_window_picker_dialog(matches)
+                result[0] = self._show_window_picker_dialog(
+                    matches,
+                    cancel_event=cancelled,
+                    register_cancel=_register_cancel,
+                )
             finally:
                 done.set()
 
-        self.root.after(0, _ui)
-        done.wait(timeout=60)
-        return result[0]
+        if self._schedule_ui(_ui) is None:
+            return None
+        if not done.wait(timeout=max(0.0, float(timeout_seconds))):
+            cancelled.set()
+            with cancel_lock:
+                callback = cancel_ui[0]
+            if callback is not None:
+                self._schedule_ui(callback)
+            done.wait(timeout=0.25)
+            return None
+        return None if cancelled.is_set() else result[0]
 
-    def _show_window_picker_dialog(self, matches: list[tuple[int, str]]) -> int | None:
+    def _show_window_picker_dialog(
+        self,
+        matches: list[tuple[int, str]],
+        *,
+        cancel_event: threading.Event | None = None,
+        register_cancel: Callable[[Callable[[], None]], None] | None = None,
+    ) -> int | None:
         from agetha.ui.w95_window import apply_borderless_win95, show_borderless
 
         dlg = tk.Toplevel(self.root)
@@ -3021,9 +3235,28 @@ class CompanionApp:
 
         chosen: list[int | None] = [None]
 
+        def _close(value: int | None = None) -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                value = None
+            chosen[0] = value
+            try:
+                dlg.grab_release()
+            except Exception:
+                pass
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
         def _cancel():
-            chosen[0] = None
-            dlg.destroy()
+            _close(None)
+
+        active_cancellers = getattr(self, "_active_picker_cancellers", None)
+        if active_cancellers is None:
+            active_cancellers = self._active_picker_cancellers = set()
+        active_cancellers.add(_cancel)
+        if register_cancel is not None:
+            register_cancel(_cancel)
 
         tk.Button(
             title_bar, text="✕",
@@ -3049,10 +3282,12 @@ class CompanionApp:
         listbox.selection_set(0)
 
         def _ok(_event=None):
+            if cancel_event is not None and cancel_event.is_set():
+                _cancel()
+                return
             sel = listbox.curselection()
             idx = sel[0] if sel else 0
-            chosen[0] = matches[idx][0]
-            dlg.destroy()
+            _close(matches[idx][0])
 
         btn_row = tk.Frame(outer, bg=W95_BG, pady=6)
         btn_row.pack(fill="x")
@@ -3082,9 +3317,16 @@ class CompanionApp:
         except Exception:
             pass
         show_borderless(dlg)
-        dlg.grab_set()
-        dlg.wait_window()
-        return chosen[0]
+        try:
+            dlg.grab_set()
+            dlg.wait_window()
+            return chosen[0]
+        finally:
+            try:
+                dlg.grab_release()
+            except Exception:
+                pass
+            active_cancellers.discard(_cancel)
 
     def _ai_query(
         self,
@@ -3095,36 +3337,49 @@ class CompanionApp:
         suppress_search_memory: bool = False,
         reserved_ai_slot: bool = False,
         request_profile: str | None = None,
+        origin: RequestOrigin = "tool_result",
     ):
         if self._cancel_event.is_set() or not self._ai:
             return None
         owns_ai_slot = not reserved_ai_slot
-        with self._ai_tick_lock:
-            if reserved_ai_slot:
+        operation_token: object | None = None
+        if reserved_ai_slot:
+            with self._ai_tick_lock:
                 if not self._ai_busy or not self._ai_busy_noninterruptible:
                     return None
-            else:
-                if self._ai_busy or self._speech_active:
-                    return None
-                self._ai_busy = True
-        self.root.after(0, lambda: self._set_state(self.STATE_THINKING))
+        else:
+            operation_token = self._reserve_ai_operation(
+                direct=False,
+                user_message=None,
+                origin=origin,
+            )
+            if operation_token is None:
+                return None
+        self._schedule_ui(lambda: self._set_state(self.STATE_THINKING))
 
         def _on_token(raw):
             if not self._cancel_event.is_set():
-                self.root.after(0, lambda r=raw: self._subtitle.show_thinking(r))
+                self._schedule_ui(lambda r=raw: self._subtitle.show_thinking(r))
 
         try:
             selected_screen_context = (
                 self._last_screen_text if screen_context is None else screen_context
             )
-            if self._screen:
-                selected_screen_context = self._screen.redact_for_external_context(
-                    selected_screen_context,
-                )
+            selected_screen_context = prepare_external_context(
+                selected_screen_context,
+                source="screen",
+                max_chars=4000,
+                redactor=(
+                    self._screen.redact_for_external_context if self._screen else None
+                ),
+            ).text
+            provider_message = render_request_message(
+                normalize_request_origin(origin), user_message,
+            )
             if _SETTINGS.enable_streaming:
                 return self._ai.query_streaming(
                     screen_context=selected_screen_context,
-                    user_message=user_message,
+                    user_message=provider_message,
                     doc_content=doc_content,
                     memory_search_context=memory_search_context,
                     suppress_search_memory=suppress_search_memory,
@@ -3133,18 +3388,18 @@ class CompanionApp:
                 )
             return self._ai.query(
                 screen_context=selected_screen_context,
-                user_message=user_message,
+                user_message=provider_message,
                 doc_content=doc_content,
                 memory_search_context=memory_search_context,
                 suppress_search_memory=suppress_search_memory,
                 request_profile=request_profile,
             )
         except Exception as exc:
-            logger.error(f"_ai_query failed: {exc}")
+            logger.error("_ai_query failed: %s", type(exc).__name__)
             return None
         finally:
-            if owns_ai_slot:
-                self._ai_busy = False
+            if owns_ai_slot and operation_token is not None:
+                self._release_ai_operation(operation_token)
                 self._drain_pending_user_message()
 
     def _try_short_mood_speak(self, command: str, ctx) -> bool:
@@ -3193,9 +3448,15 @@ class CompanionApp:
         except Exception:
             return False
 
-    def _dispatch_response(self, response: dict, user_message: str | None = None):
+    def _dispatch_response(
+        self,
+        response: dict,
+        user_message: str | None = None,
+        *,
+        origin: RequestOrigin | None = None,
+    ):
         from agetha.commands.command_handlers import dispatch
-        dispatch(self, response, user_message)
+        dispatch(self, response, user_message, origin=origin)
 
     def _on_speech_done(self, shutdown: bool = False):
         self._speech_active = False
@@ -3271,6 +3532,12 @@ class CompanionApp:
         self._closing = True
         self._cancel_event.set()
 
+        for cancel_picker in tuple(getattr(self, "_active_picker_cancellers", ())):
+            try:
+                cancel_picker()
+            except Exception:
+                pass
+
         for controller, method, kwargs in (
             (getattr(self, "_close_effect", None), "cancel", {}),
             (getattr(self, "_mood_glow", None), "close", {}),
@@ -3328,6 +3595,7 @@ class CompanionApp:
                 pass
 
         # Memory and emotional history are persisted atomically when changed.
+        self._join_workers(timeout=0.75)
         self._cancel_all_after_jobs()
         try:
             self.root.destroy()

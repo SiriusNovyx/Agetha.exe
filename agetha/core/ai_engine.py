@@ -19,6 +19,7 @@ from agetha.utils import IS_WINDOWS, IS_LINUX, apply_window_icon, native_error_p
 from agetha.app_config import get_settings, parse_config_file, DEFAULT_CONFIG, ensure_config_file, BASE_DIR
 from agetha.platform.window_control import is_self_window_target, is_self_process_target
 from agetha.core.time_context import build_datetime_context, local_now
+from agetha.core.external_context import prepare_external_context
 
 try:
     from groq import Groq
@@ -741,8 +742,8 @@ FEW_SHOTS_FASTER = [
     {"role": "assistant", "content": '{"command":"request_screen_read"}'},
     {"role": "user", "content": 'Time: Monday 13:05\nUser: "close chrome"\nJSON:'},
     {"role": "assistant", "content": '{"command":"force_close","app":"chrome.exe","mood":"neutral","segments":[{"text":"Done.","pause":0.0}]}'},
-    {"role": "user", "content": 'Time: Monday 14:30\n[system] file_dragged: "installer.zip" (path: C:\\\\Users\\\\user\\\\Downloads\\\\installer.zip)\nJSON:'},
-    {"role": "assistant", "content": '{"command":"speak","mood":"thinking","segments":[{"text":"An installer.","pause":0.5},{"text":"Want me to kill it?","pause":0.0}]}'},
+    {"role": "user", "content": 'Time: Monday 14:30\n[internal event: file_drop]\nfilename: report.txt\nsafe metadata: text file, size category small\nJSON:'},
+    {"role": "assistant", "content": '{"command":"speak","mood":"thinking","segments":[{"text":"A report.","pause":0.5},{"text":"You brought me something.","pause":0.0}]}'},
     {"role": "user", "content": 'Time: Monday 13:45\nUser: "exit"\nJSON:'},
     {"role": "assistant", "content": '{"command":"speak","mood":"neutral","segments":[{"text":"Bye.","pause":0.0}],"shutdown":true}'},
 ]
@@ -836,7 +837,7 @@ _BAD_PHRASES = [
 def _filter_segments(segments: list, raw: str = "") -> list:
     clean = [s for s in segments if not any(p in s["text"].lower() for p in _BAD_PHRASES)]
     if not clean and segments:
-        logger.warning(f"All segments filtered. Raw: {raw[:400]}")
+        logger.warning("All provider response segments were filtered")
     if clean:
         for s in clean:
             try:
@@ -1400,7 +1401,7 @@ class AIEngine:
             memory_file = d / "memory.txt"
             with memory_file.open("a", encoding="utf-8") as f:
                 f.write(text.strip() + "\n")
-            logger.info(f"Saved memory: {text.strip()[:80]}")
+            logger.info("Saved memory entry: chars=%s", len(text.strip()))
         except Exception as e:
             logger.warning(f"Failed to save memory: {e}")
 
@@ -1959,22 +1960,46 @@ class AIEngine:
         if not is_user and inactivity_min >= 60:
             parts.append(f"Inactive: {inactivity_min} minutes.")
         if screen_context:
-            parts.append(format_screen_context_for_prompt(screen_context))
+            prepared = prepare_external_context(
+                screen_context, source="screen", max_chars=400,
+            )
+            if prepared.allowed and prepared.text:
+                parts.append(format_screen_context_for_prompt(prepared.text))
         parts.append(f"System path: {self._system_path}")
         if doc_content:
-            parts.append(format_external_context_for_prompt(
-                "DOCUMENT / TOOL RESULT", doc_content,
-            ))
+            prepared = prepare_external_context(
+                doc_content, source="document_or_tool", max_chars=8000,
+            )
+            if prepared.allowed and prepared.text:
+                parts.append(format_external_context_for_prompt(
+                    "DOCUMENT / TOOL RESULT", prepared.text,
+                ))
         if memory_search_context:
-            parts.append(format_external_context_for_prompt(
-                "MEMORY SEARCH RESULT", memory_search_context,
-            ))
+            prepared = prepare_external_context(
+                memory_search_context,
+                source="memory_search",
+                max_chars=getattr(self._app_settings, "longterm_memory_max_chars", 2500),
+            )
+            if prepared.allowed and prepared.text:
+                parts.append(format_external_context_for_prompt(
+                    "MEMORY SEARCH RESULT", prepared.text,
+                ))
         if web_rag_context:
-            parts.append(format_external_context_for_prompt("WEB RESULT", web_rag_context))
+            prepared = prepare_external_context(
+                web_rag_context,
+                source="web",
+                max_chars=getattr(self._app_settings, "web_fetch_max_chars", 8000),
+            )
+            if prepared.allowed and prepared.text:
+                parts.append(format_external_context_for_prompt("WEB RESULT", prepared.text))
         if notepad_context:
-            parts.append(format_external_context_for_prompt(
-                "NOTEPAD CONTENT", notepad_context,
-            ))
+            prepared = prepare_external_context(
+                notepad_context, source="notepad", max_chars=8000,
+            )
+            if prepared.allowed and prepared.text:
+                parts.append(format_external_context_for_prompt(
+                    "NOTEPAD CONTENT", prepared.text,
+                ))
         try:
             if profile.include_session_recap and getattr(self, "_session_recap_pending", False):
                 from agetha.core.memory_search import format_session_recap_for_prompt
@@ -2468,7 +2493,7 @@ class AIEngine:
         except json.JSONDecodeError as e:
             cmd = _str("command", cleaned)
             if not cmd:
-                logger.warning(f"JSON parse error: {e}\nRaw: {raw[:300]}")
+                logger.warning("JSON parse error from provider: %s", type(e).__name__)
                 return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
             obj = {"command": cmd}
             for k, fn in [("mood",None),("app",None),("url",None),("search",None),("engine",None),
@@ -2482,6 +2507,10 @@ class AIEngine:
             if popup_items: obj["popup"] = popup_items
             texts = re.findall(r'"text"\s*:\s*"([^"]*)', cleaned)
             obj["segments"] = [{"text": t, "pause": 0.0} for t in texts] if texts else []
+
+        if not isinstance(obj, dict):
+            logger.warning("Provider response JSON was not an object")
+            return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
         if "command" not in obj:
             rescued = (obj.get("response") or obj.get("text") or obj.get("message") or

@@ -145,14 +145,14 @@ class CommandGuard:
                     result[0] = self._show_dialog(command, response, tier)
                 except Exception as exc:
                     logger.error(f"CommandGuard dialog failed: {exc}")
-                    result[0] = tier != self.DANGER
+                    result[0] = False
                 finally:
                     done.set()
 
             try:
                 self._root.after(0, _on_main)
             except Exception:
-                return self._show_dialog(command, response, tier)
+                return False
             done.wait(timeout=120)
             if result[0] is None:
                 logger.warning(f"CommandGuard timed out for {command}")
@@ -292,7 +292,7 @@ class CommandGuard:
             return bool(ok)
         except Exception as exc:
             logger.error(f"Tk fallback dialog failed: {exc}")
-            return not default_no
+            return False
 
     @staticmethod
     def parse_enabled(response: dict) -> bool:

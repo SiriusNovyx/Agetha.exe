@@ -588,7 +588,7 @@ class VoiceInput:
             else:
                 text = recognizer.recognize_google(audio)
             if text:
-                logger.info(f"[Voice] Recognised: {text}")
+                logger.info("[Voice] Speech recognised: chars=%s", len(text))
                 self._cb(text)
         except Exception as exc:
             logger.warning(f"[Voice] recognition failed: {exc}")

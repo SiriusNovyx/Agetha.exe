@@ -36,7 +36,7 @@ MEMORY_DIR = BASE_DIR / "memory"
 STATE_FILE = MEMORY_DIR / "emotional_state.json"
 
 SCHEMA_VERSION = 1
-APP_VERSION = "5.5.5"
+APP_VERSION = "5.7"
 
 _lock = threading.RLock()
 

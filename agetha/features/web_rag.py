@@ -279,7 +279,12 @@ def fetch_webpage(url: str, max_chars: int | None = None) -> dict[str, Any]:
             "truncated": truncated,
         }
     except Exception as exc:
-        logger.warning(f"web_rag.fetch_webpage failed for {raw_url}: {exc}")
+        host = (urlparse(raw_url).hostname or "unknown")[:120]
+        logger.warning(
+            "web_rag.fetch_webpage failed: host=%s error=%s",
+            host,
+            type(exc).__name__,
+        )
         return {
             "url": raw_url,
             "title": "",

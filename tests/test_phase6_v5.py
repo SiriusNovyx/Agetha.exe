@@ -131,7 +131,7 @@ class TestEmotionEngine(_TempStateMixin):
     def test_default_state_at_baselines(self) -> None:
         state = self.ee.load_state(now_fn=self.clock.now)
         self.assertEqual(state["version"], 1)
-        self.assertEqual(state["app_version"], "5.5.5")
+        self.assertEqual(state["app_version"], "5.7")
         self.assertEqual(state["valence"], 0.0)
         self.assertEqual(state["arousal"], 30.0)
         self.assertEqual(state["trust"], 50.0)

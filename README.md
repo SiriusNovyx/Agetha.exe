@@ -2,7 +2,7 @@
 
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
-**Version:** Overhaul v5.5.5 · **Medic_Checker:** v5.5.5 · **Original author:** @tomiszivacs
+**Version:** Overhaul v5.7 · **Medic_Checker:** v5.7 · **Original author:** @tomiszivacs
 
 > **Asset notice:** The bundled files in [`assets/`](assets/) are provided so a
 > normal clone or source download runs with the complete UI. They are not
@@ -183,7 +183,7 @@ Agetha_Mod/
 ├── config.txt              # User settings only — no API keys
 ├── .env.example            # API key template
 ├── requirements.txt
-├── Medic_Checker.ps1       # Startup health check & launcher (v5.5.5)
+├── Medic_Checker.ps1       # Startup health check & launcher (v5.7)
 ├── Medic_Checker.bat
 ├── Run_Agetha_Admin.ps1
 ├── assets/                 # GIFs, fonts, icons
@@ -600,7 +600,7 @@ Click the **📊** button in the title bar (beside minimize) to open the **Dashb
 | `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
 | `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
 | `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
-| `APP_VERSION` | `5.5.5` | Shown in window title |
+| `APP_VERSION` | `5.7` | Shown in window title |
 | `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
 | `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
 | `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |
@@ -685,7 +685,7 @@ Run **Medic_Checker** after enabling — it installs the package for `VOICE_TTS_
 
 ---
 
-## Medic_Checker v5.5.5 (PowerShell)
+## Medic_Checker v5.7 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
@@ -766,6 +766,19 @@ command_handlers.py → Execute action + update UI
 ---
 
 ## Changelog (Overhaul)
+
+### v5.7 — Quality-of-life, privacy, and lifecycle hardening
+
+- Privacy-safe file drops reject unsafe targets and expose only bounded metadata
+  to AI providers.
+- Structured request origins prevent ordinary user text from impersonating
+  internal touch, reminder, ambient, file, or tool-result events.
+- External OCR, memory, web, document, notepad, and tool context is sanitized
+  through a shared fail-closed boundary.
+- Background workers, Tk callbacks, AI-operation ownership, window picking,
+  Linux minimize recovery, and shutdown now have coordinated lifecycle guards.
+- Direct command dispatch rejects malformed and unknown payloads, while existing
+  confirmations, protected-process rules, and Fast Mode locks remain intact.
 
 ### v5.5.5 — Reversible Fast Mode 2.0
 
