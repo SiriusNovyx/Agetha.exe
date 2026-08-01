@@ -649,7 +649,7 @@ Run `ollama list` to see installed models.
 
 ```ini
 ENABLE_OPENROUTER = yes
-OPENROUTER_MODEL = nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+OPENROUTER_MODEL = deepseek/deepseek-v4-flash-0731
 ```
 
 Add `OPENROUTER_API_KEY=…` to `.env`. Ignored when `USE_LOCAL_AI = yes`.

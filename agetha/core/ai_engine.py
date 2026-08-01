@@ -177,7 +177,7 @@ class _LocalOllamaClient:
 
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
+DEFAULT_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731"
 
 
 class _OpenRouterClient:

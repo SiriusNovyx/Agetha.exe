@@ -127,7 +127,9 @@ ENABLE_OPENROUTER = no
 # OPENROUTER_MODEL — model slug from openrouter.ai/models
 # Use exact IDs from https://openrouter.ai/models (many ":free" variants are retired).
 # Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
-OPENROUTER_MODEL = google/gemma-4-31b-it:free
+# Recommended for Agetha: deepseek/deepseek-v4-flash-0731
+# Model availability and pricing may change; verify them on OpenRouter before use.
+OPENROUTER_MODEL = deepseek/deepseek-v4-flash-0731
 
 # FASTER_MODE — enables Agetha's reversible performance profile.
 # Selected AI, context, polling, and OCR values are temporarily forced and
@@ -1064,7 +1066,7 @@ class AppSettings:
 
     @property
     def openrouter_model(self) -> str:
-        return self.get("OPENROUTER_MODEL", "google/gemma-4-31b-it:free").strip()
+        return self.get("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash-0731").strip()
 
     @property
     def enable_voice(self) -> bool:
