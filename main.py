@@ -1666,7 +1666,12 @@ class CompanionApp:
                 pass
             try:
                 from agetha.core.emotion_engine import note
-                note("file_shared", summary=f"user shared a file: {prepared.filename}")
+                summary = (
+                    f"user shared a file: {prepared.filename}"
+                    if prepared.provider_context.allowed
+                    else "user shared a withheld local file"
+                )
+                note("file_shared", summary=summary)
             except Exception:
                 pass
         else:

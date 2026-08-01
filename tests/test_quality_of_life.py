@@ -124,6 +124,9 @@ class TestFileDropBoundary(unittest.TestCase):
             ) as note:
                 app._on_file_drop(SimpleNamespace(data=str(path)))
         note.assert_called_once()
+        summary = note.call_args.kwargs["summary"]
+        self.assertEqual(summary, "user shared a withheld local file")
+        self.assertNotIn(".env", summary)
         message = app._start_worker.call_args.kwargs["kwargs"]["user_message"]
         self.assertNotIn(".env", message)
         self.assertNotIn("private", message)
@@ -516,6 +519,31 @@ class TestCommandSafetyRegression(unittest.TestCase):
             HANDLERS["run_command"](app, {"cmd": "false"}, ctx)
         spoken = app._speak_and_continue.call_args.args[0]
         self.assertNotEqual(spoken, ctx.segments)
+
+    def test_successful_write_path_cannot_spoof_failure_status(self):
+        app = self._app()
+        app._ai.write_file.return_value = "[written: C:\\notes\\failed report.txt]"
+        response = {
+            "command": "write_file",
+            "file_path": r"C:\notes\failed report.txt",
+            "content": "done",
+        }
+        ctx = DispatchCtx(
+            user_message="write it",
+            origin="user",
+            mood="happy",
+            segments=[{"text": "Done.", "pause": 0.0}],
+            shutdown_requested=False,
+        )
+
+        HANDLERS["write_file"](app, response, ctx)
+
+        app._show_op_error.assert_not_called()
+        app._speak_and_continue.assert_called_once_with(
+            ctx.segments,
+            ctx.mood,
+            ctx.shutdown_requested,
+        )
 
     def test_parser_rejects_non_object_json(self):
         engine = AIEngine.__new__(AIEngine)

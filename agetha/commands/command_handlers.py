@@ -59,12 +59,21 @@ class DispatchCtx:
 
 
 def _command_result_ok(result: str) -> bool:
+    """Recognize only explicit success statuses, without inspecting payload text."""
     value = str(result or "").casefold()
-    return bool(value) and not any(
-        marker in value
-        for marker in (
-            " error:", "[error", "not supported", "[no ",
-            "failed", "missing ", "not found", "unavailable",
+    return any(
+        value.startswith(prefix)
+        for prefix in (
+            "[folder created]",
+            "[file created]",
+            "[folder deleted]",
+            "[file deleted]",
+            "[file renamed]",
+            "[command completed]",
+            "[written:",
+            "[screen locked]",
+            "[shutdown in ",
+            "[restart in ",
         )
     )
 
