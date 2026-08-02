@@ -1967,8 +1967,20 @@ class AIEngine:
                 parts.append(format_screen_context_for_prompt(prepared.text))
         parts.append(f"System path: {self._system_path}")
         if doc_content:
+            document_limit = 8000
+            if profile.name == "deep_analysis":
+                try:
+                    deep_content_limit = int(getattr(
+                        self._app_settings, "deep_ocr_max_output_chars", 12000,
+                    ))
+                except (TypeError, ValueError):
+                    deep_content_limit = 12000
+                deep_content_limit = max(1000, min(deep_content_limit, 50000))
+                document_limit = deep_content_limit + 512
             prepared = prepare_external_context(
-                doc_content, source="document_or_tool", max_chars=8000,
+                doc_content,
+                source="document_or_tool",
+                max_chars=document_limit,
             )
             if prepared.allowed and prepared.text:
                 parts.append(format_external_context_for_prompt(

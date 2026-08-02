@@ -7,6 +7,8 @@ from typing import Callable
 
 from agetha.platform.screen_monitoring import redact_sensitive_text
 
+MAX_EXTERNAL_CONTEXT_CHARS = 50_512
+
 
 @dataclass(frozen=True)
 class PreparedExternalContext:
@@ -38,7 +40,9 @@ def prepare_external_context(
         except Exception:
             return PreparedExternalContext("", False, bool(raw), source, "redaction_failed")
 
-    limit = max(0, min(int(max_chars), 50_000))
+    # The extra 512 characters preserve safety wrappers around a configured
+    # 50,000-character deep-OCR payload while keeping provider context bounded.
+    limit = max(0, min(int(max_chars), MAX_EXTERNAL_CONTEXT_CHARS))
     if len(safe) > limit:
         safe = safe[: max(0, limit - 1)] + ("…" if limit else "")
     return PreparedExternalContext(
