@@ -164,6 +164,7 @@ class TestExternalContextAndLogging(unittest.TestCase):
         app._pending_user_message = None
         app._pending_user_origin = "user"
         app._post_ai_tick_callbacks = []
+        app._deferred_ai_callbacks_inflight = False
         app._cancel_event = threading.Event()
         app._last_screen_text = ""
         app._screen = None
@@ -290,6 +291,54 @@ class TestThreadingAndArbitration(unittest.TestCase):
         app._run_deferred_ai_tick_callbacks()
         app._run_deferred_ai_tick_callbacks()
         callback.assert_called_once()
+
+    def test_deferred_exclusive_reserves_before_queued_input_drains(self):
+        import main
+
+        app = self._app()
+        app._input_box = MagicMock()
+        app._re_enable_input = MagicMock()
+        app._pending_user_message = "queued"
+        scheduled = []
+        app.root.after.side_effect = (
+            lambda _delay, callback: scheduled.append(callback) or "job"
+        )
+        app._start_worker = MagicMock()
+        app._defer_exclusive_ai_operation(MagicMock())
+
+        with patch.object(main.threading, "current_thread", return_value=object()), patch.object(
+            main.threading, "main_thread", return_value=object(),
+        ):
+            app._run_deferred_ai_tick_callbacks()
+
+        app._start_worker.assert_not_called()
+        self.assertEqual(app._pending_user_message, "queued")
+        scheduled.pop(0)()
+        self.assertTrue(app._ai_busy)
+        self.assertTrue(app._ai_busy_noninterruptible)
+        self.assertEqual(app._start_worker.call_args.kwargs["name"], "exclusive-ai")
+        self.assertEqual(app._pending_user_message, "queued")
+
+    def test_screen_read_followup_uses_reserved_exclusive_slot(self):
+        app = MagicMock()
+        app._screen.capture_text.return_value = "screen text"
+        ctx = DispatchCtx(
+            user_message="read this",
+            origin="user",
+            mood="thinking",
+            segments=[],
+            shutdown_requested=False,
+        )
+
+        HANDLERS["request_screen_read"](app, {}, ctx)
+
+        callback = app._defer_exclusive_ai_operation.call_args.args[0]
+        callback()
+        self.assertTrue(app._ai_query.call_args.kwargs["reserved_ai_slot"])
+        self.assertEqual(
+            app._ai_query.call_args.kwargs["request_profile"],
+            "fast_tool_result",
+        )
 
     def test_worker_join_is_bounded_and_does_not_join_current(self):
         app = self._app()

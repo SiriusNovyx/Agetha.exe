@@ -1166,6 +1166,7 @@ class CompanionApp:
         self._pending_user_message: str | None = None
         self._pending_user_origin: RequestOrigin = "user"
         self._post_ai_tick_callbacks: list[Callable[[], None]] = []
+        self._deferred_ai_callbacks_inflight = False
         self._worker_lock = threading.Lock()
         self._workers: set[threading.Thread] = set()
         self._active_picker_cancellers: set[Callable[[], None]] = set()
@@ -2971,7 +2972,6 @@ class CompanionApp:
         finally:
             self._release_ai_operation(operation_token)
             self._run_deferred_ai_tick_callbacks()
-            self._drain_pending_user_message()
 
     def _defer_after_ai_tick(self, callback: Callable[[], None]) -> None:
         """Run callback after the current _ai_tick releases _ai_busy (avoids _ai_query races)."""
@@ -3003,7 +3003,6 @@ class CompanionApp:
                     self._release_ai_operation(token, noninterruptible=True)
                     self._schedule_ui(self._re_enable_input)
                     self._run_deferred_ai_tick_callbacks()
-                    self._drain_pending_user_message()
 
             self._start_worker(_run, name="exclusive-ai")
 
@@ -3013,21 +3012,46 @@ class CompanionApp:
         with self._ai_tick_lock:
             if self._closing:
                 self._post_ai_tick_callbacks.clear()
-                return
-            callbacks = self._post_ai_tick_callbacks[:]
-            self._post_ai_tick_callbacks.clear()
+                self._deferred_ai_callbacks_inflight = False
+                callbacks: list[Callable[[], None]] = []
+                closing = True
+            else:
+                callbacks = self._post_ai_tick_callbacks[:]
+                self._post_ai_tick_callbacks.clear()
+                callbacks_already_inflight = getattr(
+                    self, "_deferred_ai_callbacks_inflight", False,
+                )
+                if callbacks:
+                    self._deferred_ai_callbacks_inflight = True
+                closing = False
+
+        if closing:
+            self._drain_pending_user_message()
+            return
+        if not callbacks:
+            if not callbacks_already_inflight:
+                self._drain_pending_user_message()
+            return
+
+        def _finish_callbacks() -> None:
+            with self._ai_tick_lock:
+                self._deferred_ai_callbacks_inflight = False
+            self._drain_pending_user_message()
 
         def _run_callbacks() -> None:
-            for cb in callbacks:
-                try:
-                    cb()
-                except Exception as exc:
-                    logger.debug(f"deferred ai tick callback failed: {exc}")
+            try:
+                for cb in callbacks:
+                    try:
+                        cb()
+                    except Exception as exc:
+                        logger.debug(f"deferred ai tick callback failed: {exc}")
+            finally:
+                _finish_callbacks()
 
         if threading.current_thread() is threading.main_thread():
             _run_callbacks()
-        else:
-            self._schedule_ui(_run_callbacks)
+        elif self._schedule_ui(_run_callbacks) is None:
+            _finish_callbacks()
 
     def _drain_pending_user_message(self) -> None:
         if self._closing:
@@ -3037,7 +3061,11 @@ class CompanionApp:
             return
         pending: str | None
         with self._ai_tick_lock:
-            if self._ai_busy or self._speech_active:
+            if (
+                self._ai_busy
+                or self._speech_active
+                or getattr(self, "_deferred_ai_callbacks_inflight", False)
+            ):
                 return
             pending = self._pending_user_message
             pending_origin = getattr(self, "_pending_user_origin", "user")

@@ -1494,14 +1494,13 @@ def handle_request_screen_read(app, response, ctx):
         follow = app._ai_query(
             ctx.user_message or "",
             screen_context=screen_text,
+            reserved_ai_slot=True,
             request_profile="fast_tool_result",
         )
         if follow:
             app._dispatch_response(follow, ctx.user_message, origin="tool_result")
 
-    app._defer_after_ai_tick(
-        lambda: _start_app_worker(app, _requery, "screen-requery")
-    )
+    app._defer_exclusive_ai_operation(_requery)
     return True
 
 
