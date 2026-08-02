@@ -73,6 +73,9 @@ model output.
 |---|---|
 | [core/__init__.py](../agetha/core/__init__.py) | Package marker only; callers import concrete modules. |
 | [ai_engine.py](../agetha/core/ai_engine.py) | `_LocalOllamaClient`, `_OpenRouterClient`, `AIEngine`, `VALID_MOODS`, `VALID_COMMANDS`, system prompts/few shots, screen-context wrapper, provider/retry flow, `_build_prompt()`, `_parse()`, `query()`, and `query_streaming()`. |
+| [external_context.py](../agetha/core/external_context.py) | `PreparedExternalContext` and `prepare_external_context()`; shared fail-closed redaction and truncation for untrusted provider context. |
+| [file_drop.py](../agetha/core/file_drop.py) | `PreparedFileDrop` and `prepare_file_drop()`; bounded local file validation, sensitive/binary policy, and path-safe provider metadata. |
+| [request_context.py](../agetha/core/request_context.py) | Structured request origins plus compact prompt rendering and request-profile selection. |
 | [fast_mode_profile.py](../agetha/core/fast_mode_profile.py) | Schema/profile-versioned Fast Mode validation, no-follow cross-process locking, post-lock path revalidation, activation/restoration transactions, drift/conflict recovery, structured audits, health inspection, cached original/forced-value access, and portable status/reconcile/restore CLI. |
 | [time_context.py](../agetha/core/time_context.py) | `local_now(clock)` and `build_datetime_context(...)`; injectable local clock, weekday/ISO date, optional seconds, timezone name fallback, and UTC-offset formatting without network calls. |
 | [memory_system.py](../agetha/core/memory_system.py) | Static soul plus bounded episodic memory. `load_soul()`, `log_memory()`, recent/selective clear/display/stat/prompt helpers, and `build_system_prompt()`. Uses a lock and atomic rewrites. |
@@ -191,7 +194,7 @@ that was actually run.
 | [tests/__init__.py](../tests/__init__.py) | - | Test package marker. |
 | [test_atomic_persistence.py](../tests/test_atomic_persistence.py) | 9 | Atomic replacement/failure cleanup and corrupt-state repair/call-site use. |
 | [test_fast_mode_profile.py](../tests/test_fast_mode_profile.py) | 34 | Disabled read-only startup, activation/restoration transactions, durable cleanup-only retry, crash/cache recovery, drift/CAS preference resets, structural preservation, `.env` isolation, migration, validation, permissions, and path safety. |
-| [test_fast_mode_runtime.py](../tests/test_fast_mode_runtime.py) | 31 | Adaptive history/output profiles, complete tool/deep analysis with payload-safe retained answers, all-profile safety kernels, direct-only deep OCR, provider parity, bounded ambient events, Ollama options, pending presence context, and unchanged-ambient local skip. |
+| [test_fast_mode_runtime.py](../tests/test_fast_mode_runtime.py) | 33 | Adaptive history/output profiles, complete tool/deep analysis with payload-safe retained answers, all-profile safety kernels, direct-only deep OCR, provider parity, bounded ambient events, Ollama options, pending presence context, and unchanged-ambient local skip. |
 | [test_fast_mode_security.py](../tests/test_fast_mode_security.py) | 32 | Override/profile invariants, strict snapshot schema, no-follow lock opening, descriptor/path identity, TOCTOU injection, bounded locking, atomic-write states, disk-truth recovery, secret-free audits, and portable CLI behavior. |
 | [test_fast_mode_ui_medic.py](../tests/test_fast_mode_ui_medic.py) | 23 | Managed dashboard state, coordinated save/close/transition/failure lifecycle, fresh-state consent, secret-free Medic JSON/conflict counts, cleanup-state wording, one-launch declined-action skips, and Medic required-file coverage. |
 | [test_hybrid_ocr.py](../tests/test_hybrid_ocr.py) | 35 | OCR settings, Tesseract coordinates/confidence, Unlimited client security/errors/temp cleanup, deep integration and ambient block. |
@@ -203,6 +206,7 @@ that was actually run.
 | [test_phase4_realism.py](../tests/test_phase4_realism.py) | 16 | Command wiring, stats/notepad/trivia, prompt suppression, mood/session recap, coding-assist safety, GIF coverage, compile. |
 | [test_phase5_v4.py](../tests/test_phase5_v4.py) | 29 | Config, rhythm, dreams, tasks, prompt/guard/command wiring. |
 | [test_phase6_v5.py](../tests/test_phase6_v5.py) | 87 | Emotion/history/concurrency, audit, autostart, Windows integration/rollback, status, tray, command wiring. |
+| [test_quality_of_life.py](../tests/test_quality_of_life.py) | 40 | File-drop privacy, request origins, context sanitization, worker/AI arbitration, minimize recovery, picker lifecycle, and command safety. |
 | [test_screen_monitoring_reliability.py](../tests/test_screen_monitoring_reliability.py) | 75 | Coordinate/origin/capture/concurrency/change/event/pattern/privacy/stale-result/backward-compatibility matrix. |
 | [test_time_ui_effects.py](../tests/test_time_ui_effects.py) | 25 | Datetime context, new settings, display scale, glow/motion/CRT lifecycle, shutdown idempotence, optional real-Tk smoke. |
 
@@ -216,6 +220,7 @@ that was actually run.
 | [docs/module_reference.md](module_reference.md) | This repository-wide file and symbol map. |
 | [docs/development.md](development.md) | Setup, configuration, change checklists, validation commands, and platform limits. |
 | [docs/unlimited_ocr_server.md](unlimited_ocr_server.md) | Explicit deep-OCR service configuration, loopback mock, deployment, privacy, and controlled failures. |
+| [docs/releases/v5.7.md](releases/v5.7.md) | Quality-of-life privacy boundaries, request origins, lifecycle coordination, command hardening, and validation results. |
 | [docs/releases/v5.5.5.md](releases/v5.5.5.md) | Fast Mode 2.0 profile, recovery, adaptive request budgets, safety boundaries, and v5.5.5 upgrade guidance. |
 | [docs/fast_mode_security.md](fast_mode_security.md) | Fast Mode threat model, platform lock behavior, post-lock validation, durability, Windows ACL limits, ambiguous-write recovery, audit events, CLI exit codes, and CI coverage. |
 | [docs/releases/v5.5.1.md](releases/v5.5.1.md) | Historical reliability, Windows ARM, high-DPI, UI lifecycle, and attribution notes for v5.5.1. |

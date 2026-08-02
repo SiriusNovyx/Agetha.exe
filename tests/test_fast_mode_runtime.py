@@ -13,6 +13,7 @@ from agetha.core.ai_engine import (
 )
 from agetha.core import dreams
 from agetha.features import status_providers
+from agetha.platform.ocr_backends.base import OCRResult, format_deep_ocr_for_prompt
 
 
 def _settings(**overrides):
@@ -110,6 +111,25 @@ class TestRequestProfiles(unittest.TestCase):
         self.assertNotIn(short_rule, tool_system)
         self.assertNotIn(short_rule, deep_system)
         self.assertIn("Preserve essential analysis details", tool_system)
+
+    def test_deep_prompt_honors_configured_ocr_content_limit(self):
+        engine = _engine()
+        engine._app_settings.deep_ocr_max_output_chars = 12000
+        tail = "DEEP_OCR_TAIL_MARKER"
+        wrapped = format_deep_ocr_for_prompt(
+            OCRResult(("x" * 9000) + tail, [], "test"),
+            max_chars=12000,
+        )
+        with patch("agetha.core.ai_engine._MEMORY_SYSTEM_AVAILABLE", False):
+            _system, deep_turn, _messages = engine._build_prompt(
+                "", "", wrapped, request_profile="deep_analysis",
+            )
+            _system, tool_turn, _messages = engine._build_prompt(
+                "", "", wrapped, request_profile="fast_tool_result",
+            )
+        self.assertIn(tail, deep_turn)
+        self.assertIn("[END UNTRUSTED DEEP OCR RESULT]", deep_turn)
+        self.assertNotIn(tail, tool_turn)
 
     def test_history_retains_saved_ceiling_for_tool_followups(self):
         engine = _engine()

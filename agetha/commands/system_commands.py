@@ -219,16 +219,20 @@ def type_text(text: str) -> str:
 def lock_screen() -> str:
     try:
         if IS_WINDOWS:
-            subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"], timeout=5)
+            subprocess.run(
+                ["rundll32.exe", "user32.dll,LockWorkStation"],
+                timeout=5,
+                check=True,
+            )
             return "[screen locked]"
         if IS_LINUX and shutil.which("loginctl"):
-            subprocess.run(["loginctl", "lock-session"], timeout=5)
+            subprocess.run(["loginctl", "lock-session"], timeout=5, check=True)
             return "[screen locked]"
         if IS_MACOS:
             subprocess.run(
                 ["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession",
                  "-suspend"],
-                timeout=5,
+                timeout=5, check=True,
             )
             return "[screen locked]"
     except Exception as exc:
@@ -240,7 +244,7 @@ def _schedule_delayed_shutdown(delay: int, *, reboot: bool = False) -> None:
     """Schedule shutdown/restart with second precision where possible."""
     flag = "-r" if reboot else "-h"
     if delay <= 0:
-        subprocess.run(["shutdown", flag, "now"], timeout=5)
+        subprocess.run(["shutdown", flag, "now"], timeout=5, check=True)
         return
     if IS_LINUX:
         if shutil.which("systemd-run"):
@@ -249,38 +253,46 @@ def _schedule_delayed_shutdown(delay: int, *, reboot: bool = False) -> None:
                     "systemd-run", f"--on-active={delay}s", "--unit=agetha-shutdown",
                     "shutdown", flag, "now",
                 ],
-                timeout=5,
+                timeout=5, check=True,
             )
             return
         if shutil.which("at"):
             cmd = "reboot" if reboot else "shutdown -h now"
             subprocess.run(
                 ["bash", "-c", f"echo '{cmd}' | at now + {delay} seconds"],
-                timeout=5,
+                timeout=5, check=True,
             )
             return
     if IS_MACOS and shutil.which("at"):
         cmd = "sudo reboot" if reboot else "sudo shutdown -h now"
         subprocess.run(
             ["bash", "-c", f"echo '{cmd}' | at now + {delay} seconds"],
-            timeout=5,
+            timeout=5, check=True,
         )
         return
-    subprocess.run(["shutdown", flag, f"+{max(1, (delay + 59) // 60)}"], timeout=5)
+    subprocess.run(
+        ["shutdown", flag, f"+{max(1, (delay + 59) // 60)}"],
+        timeout=5,
+        check=True,
+    )
 
 
 def shutdown_system(delay: int = 60) -> str:
     delay = max(0, int(delay))
     try:
         if IS_WINDOWS:
-            subprocess.run(["shutdown", "/s", "/t", str(delay)], timeout=5)
+            subprocess.run(
+                ["shutdown", "/s", "/t", str(delay)], timeout=5, check=True,
+            )
             return f"[shutdown in {delay}s]"
         if IS_LINUX:
             _schedule_delayed_shutdown(delay, reboot=False)
             return f"[shutdown in {delay}s]"
         if IS_MACOS:
             if delay <= 0:
-                subprocess.run(["sudo", "shutdown", "-h", "now"], timeout=5)
+                subprocess.run(
+                    ["sudo", "shutdown", "-h", "now"], timeout=5, check=True,
+                )
             else:
                 _schedule_delayed_shutdown(delay, reboot=False)
             return f"[shutdown in {delay}s]"
@@ -293,14 +305,18 @@ def restart_system(delay: int = 60) -> str:
     delay = max(0, int(delay))
     try:
         if IS_WINDOWS:
-            subprocess.run(["shutdown", "/r", "/t", str(delay)], timeout=5)
+            subprocess.run(
+                ["shutdown", "/r", "/t", str(delay)], timeout=5, check=True,
+            )
             return f"[restart in {delay}s]"
         if IS_LINUX:
             _schedule_delayed_shutdown(delay, reboot=True)
             return f"[restart in {delay}s]"
         if IS_MACOS:
             if delay <= 0:
-                subprocess.run(["sudo", "shutdown", "-r", "now"], timeout=5)
+                subprocess.run(
+                    ["sudo", "shutdown", "-r", "now"], timeout=5, check=True,
+                )
             else:
                 _schedule_delayed_shutdown(delay, reboot=True)
             return f"[restart in {delay}s]"

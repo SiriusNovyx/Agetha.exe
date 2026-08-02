@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v5.5.5)
+  Agetha startup health check and launcher (Overhaul Edition v5.7)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
@@ -40,9 +40,9 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.5.5'
+    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.7'
     if ($v) { return $v }
-    return '5.5.5'
+    return '5.7'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -60,7 +60,7 @@ try {
     $script:AppVersion = Get-AppVersion
     $Host.UI.RawUI.WindowTitle = "Agetha.exe  -  Health Check  |  v$script:AppVersion"
 } catch {
-    $script:AppVersion = '5.5.5'
+    $script:AppVersion = '5.7'
 }
 
 function Test-GitHubUpdate {
@@ -1315,6 +1315,7 @@ function Invoke-StandardChecks {
         'main.py', 'medic_helper.py',
         'agetha\app_config.py', 'agetha\utils.py',
         'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
+        'agetha\core\external_context.py', 'agetha\core\file_drop.py', 'agetha\core\request_context.py',
         'agetha\core\rhythm.py', 'agetha\core\dreams.py',
         'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py', 'agetha\core\fast_mode_profile.py',
         'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
@@ -1375,6 +1376,7 @@ $coreFiles = @(
     'main.py', 'medic_helper.py', 'requirements.txt',
     'agetha\app_config.py', 'agetha\utils.py',
     'agetha\core\ai_engine.py', 'agetha\core\memory_system.py', 'agetha\core\memory_search.py', 'agetha\core\companion_stats.py',
+    'agetha\core\external_context.py', 'agetha\core\file_drop.py', 'agetha\core\request_context.py',
     'agetha\core\rhythm.py', 'agetha\core\dreams.py',
     'agetha\core\emotion_engine.py', 'agetha\core\emotional_history.py', 'agetha\core\audit_log.py', 'agetha\core\fast_mode_profile.py',
     'agetha\commands\command_guard.py', 'agetha\commands\command_handlers.py', 'agetha\commands\system_commands.py',
@@ -1392,7 +1394,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (v5.5.5 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (v5.7 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut

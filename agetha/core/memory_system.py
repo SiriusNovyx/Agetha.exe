@@ -534,7 +534,7 @@ def log_memory(
 
             if pruned:
                 print(f"[MemSys] Episodic log pruned: removed {pruned} oldest entries.")
-            print(f"[MemSys] Memory logged ({source}): {summary[:60]}{'…' if len(summary) > 60 else ''}")
+            print(f"[MemSys] Memory logged ({source}); chars={len(summary)}")
 
         except Exception as exc:
             # Never crash the calling thread over a memory write failure

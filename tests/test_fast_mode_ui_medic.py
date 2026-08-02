@@ -452,12 +452,24 @@ class MedicFastModeTests(unittest.TestCase):
         self.assertNotIn("AGETHA_SKIP_FAST_MODE_RECONCILE", environment)
         self.assertFalse(_consume_fast_mode_reconcile_skip(environment))
 
-    def test_fast_mode_profile_is_in_required_core_file_allowlist(self) -> None:
+    def test_required_core_modules_are_checked_and_compiled(self) -> None:
         script = (ROOT / "Medic_Checker.ps1").read_text(encoding="utf-8")
         core_files = script[
             script.index("$coreFiles = @("):script.index("$missingCore =")
         ]
-        self.assertIn("'agetha\\core\\fast_mode_profile.py'", core_files)
+        compile_files = script[
+            script.index("$modules = @("):script.index("$compileFail =")
+        ]
+        for module in (
+            "agetha\\core\\fast_mode_profile.py",
+            "agetha\\core\\external_context.py",
+            "agetha\\core\\file_drop.py",
+            "agetha\\core\\request_context.py",
+        ):
+            with self.subTest(module=module):
+                quoted = f"'{module}'"
+                self.assertIn(quoted, core_files)
+                self.assertIn(quoted, compile_files)
 
 
 if __name__ == "__main__":
