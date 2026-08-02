@@ -284,6 +284,34 @@ class TestThreadingAndArbitration(unittest.TestCase):
         self.assertEqual(app._pending_user_message, "queued")
         self.assertFalse(app._cancel_event.is_set())
 
+    def test_direct_input_queues_during_deferred_callback_handoff(self):
+        app = self._app()
+        app._deferred_ai_callbacks_inflight = True
+
+        token = app._reserve_ai_operation(
+            direct=True,
+            user_message="queued during handoff",
+            origin="user",
+        )
+
+        self.assertIsNone(token)
+        self.assertFalse(app._ai_busy)
+        self.assertFalse(app._cancel_event.is_set())
+        self.assertEqual(app._pending_user_message, "queued during handoff")
+        self.assertEqual(app._pending_user_origin, "user")
+        self.assertIsNone(app._reserve_ai_operation(
+            direct=False,
+            user_message=None,
+            origin="ambient",
+        ))
+        exclusive_token = app._reserve_ai_operation(
+            direct=False,
+            user_message=None,
+            origin="tool_result",
+            noninterruptible=True,
+        )
+        self.assertIsNotNone(exclusive_token)
+
     def test_deferred_callbacks_execute_once(self):
         app = self._app()
         callback = MagicMock()

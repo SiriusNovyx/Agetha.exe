@@ -2688,9 +2688,16 @@ class CompanionApp:
     ) -> object | None:
         """Reserve the single provider slot or safely queue direct input."""
         with self._ai_tick_lock:
-            if self._ai_busy or self._speech_active:
+            deferred_inflight = getattr(
+                self, "_deferred_ai_callbacks_inflight", False,
+            )
+            if (
+                self._ai_busy
+                or self._speech_active
+                or (deferred_inflight and not noninterruptible)
+            ):
                 if direct:
-                    if not self._ai_busy_noninterruptible:
+                    if not deferred_inflight and not self._ai_busy_noninterruptible:
                         self._cancel_event.set()
                     self._pending_user_message = user_message
                     self._pending_user_origin = origin
