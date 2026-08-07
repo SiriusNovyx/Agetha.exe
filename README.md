@@ -1,6 +1,7 @@
 # Agetha Mod — Overhaul Edition
 
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
+> Check out my agetha website! https://agethasirius.wasmer.app/
 
 **Version:** Overhaul v5.7 · **Medic_Checker:** v5.7 · **Original author:** @tomiszivacs
 
