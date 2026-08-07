@@ -11,6 +11,8 @@ code; private names may move, but the ownership boundaries should remain.
 | Tk main thread | Create/update widgets, schedule/cancel `after()` jobs, apply geometry, create `ImageTk` objects | Sleep, run provider/OCR/network calls, decode large GIFs, wait on long operations |
 | Initialization worker | Construct AI, screen, and audio services; decode non-Tk image data | Modify widgets or create `PhotoImage` objects |
 | AI worker | Capture/redact screen context, call the provider, parse output, run non-Tk command work | Modify Tk widgets directly |
+| Unicode typing worker | Revalidate the approved target, use native Unicode or guarded clipboard paste, observe cancellation/shutdown | Open confirmation UI, change Tk widgets, synthesize Enter/Return/Tab |
+| Senses refresh worker | Collect typed settings, installed capability hints, and already-known runtime status | Probe paid providers, reveal credentials, mutate settings, update widgets directly |
 | Voice workers | Listen, recognize, and emit text callbacks | Modify Tk widgets directly |
 | TTS/audio workers | Generate/play audio and observe stop/pause events | Own application shutdown or UI state |
 
@@ -35,7 +37,7 @@ sequenceDiagram
     Entry->>Entry: Windows AUMID/shortcut, if supported
     Entry->>Tk: CompanionApp()
     Tk->>Tk: DPI awareness, scale, shell widgets
-    Tk->>Tk: construct glow, motion, CRT controllers
+    Tk->>Tk: construct local observation/presence/Sentinel owners and UI controllers
     Tk->>Init: start _init_background daemon
     Tk->>Tk: enter mainloop()
     Init->>Init: bleep, ScreenReader, AIEngine
@@ -60,8 +62,10 @@ Detailed sequence:
 3. `CompanionApp.__init__()` establishes DPI awareness before creating Tk,
    chooses `TkinterDnD.Tk` when available, resolves high-DPI scale, and builds a
    usable shell.
-4. It constructs the mood glow, motion, and CRT-close controllers and connects
-   the title-bar close button and `WM_DELETE_WINDOW` to `_request_close()`.
+4. It constructs `ObservationBus`, optional `PresenceEtiquette`, and the
+   disabled-or-configured Terminal Sentinel, then constructs mood glow, motion,
+   and CRT-close controllers. The title-bar close button and
+   `WM_DELETE_WINDOW` connect to `_request_close()`.
 5. `_init_background()` constructs optional/heavy services in a daemon thread.
    Its `_finish` callback attaches them on Tk, creates speech coordination, and
    starts GIF loading.
@@ -138,17 +142,27 @@ deep sleep. Otherwise the poll lifecycle is:
 5. `ScreenReader.capture_text()` performs focused capture, change detection,
    Tesseract OCR, stale-window rejection, local pattern matching, and event
    deduplication.
-6. Excluded/Agetha-focused/unchanged/empty states become compact status markers.
-   Only new ambient pattern events are attached, avoiding repeated reactions.
-   In Fast Mode, a no-event state returns locally without a provider request
-   unless a one-shot dream or status observation is pending.
-7. `redact_for_external_context()` removes likely secrets before provider use.
-8. A meaningful Fast Mode ambient turn uses the `fast_ambient` profile with no
+6. Valid capture metadata publishes minimized local active-window
+   observations. Excluded/Agetha-focused/unchanged/empty states become compact
+   status markers. Only confirmed `last_new_pattern_events` are attached,
+   avoiding repeated reactions.
+7. An enabled, allowlisted Terminal Sentinel evaluates those confirmed new
+   events locally. A prepared, queued, ignored, or duplicate Sentinel event
+   ends this ambient turn before a provider call. Only a later Explain click
+   can begin an analysis request.
+8. Presence Etiquette evaluates existing fullscreen/presentation, rapid-input,
+   quiet-hour, minimized/sleeping, and shutdown state. A nonurgent ambient turn
+   that would be intrusive is deferred locally before provider use.
+9. `redact_for_external_context()` removes likely secrets before provider use.
+   In Fast Mode, a no-event state also returns locally unless a one-shot dream
+   or status observation is pending.
+10. A meaningful Fast Mode ambient turn uses the `fast_ambient` profile with no
    chat history and a tiny event-oriented budget. Normal mode retains the full
    ambient behavior.
-9. Dispatch may perform attention snap for configured ambient moods; deep OCR is
+11. Dispatch may perform attention snap for configured ambient moods only when
+    Presence Etiquette permits window motion; deep OCR is
    rejected before any confirmation dialog or capture.
-10. After the response/speech completes, `_reschedule_screen_poll()` stores the
+12. After the response/speech completes, `_reschedule_screen_poll()` stores the
     next callback ID, advances stats/emotion time, and optionally starts a
     self-rate-limited status-provider worker.
 
@@ -181,6 +195,37 @@ with another window's origin/title.
 
 Automatic Tesseract OCR is local. It does not invoke Unlimited-OCR or another
 network service.
+
+## Terminal Sentinel flow
+
+Terminal Sentinel is a consumer of the standard OCR flow, not another screen
+capture loop:
+
+```mermaid
+flowchart TD
+    Events["ScreenReader.last_new_pattern_events"] --> Valid{"confirmed capture metadata?"}
+    Valid -- no --> Stop["no Sentinel work"]
+    Valid -- yes --> Local["allowlist + exclusions + confidence + ignore + cooldown"]
+    Local --> Presence{"Presence Etiquette permits popup?"}
+    Presence -- no --> Queue["bounded local queue"]
+    Presence -- yes --> Notice["no-activation local popup"]
+    Notice --> Dismiss["Dismiss: local only"]
+    Notice --> Ignore["Ignore Pattern: hashed bounded signature"]
+    Notice --> Explain["Explain: explicit terminal_sentinel origin"]
+    Explain --> Provider["bounded redacted OCR analysis request"]
+    Provider --> Speech["idle / speak / popup only"]
+```
+
+The feature must be enabled and at least one application or title pattern must
+match. Existing capture exclusions, Agetha-own-window checks, frame-change
+rules, event confirmation, OCR confidence, and upstream cooldown have already
+run. Sentinel adds its own private-target refusal, deduplication, ignore rules,
+and cooldown. Showing, dismissing, ignoring, or queueing a notification calls no
+provider and performs no command. Explain obtains sanitized bounded text from
+the stored notification, starts `_ai_tick(..., origin="terminal_sentinel")`,
+and supplies explicit untrusted screen context. Dispatch coerces every
+model-suggested command other than `idle`, `speak`, or `popup` back to a
+non-action response.
 
 ## Explicit deep OCR flow
 
@@ -303,6 +348,67 @@ Some information-gathering commands use a two-pass pattern:
 5. Anti-recursion state prevents the model from requesting the same lookup
    indefinitely.
 
+## Unicode `type_text` flow
+
+`type_text` extends the existing command rather than adding per-language
+commands. The normalized schema is:
+
+```json
+{
+  "command": "type_text",
+  "text": "สวัสดี — こんにちは — مرحباً 👋",
+  "mode": "auto",
+  "speed": "normal",
+  "restore_clipboard": true
+}
+```
+
+The `text` field is not stripped or normalized. Unknown model-provided modes
+and speeds fall back to `auto` and `normal` in the parser; direct platform API
+calls reject unknown values. Dispatch applies the master and Unicode feature
+gates before target or clipboard work, captures the intended external window,
+builds a privacy-safe `TypingPreview`, refuses restricted/elevated targets, and
+runs the ordinary Caution guard. Requests that are long, multiline, terminal,
+administrator-related, shell-like, sensitive-looking, or explicitly
+`preview` then require the Win95 preview decision. Sensitive detected text is
+hidden and other preview content is redacted and bounded.
+
+The handler accepts only the private approval token produced by that dispatch
+path, rechecks both gates, and starts the app-owned worker. Modes behave as
+follows:
+
+| Mode | Runtime behavior |
+|---|---|
+| `auto` | Windows native Unicode first; safe clipboard fallback only before any native character was sent. Other supported desktops use guarded paste. |
+| `unicode` | Win32 `SendInput(KEYEVENTF_UNICODE)` only; unsupported platforms fail honestly. |
+| `paste` | Compare-and-restore clipboard paste into the revalidated target. |
+| `preview` | Shows the destination/content preview and sends no text. |
+| `paced` | Sends conservative Unicode-safe chunks with bounded delay and focus checks between chunks. |
+
+Windows converts Python text to exact UTF-16LE code units, including surrogate
+pairs. Paced boundaries avoid splitting combining marks, variation selectors,
+skin-tone modifiers, zero-width joiner sequences, regional-indicator pairs, and
+explicit surrogate pairs. On Xorg the adapter uses available `xclip`/`xsel` and
+`xdotool` paths without introducing a mandatory package. On Wayland it copies
+the exact value when possible and returns a partial outcome instructing manual
+`Ctrl+V`; it does not bypass compositor restrictions. Clipboard restoration
+occurs only when the clipboard still equals Agetha's last temporary value, so a
+new user copy is not overwritten. Focus change, cancellation, or shutdown stops
+the operation. No path appends or presses Enter, Return, or Tab.
+
+## Senses Control Panel flow
+
+Dashboard's Senses button calls `CompanionApp._open_senses_panel()` only when
+`ENABLE_SENSES_PANEL=yes`. At most one owned panel is active. Each refresh
+increments a generation, collects a local `SensesSnapshot` in an application
+worker, and schedules the result onto Tk; a stale or post-close generation is
+discarded. The panel reports Vision, Hearing, Memory, Network & AI, Actions, and
+Presence with `available`, `unavailable`, `disabled`, `not configured`,
+`degraded`, or `unknown` status. It reads configuration, installed-module
+hints, platform session detection, and already-known runtime state. Opening or
+refreshing it does not call Groq/OpenRouter/Ollama, test a paid endpoint, expose
+an API key, change configuration, or create persistent history.
+
 ## Visual state, mood, and speech
 
 State and mood are related but separate:
@@ -362,8 +468,11 @@ Animated path:
 Cleanup path:
 
 1. `_shutdown_complete` makes repeated calls harmless.
-2. Set close/cancel/stop signals and disable new input.
-3. Cancel CRT, mood motion/glow, geometry, GIF, polling, placeholder, talking,
+2. Set close/cancel/stop signals, including the active Unicode typing cancel
+   event, and disable new input.
+3. Close the Senses panel and Sentinel popups, stop Terminal Sentinel, shut
+   down Presence Etiquette and Observation Bus, then cancel CRT, mood
+   motion/glow, geometry, GIF, polling, placeholder, talking,
    wake/sleep/loaf, restore, and deferred application jobs.
 4. Stop subtitle work, voice listening, TTS/bleeps, screen/deep-OCR session, and
    tray; close dashboard/child resources where owned.
@@ -384,6 +493,10 @@ The AI response `summary_memory` has a compatibility path: it updates legacy
 summary text, logs episodic memory, and optionally appends long-term searchable
 memory. Never write secrets, unredacted external captures, or unbounded provider
 output into persistence.
+
+Observation Bus and Presence queues are memory-only and are cleared during
+shutdown. Terminal Sentinel alone may persist bounded hashed ignore signatures
+in `memory/terminal_sentinel_ignored.json`; raw OCR text is not written there.
 
 ## Failure behavior
 
