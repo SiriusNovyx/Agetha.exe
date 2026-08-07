@@ -25,6 +25,10 @@ flowchart TD
     Platform --> Config
     Features --> Config
     UI --> Config
+    Main --> Bus["core.observation_bus / bounded local facts"]
+    Bus --> Presence["core.presence_etiquette / interruption policy"]
+    Platform --> Bus
+    Presence --> UI
 ```
 
 The root [main.py](../main.py) is the composition layer. It owns the Tk root,
@@ -38,11 +42,11 @@ and coordinates application lifecycle. Reusable logic belongs in the relevant
 |---|---|---|
 | Composition | `main.py` | Tk application ownership, visual state machine, worker orchestration, AI-turn lifecycle, centralized shutdown |
 | Configuration | `agetha/app_config.py` | Built-in defaults, tolerant parsing, typed/clamped settings, `.env` secret overrides, atomic config patches |
-| Core | `agetha/core/` | AI providers and prompt construction, date/time context, memory, emotions, relationship history, rhythm, dreams, stats, audit log |
+| Core | `agetha/core/` | AI providers and prompt construction, date/time context, memory, emotions, relationship history, rhythm, dreams, stats, audit log, typed observations, and local presence decisions |
 | Commands | `agetha/commands/` | Response dispatch, confirmation and risk policy, filesystem/process/system operations |
-| Features | `agetha/features/` | Optional TTS, web retrieval, tasks, status observations, and tray integration |
-| Platform | `agetha/platform/` | Screen capture/OCR, voice input, window control, Windows integrations, notifications, autostart |
-| UI | `agetha/ui/` | Dashboard, scaling, Win95 chrome, popup/effect controllers, mood glow and motion |
+| Features | `agetha/features/` | Optional TTS, web retrieval, tasks, status observations, tray integration, and opt-in Terminal Sentinel policy |
+| Platform | `agetha/platform/` | Screen capture/OCR, exact Unicode entry, voice input, window control, Windows integrations, notifications, autostart |
+| UI | `agetha/ui/` | Dashboard and Senses capability view, scaling, Win95 chrome, typing/Sentinel previews, popup/effect controllers, mood glow and motion |
 | Runtime data | `memory/`, `.env`, `conversation.txt` | Private/generated state; never a source-code dependency to copy into docs or tests |
 | Validation | `tests/`, `Medic_Checker.ps1`, `medic_helper.py` | Automated behavior tests and end-user environment diagnostics |
 
@@ -53,6 +57,9 @@ to:
 
 - the Tk root, primary widgets, GIF players, subtitle renderer, and popups;
 - `AIEngine`, `ScreenReader`, voice input, bleep/TTS coordination, and tray state;
+- the bounded `ObservationBus`, optional `PresenceEtiquette`, Terminal Sentinel,
+  the active Unicode-typing cancellation event, the Senses panel, and Sentinel
+  popups;
 - `MoodGlowController`, `MoodMotionController`, and `CRTCloseController`;
 - all application-level `after()` job IDs, stop events, worker references, and
   geometry ownership flags;
@@ -153,6 +160,12 @@ The prompt is composed from compact, bounded sections when enabled:
 - web results only for explicit gated web operations;
 - current user message, few-shot examples, and bounded conversation history.
 
+The system prompt and few shots also define Agetha's Thai character voice as
+casual, concise, and neutral by default. This is model guidance rather than a
+post-processing filter. The parser therefore preserves exact values in
+`type_text` and does not strip `ครับ`, `ค่ะ`, whitespace, combining marks, or
+other user-provided data from commands, quotations, documents, or code.
+
 The parser extracts or repairs the expected JSON object, normalizes mood and
 segments, validates commands against `VALID_COMMANDS`, copies command-specific
 fields into the result, applies feature gates, and records permitted memory.
@@ -178,6 +191,29 @@ speech/state control back to the application.
 Never call a handler directly to avoid confirmation. A new command is incomplete
 until all three registries, prompt/schema fields, configuration gates, and tests
 agree. See [Adding an AI command](development.md#adding-an-ai-command).
+
+`type_text` is a specialized Caution path layered on the same rules. Its parser
+accepts exact `text`, `mode`, `speed`, and `restore_clipboard`; both the master
+execution gate and `ENABLE_UNICODE_TYPING` are checked before target or
+clipboard work. Dispatch captures the intended external target before any
+owned confirmation window, attaches privacy-safe preview metadata for Command
+Guard, and refuses conservative protected/elevated targets. Long, multiline,
+terminal, shell-like, sensitive-looking, and explicit-preview requests open the
+Win95 typing preview. The handler requires an internal dispatch approval token,
+rechecks both gates, then starts the application-owned Unicode worker.
+
+[`unicode_typing.py`](../agetha/platform/unicode_typing.py) owns exact platform
+entry. On Windows it emits UTF-16 code units through
+`SendInput(KEYEVENTF_UNICODE)`, including surrogate pairs. `auto` falls back to
+a compare-and-restore clipboard paste only if native input failed before any
+characters were sent. Xorg uses optional clipboard and focus tools when
+available; Wayland copies the value and reports that a manual `Ctrl+V` is
+required instead of bypassing compositor security. Focus is revalidated before
+entry and between paced chunks. Combining marks, variation selectors, emoji
+modifiers, zero-width-joiner sequences, regional-indicator pairs, and explicit
+surrogate components are kept together conservatively. No path synthesizes
+Enter, Return, or Tab, and result/log objects carry counts and method metadata,
+not content.
 
 ## Screen monitoring and OCR
 
@@ -209,6 +245,47 @@ paths, which are exercised with mocks in headless CI and return safe empty/error
 results when capture facilities are unavailable. Historical macOS paths may
 remain, but macOS is retired and unsupported as of v5.5.5.
 
+## Local observation and presence
+
+[`observation_bus.py`](../agetha/core/observation_bus.py) is a small
+application-owned, thread-safe FIFO. `Observation` is immutable and contains a
+typed kind, bounded one-line source/summary, clamped confidence, sensitivity,
+UTC creation/expiry times, a local-only flag, optional dedup key and request
+origin, and a recursively copied immutable metadata map. Metadata keys and
+sizes are bounded, and credential/raw-OCR/full-document field names are
+rejected. The bus bounds its queue, expires entries, deduplicates with a
+monotonic window, and drops the oldest entry when full.
+
+Publication records a local fact only. `eligibility_for()` separately reports
+local-reaction, notification, provider-context, memory, and guarded-action
+eligibility; provider and memory uses require separate authorization, and an
+Observation never authorizes a guarded action. The bus makes no provider call,
+writes no memory, opens no UI, and performs no command. `CompanionApp` currently
+publishes minimized active-window summaries plus rapid-typing, user-activity,
+and confirmed error-pattern observations for local consumers.
+
+[`presence_etiquette.py`](../agetha/core/presence_etiquette.py) consumes only
+already-known application state. It does not install global monitoring,
+capture the screen, call a provider, or manipulate Tk. Its immutable decision
+separates popup, voice, focus request, window motion, and nonurgent queueing.
+Rules account for presentation/fullscreen/game state, rapid typing, idle or
+recent activity, quiet hours, media, dismissal backoff, minimized/sleeping
+state, dangerous local conditions, and shutdown. A bounded expiring queue can
+defer nonurgent local subtitles until policy allows one to drain.
+
+Terminal Sentinel is the first narrow consumer. It is disabled by default and
+does nothing when both allowlists are empty. It receives only
+`ScreenReader.last_new_pattern_events` plus the already validated capture
+metadata; it does not create another capture loop. Existing OCR exclusions,
+own-window checks, confidence, event confirmation, change detection, and
+cooldown remain upstream. Local evaluation additionally applies app/title
+allowlists, private-target exclusions, ignore signatures, deduplication, and
+Presence Etiquette. A notification is local and non-activating. Only its
+Explain button returns bounded redacted context for a request with origin
+`terminal_sentinel`; Dismiss and Ignore Pattern stay local. Explanation-origin
+responses are restricted to `idle`, `speak`, or `popup`, so the model cannot
+turn an explanation into an OS command.
+
 ## UI architecture
 
 The primary Win95 companion surface remains in `CompanionApp`; focused reusable
@@ -218,6 +295,16 @@ effects live under `agetha/ui/`:
   optional user override. Dimensions and fonts are derived from that scale.
 - `dashboard` creates a separate settings/monitoring window and is kept outside
   the startup-critical path.
+- `senses_panel` presents one refreshable snapshot across Vision, Hearing,
+  Memory, Network & AI, Actions, and Presence. Collection reads typed settings,
+  installed-module/capability information, and already-known runtime state; it
+  does not probe paid providers, reveal keys, mutate configuration, or persist
+  a capability history. Refresh computation runs through the app worker and
+  generation checks prevent stale results from replacing a newer snapshot.
+- `typing_preview` shows privacy-safe target/method/count/reversibility data and
+  a bounded redacted content preview before higher-risk Unicode entry.
+- `terminal_sentinel_popup` owns the no-activation Explain/Dismiss/Ignore
+  surface and never requests foreground focus itself.
 - `w95_window` owns borderless title-bar behavior and Windows caption removal.
 - `MoodGlowController` owns the optional GIF border color and its single pulse
   job.
@@ -247,6 +334,9 @@ dependency is absent:
 - `status_providers` polls bounded local observations and queues summaries for a
   future prompt.
 - `tasks` persists a small local task list.
+- `terminal_sentinel` is inactive unless explicitly enabled and allowlisted; it
+  consumes existing confirmed OCR events and never captures or calls a provider
+  on its own.
 
 No optional package is allowed to become a mandatory import on the basic launch
 path.
@@ -271,6 +361,7 @@ cross-feature coupling:
 | `voice_input` | `memory/settings.json` | Selected microphone settings |
 | `win_integration` | `memory/theme_backup.json` | Data required to roll back theme changes |
 | `dashboard` | `memory/notepad.txt` | User notepad content injected only when applicable |
+| `terminal_sentinel` | `memory/terminal_sentinel_ignored.json` | Bounded hashed ignore signatures; never raw OCR text |
 
 Rewrites use `write_atomic()` or a module-local temporary-file/`os.replace()`
 equivalent where applicable. JSONL stores are append-oriented and protected by
@@ -288,8 +379,10 @@ window.
 All close paths converge on `CompanionApp._request_close()` and then
 `_graceful_shutdown()` (directly or through `CRTCloseController`). The shutdown
 guard makes cleanup idempotent. It cancels controller jobs and application
-timers, stops voice/TTS/bleeps/screen activity, closes tray and child surfaces,
-signals workers, stops pygame when active, and finally destroys the root.
+timers, signals the active Unicode entry, closes the Senses panel and every
+Sentinel popup, stops Terminal Sentinel, Presence Etiquette, and Observation
+Bus, then stops voice/TTS/bleeps/screen/tray activity and other workers before
+destroying the root.
 
 See [Runtime flows](runtime_flows.md) for step-by-step sequences and
 [Development](development.md) for change checklists.

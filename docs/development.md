@@ -113,6 +113,7 @@ dashboard.
 | Provider and generation | `USE_LOCAL_AI`, `ENABLE_GROQ`, `ENABLE_OPENROUTER`, `OPENROUTER_MODEL`, `FASTER_MODE`, `GROQ_MODEL`, `LOCAL_AI_MODEL`, `LOCAL_AI_TIMEOUT`, `AI_TEMPERATURE`, `AI_MAX_TOKENS`, `AI_TOP_P`, `ENABLE_STREAMING`, `ENABLE_AMBIENT_POLLS` |
 | Datetime context | `ENABLE_DATETIME_CONTEXT`, `DATETIME_INCLUDE_SECONDS`, `DATETIME_INCLUDE_TIMEZONE` |
 | Command safety | `ENABLE_COMMAND_EXECUTION`, `ENABLE_WINDOW_CONTROL`, `ENABLE_COMMAND_CONFIRMATIONS`, `FORCE_CLOSE_AUTO_ALLOW`, `PROTECTED_PROCESSES`, `DRY_RUN_MODE` |
+| Unicode typing | `ENABLE_UNICODE_TYPING`, `UNICODE_TYPING_MODE`, `UNICODE_TYPING_DELAY_MS`, `UNICODE_TYPING_PREVIEW_THRESHOLD`, `UNICODE_TYPING_RESTORE_CLIPBOARD` |
 | Prompt/memory bounds | `MEMORY_CHARS`, `HISTORY_LIMIT`, `FILE_READ_CHARS`, `EPISODIC_PROMPT_LIMIT`, `EPISODIC_ENTRY_MAX_CHARS`, `EPISODIC_MAX_ENTRIES`, `ENABLE_LONGTERM_MEMORY`, `LONGTERM_MEMORY_MAX_RESULTS`, `LONGTERM_MEMORY_MAX_CHARS` |
 | Web retrieval | `ENABLE_WEB_RAG`, `WEB_FETCH_MAX_CHARS`, `WEB_TIMEOUT_SEC`, `WEB_SEARCH_MAX_RESULTS` |
 | Glitch visuals | `ENABLE_GLITCH_EFFECTS`, `GLITCH_MAX_DURATION_MS`, `GLITCH_DEFAULT_STYLE`, `GLITCH_MOOD_AUTO`, `GLITCH_FULLSCREEN` |
@@ -120,9 +121,11 @@ dashboard.
 | Emotion model | `ENABLE_EMOTION_ENGINE`, `EMOTION_BASELINE_VALENCE`, `EMOTION_BASELINE_AROUSAL`, `EMOTION_BASELINE_TRUST`, `EMOTION_BASELINE_LONELINESS`, `EMOTION_DECAY_PER_HOUR`, `EMOTION_HISTORY_MAX` |
 | Windows integrations/status/tray | `ENABLE_AUTOSTART_CONTROL`, `ENABLE_THEME_CONTROL`, `ENABLE_STATUS_PROVIDERS`, `STATUS_POLL_INTERVAL_SEC`, `ENABLE_TRAY`, `TRAY_BACKGROUND_CLOSE` |
 | Presence and attention | `SCREEN_POLL_INTERVAL_SEC`, `TOUCH_COOLDOWN_SEC`, `WAKE_DELAY_SEC`, `LOAF_TIMER_MIN`, `ENABLE_ATTENTION_SNAP`, all `MOOD_SNAP_*_SEC` keys |
+| Presence Etiquette | `ENABLE_PRESENCE_ETIQUETTE`, `PRESENCE_FULLSCREEN_SILENT`, `PRESENCE_DISMISS_COOLDOWN_SEC`, `PRESENCE_RAPID_TYPING_COOLDOWN_SEC`, `QUIET_HOURS_START`, `QUIET_HOURS_END` |
+| Terminal Sentinel | `ENABLE_TERMINAL_SENTINEL`, `TERMINAL_SENTINEL_APPS`, `TERMINAL_SENTINEL_TITLE_PATTERNS`, `TERMINAL_SENTINEL_COOLDOWN_SEC` |
 | Standard OCR | `ENABLE_SCREEN_READER`, `OCR_MAX_DIMENSION`, `OCR_FOCUSED_WINDOW_ONLY`, `OCR_CHANGE_DETECTION`, `OCR_CHANGE_THRESHOLD`, `OCR_FORCE_REFRESH_SECONDS`, `OCR_STATE_EXPIRY_SECONDS`, confirmation/cooldown/confidence keys, `OCR_PREPROCESSING`, `OCR_LANGUAGES`, `OCR_PSM`, exclusions/redaction, `INCLUDE_WINDOW_TITLE_IN_CONTEXT`, `TESSERACT_PATH`, `OCR_CUSTOM_PATTERNS`, `OCR_PAUSE_WHILE_TYPING_SEC` |
 | Explicit deep OCR | `DEEP_OCR_BACKEND`, `UNLIMITED_OCR_SERVER_URL`, `UNLIMITED_OCR_MODEL`, `UNLIMITED_OCR_TIMEOUT_SECONDS`, `UNLIMITED_OCR_ALLOW_REMOTE`, `DEEP_OCR_MAX_OUTPUT_CHARS` |
-| Window/UI | `WINDOW_TOPMOST`, `UI_SCALE`, `WINDOW_START_X`, `WINDOW_START_Y`, `SUBTITLE_CHAR_DELAY`, `ANIMATION_SPEED`, `WINDOW_MOVE_SMOOTH`, `WINDOW_MOVE_DURATION_MS` |
+| Window/UI | `WINDOW_TOPMOST`, `UI_SCALE`, `WINDOW_START_X`, `WINDOW_START_Y`, `SUBTITLE_CHAR_DELAY`, `ANIMATION_SPEED`, `WINDOW_MOVE_SMOOTH`, `WINDOW_MOVE_DURATION_MS`, `ENABLE_SENSES_PANEL` |
 | Close/glow/motion | `ENABLE_CRT_CLOSE_ANIMATION`, `REDUCED_MOTION`, `ENABLE_MOOD_GLOW`, `MOOD_GLOW_ANIMATED`, `MOOD_GLOW_INTERVAL_MS`, `ENABLE_MOOD_MOTION`, `MOOD_MOTION_COOLDOWN_SECONDS` |
 | Medic/project metadata | `SKIP_TESSERACT_CHECK`, `SKIP_ASSET_CHECK`, `AUTO_PIP_INSTALL`, `CREATE_DESKTOP_SHORTCUT`, `CHECK_FOR_UPDATES`, `APP_VERSION`, `GITHUB_RELEASES_URL` |
 | External window control | `TARGET_APP_ALIASES`, `WINDOW_PICKER_ON_AMBIGUOUS` |
@@ -211,6 +214,34 @@ A command is incomplete until all relevant steps agree:
 Do not make mood, affection, infection level, or emotional history influence
 command authorization.
 
+### Unicode typing safety contract
+
+`type_text` remains Caution. Preserve the entire input string; never trim,
+normalize, translate, transliterate, change punctuation/case, remove Thai polite
+particles, split uncertain Unicode clusters, or append Enter/Return/Tab. Keep
+all reusable platform behavior in `platform/unicode_typing.py`.
+
+The dispatch path must continue to:
+
+1. reject the request before target/clipboard work when either
+   `ENABLE_COMMAND_EXECUTION` or `ENABLE_UNICODE_TYPING` is off;
+2. capture the intended external target before Command Guard or preview UI;
+3. refuse Agetha and conservative protected/elevated targets;
+4. give Command Guard only privacy-safe target/method/count metadata;
+5. require the Win95 preview for long, multiline, terminal,
+   administrator-related, shell-like, sensitive-looking, and explicit-preview
+   requests;
+6. require an internal dispatch approval token before the handler starts the
+   worker; and
+7. recheck gates, focus, cancellation, and shutdown at the effect boundary.
+
+Windows native entry uses UTF-16 `SendInput(KEYEVENTF_UNICODE)`. A partial
+native send must never fall back and duplicate already-entered text. Clipboard
+fallback captures the previous value and restores it only if the clipboard
+still equals Agetha's temporary value. Xorg optional utilities must remain
+optional. Wayland restrictions produce an honest copy-only/manual-paste result,
+not a security bypass.
+
 ## Adding prompt context
 
 Add context through `AIEngine._build_prompt()` and preserve these constraints:
@@ -228,6 +259,16 @@ Add context through `AIEngine._build_prompt()` and preserve these constraints:
 Datetime context is the example to follow: `core.time_context` owns local
 timezone formatting, while the engine only decides whether to include the
 compact result.
+
+### Character voice versus exact data
+
+Natural Thai is a system-prompt and few-shot contract: Agetha defaults to
+concise, neutral phrasing such as `สวัสดี` and does not automatically add
+`ครับ` or `ค่ะ`. Do not implement a global regex or post-provider filter. Exact
+user-provided text, quotations, formal translations, documents, code, file and
+clipboard content, and command payloads such as `ขอบคุณครับ` must remain
+unchanged. Prompt tests can prove that the contract is present; they cannot
+claim that prompt wording guarantees every future model response.
 
 ## Tk, workers, and timers
 
@@ -247,6 +288,18 @@ For geometry, only one owner may move the companion at a time. Coordinate with
 dragging, `animate_geometry`, attention snap, mood motion, minimize, and CRT
 close. Temporary movement must clamp to the active monitor work area and restore
 an exact stable final position.
+
+Polyglot Presence ownership is specific:
+
+- `CompanionApp` owns `ObservationBus`, optional `PresenceEtiquette`, Terminal
+  Sentinel, the active Unicode cancellation event, the Senses panel, and
+  Sentinel popups.
+- Unicode entry and Senses collection use application workers; previews,
+  status application, and popups are scheduled onto Tk.
+- Observation and Presence queues are in memory and shut down idempotently.
+- Final shutdown signals Unicode entry, closes child panels/popups, then calls
+  Sentinel `stop()`, Presence `shutdown()`, and bus `shutdown()` before root
+  destruction.
 
 ## UI, moods, and assets
 
@@ -409,6 +462,12 @@ With the project venv:
 | Emotions/autostart/Windows/status/tray | `python -m unittest tests.test_phase6_v5 -v` |
 | Screen reliability/privacy/concurrency | `python -m unittest tests.test_screen_monitoring_reliability -v` |
 | Datetime/scaling/glow/motion/CRT/shutdown | `python -m unittest tests.test_time_ui_effects -v` |
+| Exact Unicode typing/platform fallbacks | `python -m unittest tests.test_unicode_typing -v` |
+| Typed Observation Bus | `python -m unittest tests.test_observation_bus -v` |
+| Presence Etiquette | `python -m unittest tests.test_presence_etiquette -v` |
+| Opt-in Terminal Sentinel | `python -m unittest tests.test_terminal_sentinel -v` |
+| Senses capability model/UI lifecycle | `python -m unittest tests.test_senses_panel -v` |
+| Polyglot Presence integration | `python -m unittest tests.test_polyglot_presence_integration -v` |
 
 Medic's compile/import checks are useful environment diagnostics, but they do not
 replace the test suite.
@@ -474,6 +533,12 @@ paths relevant to the change:
 
 Record which steps were actually performed and the platform used.
 
+The feature-specific twenty-item Windows checklist and Xorg/Wayland notes are
+in [Polyglot Presence manual validation](testing/polyglot_presence_manual.md).
+Automated tests, compile checks, and mocked platform adapters do not count as a
+performed manual item; leave each entry marked unperformed until a human runs
+it on the named desktop and records the result.
+
 ## Platform limitations and review hotspots
 
 | Area | Current limitation or caveat |
@@ -483,6 +548,9 @@ Record which steps were actually performed and the platform used.
 | Tesseract | Python package alone is insufficient; the native executable and requested language data must exist. |
 | Voice shutdown | Listener/recognition workers are daemon threads and stop by event/timeouts rather than a blocking UI-thread join. Keep operations bounded. |
 | Screen own-window handle | Own-window exclusion is best when the native handle is cached/passed from Tk; avoid adding worker-side Tk calls to resolve it. |
+| Unicode typing | Windows native behavior still depends on target-app support for `KEYEVENTF_UNICODE`. Xorg entry needs optional `xdotool` plus `xclip` or `xsel`; missing tools fall back honestly. Wayland permits clipboard copy through `wl-copy` when installed but blocks global automatic typing by design. Secure/elevated desktops are refused rather than bypassed. |
+| Terminal Sentinel | It sees only confirmed Tesseract events from explicitly allowlisted windows. OCR can misread terminal output; notifications are advisory, never an automatic fix. Empty allowlists watch nothing. |
+| Senses panel | Capability status is a local snapshot, not a live health guarantee. Provider availability remains unknown unless runtime already knows it; opening the panel deliberately performs no paid/network probe. |
 | Dashboard | Multiple dashboards may open. Its tracked callback list is cleared on close but can grow during a long session; keep new pollers sparse. |
 | Fast Mode snapshot permissions | POSIX permission bits are forced to user read/write. On Windows, the file inherits the current user's directory ACL because portable `chmod` cannot create a new Windows ACL. Reparse-point targets are refused. |
 | Fast Mode same-user threat | Lock/path hardening resists practical substitution and races but is not a privilege boundary against a fully compromised process running as the same user. |
@@ -506,3 +574,9 @@ timer/controller, platform dependency, or test suite:
 
 Prefer links and contracts over pasted implementation. Documentation should let
 the next developer locate the code, not create a second copy of it.
+
+Future Polyglot Presence ideas live only in the
+[design roadmap](roadmap/polyglot_presence_roadmap.md). Features A–O are all
+**planned / not implemented**; do not add them to current feature lists or
+partial production modules until a separate authorized implementation includes
+its full safety, privacy, ownership, persistence, platform, and test design.

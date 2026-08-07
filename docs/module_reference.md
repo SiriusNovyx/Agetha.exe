@@ -59,8 +59,8 @@ Keep that side effect in mind in isolated tests.
 |---|---|
 | [commands/__init__.py](../agetha/commands/__init__.py) | Package marker only; no eager imports. |
 | [command_guard.py](../agetha/commands/command_guard.py) | `CommandGuard`: Safe/Caution/Danger classification, dry-run descriptions, native/Tk confirmations, timeout-deny behavior, protected-process checks, and force-close policy. Unknown commands default to Danger. |
-| [command_handlers.py](../agetha/commands/command_handlers.py) | `DispatchCtx`, `HANDLERS`, `register()`, and `dispatch()`. Contains registered handlers for UI, files, clipboard, process/window, browser/web, system, memory, effects, tasks/emotions, Windows integration, and OCR. Coordinates feature gates, guard calls, stats/emotion updates, deferred re-query, Tk handoffs, and results. |
-| [system_commands.py](../agetha/commands/system_commands.py) | Guarded URL/clipboard/folder access, system info, volume/wallpaper, scoped file search, typing, lock/shutdown/restart, reminders, notifications, and screenshot paths. Uses supported Windows and existing Linux paths where implemented; Windows-only operations degrade safely on Linux. |
+| [command_handlers.py](../agetha/commands/command_handlers.py) | `DispatchCtx`, `HANDLERS`, `register()`, and `dispatch()`. Contains registered handlers for UI, files, clipboard, process/window, browser/web, system, memory, effects, tasks/emotions, Windows integration, and OCR. Coordinates feature gates, guard calls, stats/emotion updates, deferred re-query, Tk handoffs, and results. The Unicode path performs preflight target capture, privacy-safe preview/guard integration, and an app-owned cancellable worker; direct handler calls fail closed without the dispatch approval token. |
+| [system_commands.py](../agetha/commands/system_commands.py) | Guarded URL/clipboard/folder access, system info, volume/wallpaper, scoped file search, legacy basic typing compatibility, lock/shutdown/restart, reminders, notifications, and screenshot paths. The current `type_text` command uses `platform/unicode_typing.py`, not the legacy helper. Uses supported Windows and existing Linux paths where implemented; Windows-only operations degrade safely on Linux. |
 
 The complete command change contract is in
 [Adding an AI command](development.md#adding-an-ai-command). Safety policy belongs
@@ -76,6 +76,8 @@ model output.
 | [external_context.py](../agetha/core/external_context.py) | `PreparedExternalContext` and `prepare_external_context()`; shared fail-closed redaction and truncation for untrusted provider context. |
 | [file_drop.py](../agetha/core/file_drop.py) | `PreparedFileDrop` and `prepare_file_drop()`; bounded local file validation, sensitive/binary policy, and path-safe provider metadata. |
 | [request_context.py](../agetha/core/request_context.py) | Structured request origins plus compact prompt rendering and request-profile selection. |
+| [observation_bus.py](../agetha/core/observation_bus.py) | `ObservationKind`, `Sensitivity`, immutable `Observation`, `ObservationEligibility`, and application-owned `ObservationBus`. Bounds/freezes metadata, clamps confidence, expires and deduplicates with monotonic time, and keeps local reaction, notification, provider, memory, and guarded-action eligibility separate. Publication performs no downstream action. |
+| [presence_etiquette.py](../agetha/core/presence_etiquette.py) | `PresenceState`, `PresenceDecision`, `PresenceUrgency`, pure `decide_presence()`, and the stateful `PresenceEtiquette` queue/backoff owner. Applies local fullscreen/presentation/game, rapid-input, quiet-hour, idle/activity, media, dismissal, minimize/sleep, dangerous-condition, and shutdown rules without monitoring or provider calls. |
 | [fast_mode_profile.py](../agetha/core/fast_mode_profile.py) | Schema/profile-versioned Fast Mode validation, no-follow cross-process locking, post-lock path revalidation, activation/restoration transactions, drift/conflict recovery, structured audits, health inspection, cached original/forced-value access, and portable status/reconcile/restore CLI. |
 | [time_context.py](../agetha/core/time_context.py) | `local_now(clock)` and `build_datetime_context(...)`; injectable local clock, weekday/ISO date, optional seconds, timezone name fallback, and UTC-offset formatting without network calls. |
 | [memory_system.py](../agetha/core/memory_system.py) | Static soul plus bounded episodic memory. `load_soul()`, `log_memory()`, recent/selective clear/display/stat/prompt helpers, and `build_system_prompt()`. Uses a lock and atomic rewrites. |
@@ -108,6 +110,7 @@ serialization.
 | [features/__init__.py](../agetha/features/__init__.py) | Package marker; no eager optional imports. |
 | [tasks.py](../agetha/features/tasks.py) | Locked, bounded `memory/tasks.json` CRUD. `add_task()`, `complete_task()`, `get_tasks()`, pending count, display and prompt formatting. Corrupt state repairs safely. |
 | [status_providers.py](../agetha/features/status_providers.py) | Default-off coarse battery/disk/network observations; runtime pause, poll throttling, edge-triggered pending queue, and one-shot prompt output. It does not capture content. |
+| [terminal_sentinel.py](../agetha/features/terminal_sentinel.py) | `TerminalSentinelConfig`, normalized `TerminalErrorEvent`, `SentinelEventContext`, notification/explanation models, and thread-safe `TerminalSentinel`. Default-off and empty-allowlist-safe; evaluates existing confirmed OCR events with exclusions, confidence, dedup/cooldown, hashed ignore rules, bounded redaction, and Presence Etiquette. Only explicit `explain()` returns provider-facing input; the module itself never captures, calls a provider, or executes a command. |
 | [tray_scaffold.py](../agetha/features/tray_scaffold.py) | Lazy optional `pystray` integration. Start/stop/availability/background-close functions; Open, pause status, Settings, and Exit actions all marshal Tk work with `root.after()`. |
 | [tts_player.py](../agetha/features/tts_player.py) | `TTSPlayer` queue worker and `VoiceOutputCoordinator`. Supports pyttsx3, edge-tts, and Kokoro normalization/fallback plus pygame playback, temporary-file cleanup, pause/resume/stop, and bleep/TTS routing. |
 | [web_rag.py](../agetha/features/web_rag.py) | Gated DuckDuckGo HTML search and bounded static-page fetch, HTML-to-text extraction, time/result/character/byte caps, and explicit untrusted prompt wrappers. Network failures return structured safe results. |
@@ -129,6 +132,7 @@ Notes:
 | [linux_session.py](../agetha/platform/linux_session.py) | Side-effect-free X11/Wayland environment and screenshot-capability policy; never connects to X or exposes Xauthority data during import. |
 | [screen_reader.py](../agetha/platform/screen_reader.py) | `PatternDef`, `PatternMatch`, pattern registry, focused-window/monitor discovery, capture fallback order, `ScreenReader`, standard/deep OCR orchestration, current matches vs new events, state publication, redaction, stale-result rejection, and stop lifecycle. |
 | [screen_monitoring.py](../agetha/platform/screen_monitoring.py) | Pure reliability helpers: immutable `CapturedFrame`, `ProcessedOCRImage`, per-window/event state, preprocessing/scales, thumbnail difference, `ScreenChangeDetector`, `PatternEventTracker`, exclusions, and secret redaction. |
+| [unicode_typing.py](../agetha/platform/unicode_typing.py) | `TypingMode`, `TypingSpeed`, `TypingTarget`, `TypingPreview`, `UnicodeTypeResult`, dependency-injected `UnicodeTypingEngine`, conservative sequence/chunk helpers, Win32 UTF-16 `SendInput(KEYEVENTF_UNICODE)`, guarded compare-and-restore clipboard paste, Xorg optional-tool paths, and honest Wayland copy-only fallback. Revalidates focus, supports cancellation/shutdown, and never synthesizes Enter/Return/Tab or logs payload text. |
 | [voice_input.py](../agetha/platform/voice_input.py) | Microphone settings/discovery/probe, PyAudio-to-sounddevice fallback, Win95 `MicPickerDialog`, `VoiceInput` listener, Google STT, and locked singleton faster-whisper loading. |
 | [window_control.py](../agetha/platform/window_control.py) | External-window matching/ranking/picking and move/resize/close/kill operations through Windows Win32 and existing Linux process/window-tool paths. Synchronous geometry animation must remain on a worker; unavailable Linux tools fail safely. |
 | [autostart.py](../agetha/platform/autostart.py) | Visible current-user Startup-folder `.lnk` management. Validates ownership/target containment and refuses foreign/malformed shortcut mutation. No service, task, or Run-key persistence. |
@@ -167,6 +171,9 @@ does not modify Tk widgets.
 | [ui/__init__.py](../agetha/ui/__init__.py) | Package marker only. |
 | [display_scale.py](../agetha/ui/display_scale.py) | `resolve_ui_scale()` and `scale_px()`. Manual `UI_SCALE` clamps to 0.75-2.50; automatic scale considers display/DPI and clamps to 1.0-2.0. |
 | [dashboard.py](../agetha/ui/dashboard.py) | `open_dashboard()`, trusted `open_project_link()`, notepad read/write. Owns System Monitor, Virus Registry, Notepad, About, and typed Settings tabs plus per-window callback cleanup. |
+| [senses_panel.py](../agetha/ui/senses_panel.py) | Capability status/snapshot models, pure `collect_senses_state()`, generation-safe `SensesRefreshController`, and the Win95 `SensesPanel`. Reports Vision, Hearing, Memory, Network & AI, Actions, and Presence from local/configured/already-known state without paid provider probes, key exposure, mutation, or persistence. |
+| [typing_preview.py](../agetha/ui/typing_preview.py) | Win95 confirmation/preview for Unicode destination, character/line counts, planned method, clipboard fallback, reversibility, reasons, and bounded redacted content. Explicit preview mode has no Enter action. |
+| [terminal_sentinel_popup.py](../agetha/ui/terminal_sentinel_popup.py) | No-activation Win95 Explain/Dismiss/Ignore Pattern notification. Owns only the local surface and its callbacks; it does not call a provider or steal foreground focus itself. |
 | [w95_window.py](../agetha/ui/w95_window.py) | Borderless Win95 Toplevel helpers, Windows caption stripping, and cross-platform map/deiconify refresh/fallback behavior. |
 | [mood_effects.py](../agetha/ui/mood_effects.py) | `MOOD_COLOURS`, `mood_colour()`, and `MoodGlowController`: disabled/static/one-job pulse modes, subtle interpolation, slow manic color path, reduced-motion behavior, cancel/close lifecycle. |
 | [motion_effects.py](../agetha/ui/motion_effects.py) | `MOTION_STEPS`, `MOOD_MOTION_MAP`, and `MoodMotionController`: named response-level geometry, probability/cooldown, drag/minimize/close/owner guards, one active job chain, monitor clamp, exact restoration. |
@@ -209,6 +216,12 @@ that was actually run.
 | [test_quality_of_life.py](../tests/test_quality_of_life.py) | 40 | File-drop privacy, request origins, context sanitization, worker/AI arbitration, minimize recovery, picker lifecycle, and command safety. |
 | [test_screen_monitoring_reliability.py](../tests/test_screen_monitoring_reliability.py) | 75 | Coordinate/origin/capture/concurrency/change/event/pattern/privacy/stale-result/backward-compatibility matrix. |
 | [test_time_ui_effects.py](../tests/test_time_ui_effects.py) | 25 | Datetime context, new settings, display scale, glow/motion/CRT lifecycle, shutdown idempotence, optional real-Tk smoke. |
+| [test_unicode_typing.py](../tests/test_unicode_typing.py) | 33 | Exact Unicode/UTF-16 units, safe chunking, mode/speed validation, Win32 native outcomes, focus/cancellation, target restrictions, preview triggers, clipboard compare-and-restore, Xorg/Wayland fallbacks, and content-safe results. |
+| [test_observation_bus.py](../tests/test_observation_bus.py) | 17 | Immutable/bounded observations, metadata privacy, confidence, FIFO size, dedup/expiry, concurrency, eligibility separation, and shutdown. |
+| [test_presence_etiquette.py](../tests/test_presence_etiquette.py) | 24 | Fullscreen/presentation/game, quiet hours, rapid input, idle/activity, media, dismissal backoff, dangerous and shutdown rules, bounded queue/dedup/expiry, concurrency, and shutdown. |
+| [test_terminal_sentinel.py](../tests/test_terminal_sentinel.py) | 9 | Disabled/empty-allowlist defaults, confirmed-event policy, exclusions/private targets, confidence, cooldown/dedup, local queue, explicit explanation, ignore-rule persistence, and provider/command isolation. |
+| [test_senses_panel.py](../tests/test_senses_panel.py) | 9 | Capability-state truthfulness, disabled/unavailable/degraded/unknown states, Linux Xorg/Wayland reporting, secret sanitization, no active probes, refresh generations, and close lifecycle. |
+| [test_polyglot_presence_integration.py](../tests/test_polyglot_presence_integration.py) | 12 | Thai prompt/exact-data boundary, typed config/origin behavior, Unicode dispatch/guard/direct-call gates, Sentinel explanation command restriction, and confirmed-event local interception before provider use. |
 
 ## Documentation
 
@@ -223,6 +236,8 @@ that was actually run.
 | [docs/releases/v5.7.md](releases/v5.7.md) | Quality-of-life privacy boundaries, request origins, lifecycle coordination, command hardening, and validation results. |
 | [docs/releases/v5.5.5.md](releases/v5.5.5.md) | Fast Mode 2.0 profile, recovery, adaptive request budgets, safety boundaries, and v5.5.5 upgrade guidance. |
 | [docs/fast_mode_security.md](fast_mode_security.md) | Fast Mode threat model, platform lock behavior, post-lock validation, durability, Windows ACL limits, ambiguous-write recovery, audit events, CLI exit codes, and CI coverage. |
+| [docs/testing/polyglot_presence_manual.md](testing/polyglot_presence_manual.md) | Twenty-item Windows desktop smoke checklist plus Xorg/Wayland notes and explicit performed/not-performed recording rules. |
+| [docs/roadmap/polyglot_presence_roadmap.md](roadmap/polyglot_presence_roadmap.md) | Design-only future features A–O. Every entry is planned / not implemented. |
 | [docs/releases/v5.5.1.md](releases/v5.5.1.md) | Historical reliability, Windows ARM, high-DPI, UI lifecycle, and attribution notes for v5.5.1. |
 
 External implementation plans informed the screen-monitoring and Fast Mode 2.0
@@ -278,6 +293,7 @@ boundary. A fresh clone may need the separately distributed asset pack.
 | `memory/settings.json` | `voice_input` microphone selection. |
 | `memory/theme_backup.json` | `win_integration` theme rollback. |
 | `memory/notepad.txt` | Dashboard notepad. |
+| `memory/terminal_sentinel_ignored.json` | Terminal Sentinel bounded hashed ignore signatures; no raw OCR content. |
 | `memory/memory.txt` | Legacy condensed AI summary. |
 | `conversation.txt` | Current-session diagnostic conversation log. |
 

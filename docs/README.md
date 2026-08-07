@@ -4,7 +4,7 @@ Start here when changing the repository. These documents summarize the
 project-owned source tree so routine work does not require rereading
 `main.py`, `ai_engine.py`, or every supporting module.
 
-Last code-map audit: 2026-07-29.
+Last code-map audit: 2026-08-03.
 
 ## Supported platform
 
@@ -23,6 +23,10 @@ validation target because hosted Windows runners are x64.
 | Add or change an AI command | [Runtime flows — command dispatch](runtime_flows.md#ai-response-and-command-dispatch) | `ai_engine.py`, `command_handlers.py`, `command_guard.py` |
 | Change startup, shutdown, timers, or threads | [Runtime flows](runtime_flows.md) | `main.py`, relevant controller |
 | Change OCR or screen context | [Architecture — screen monitoring](architecture.md#screen-monitoring-and-ocr) | `screen_reader.py`, `screen_monitoring.py`, `ocr_backends/` |
+| Change Unicode text entry | [Runtime flows — Unicode typing](runtime_flows.md#unicode-type_text-flow) | `unicode_typing.py`, `command_handlers.py`, `command_guard.py`, `typing_preview.py` |
+| Change observations or interruption policy | [Architecture — local observation and presence](architecture.md#local-observation-and-presence) | `observation_bus.py`, `presence_etiquette.py`, `main.py` |
+| Change Terminal Sentinel | [Runtime flows — Terminal Sentinel](runtime_flows.md#terminal-sentinel-flow) | `terminal_sentinel.py`, existing screen event path, popup UI |
+| Change the Senses panel | [Architecture — UI](architecture.md#ui-architecture) | `senses_panel.py`, dashboard callback, capability tests |
 | Diagnose Ubuntu Xorg/Wayland GUI or OCR | [Linux desktop support](linux_support.md) | `linux_session.py`, `screen_reader.py`, `w95_window.py` |
 | Change moods, GIFs, glow, motion, or window chrome | [Module reference — UI](module_reference.md#agethaui) | `main.py`, `agetha/ui/`, root `agent.md` |
 | Change memory, dreams, tasks, or emotions | [Architecture — persisted state](architecture.md#persisted-state) | `agetha/core/`, `agetha/features/tasks.py` |
@@ -30,6 +34,8 @@ validation target because hosted Windows runners are x64.
 | Review Fast Mode security or recover it | [Fast Mode security and recovery](fast_mode_security.md) | `fast_mode_profile.py`, Medic/CLI, security tests |
 | Fix Windows ARM or launcher behavior | [Development guide](development.md#launcher-and-windows-arm) | `Medic_Checker.ps1`, `medic_helper.py`, launcher tests |
 | Choose and run tests | [Development guide — test map](development.md#test-map) | The closest `tests/test_*.py` file |
+| Manually validate Polyglot Presence | [Polyglot Presence manual checklist](testing/polyglot_presence_manual.md) | Record platform and result for every performed item |
+| Review deferred A–O concepts | [Polyglot Presence future roadmap](roadmap/polyglot_presence_roadmap.md) | All entries are planned / not implemented |
 | Configure explicit Unlimited-OCR | [Unlimited-OCR service guide](unlimited_ocr_server.md) | `unlimited_ocr_backend.py` |
 | Review the current release | [v5.7 release notes](releases/v5.7.md) | The linked implementation and test suites |
 
@@ -60,6 +66,15 @@ documentation, tests, or logs.
 - Tesseract is the automatic OCR backend. Unlimited-OCR is explicit-only.
 - External text (OCR, web pages, memories) remains labeled as untrusted prompt
   context and must not become automatic OS instructions.
+- Natural Thai style is prompt/personality guidance, never a global text
+  rewrite; exact user-provided, quoted, document, code, and command data remains
+  exact.
+- `type_text` remains Caution-gated, preserves its input string, revalidates its
+  intended target, and never synthesizes Enter, Return, or Tab.
+- Publishing an Observation never calls a provider, persists memory, opens UI,
+  or grants command authority. Downstream eligibility is decided separately.
+- Terminal Sentinel is disabled by default, watches nothing with empty
+  allowlists, and makes no provider request before an explicit Explain action.
 - Secrets live only in `.env`; `config.txt` rejects secret keys.
 - Persistent JSON/state rewrites use atomic write/replace helpers where
   applicable.
