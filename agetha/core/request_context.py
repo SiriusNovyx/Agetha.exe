@@ -12,6 +12,7 @@ RequestOrigin = Literal[
     "reminder",
     "ambient",
     "tool_result",
+    "terminal_sentinel",
 ]
 
 REQUEST_ORIGINS = frozenset(get_args(RequestOrigin))

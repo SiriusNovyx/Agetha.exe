@@ -329,6 +329,39 @@ class CommandGuard:
             action = "enable" if CommandGuard.parse_enabled(response) else "disable"
             return f"{action} 'Start Agetha when I sign in' (Startup-folder shortcut)."
 
+    @staticmethod
+    def _describe_type_text(response: dict) -> str:
+        """Describe Unicode entry without echoing the potentially sensitive text."""
+        preview = response.get("_typing_preview")
+        text = response.get("text", "")
+        character_count = len(text) if isinstance(text, str) else len(str(text or ""))
+        line_count = (text.count("\n") + 1) if isinstance(text, str) and text else 0
+
+        def field(name: str, fallback: object) -> object:
+            if preview is None:
+                return fallback
+            if isinstance(preview, dict):
+                return preview.get(name, fallback)
+            return getattr(preview, name, fallback)
+
+        target_application = str(field("target_application", "unknown target"))[:64]
+        target_title = str(field("target_window_title", "unavailable"))[:80]
+        method = str(field("method", response.get("mode", "auto")))[:48]
+        character_count = field("character_count", character_count)
+        line_count = field("line_count", line_count)
+        clipboard = bool(field("clipboard_fallback_may_be_used", True))
+        reversible = bool(field("reversible", False))
+        return (
+            "Enter exact Unicode text (content hidden).\n"
+            f"Target application: {target_application}\n"
+            f"Target window: {target_title}\n"
+            f"Characters: {character_count}; lines: {line_count}\n"
+            f"Method: {method}\n"
+            f"Clipboard fallback: {'may be used' if clipboard else 'not planned'}\n"
+            f"Reversible: {'yes' if reversible else 'no'}\n"
+            "No Enter, Return, or Tab key will be pressed."
+        )
+
     def _format_details(self, command: str, response: dict) -> str:
         formatters: dict[str, Callable[[dict], str]] = {
             "run_command": lambda r: (
@@ -410,7 +443,7 @@ class CommandGuard:
             "play_sound": lambda r: f"Play sound: {r.get('path', '') or r.get('sound', '???')}",
             "set_volume": lambda r: f"Volume action: {r.get('action', 'set')} level: {r.get('level', '???')}%",
             "set_wallpaper": lambda r: f"Set wallpaper: {r.get('path', '???')}",
-            "type_text": lambda r: f"Simulate typing: \"{(r.get('text', '???'))[:100]}\"",
+            "type_text": lambda r: CommandGuard._describe_type_text(r),
             "list_dir": lambda r: f"List directory: {r.get('path', '???')}",
             "list_directory": lambda r: f"List directory: {r.get('path', '???')}",
             "show_dialog": lambda r: (

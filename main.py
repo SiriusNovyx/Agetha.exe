@@ -18,6 +18,7 @@ import os
 import platform
 import subprocess
 import webbrowser
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 from PIL import Image, ImageTk, ImageSequence
@@ -97,6 +98,7 @@ from agetha.ui.mood_effects import MoodGlowController
 from agetha.ui.motion_effects import MoodMotionController
 from agetha.ui.window_effects import CRTCloseController
 from agetha.ui.display_scale import resolve_ui_scale, scale_px
+from agetha.ui.w95_window import ui_test_mode_enabled
 
 _SETTINGS = get_settings()
 
@@ -664,11 +666,11 @@ class SubtitleRenderer:
         except Exception:
             pass
 
-    def speak(self, segments: list, on_done=None):
+    def speak(self, segments: list, on_done=None, *, allow_audio: bool = True):
         self.stop()
         self._stop_event.clear()
         self._thread = threading.Thread(
-            target=self._run, args=(segments, on_done), daemon=True
+            target=self._run, args=(segments, on_done, bool(allow_audio)), daemon=True
         )
         self._thread.start()
 
@@ -677,7 +679,7 @@ class SubtitleRenderer:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
 
-    def _run(self, segments: list, on_done):
+    def _run(self, segments: list, on_done, allow_audio: bool = True):
         self._canvas.after(0, self.clear)
         full_text = ""
         for seg in segments:
@@ -696,27 +698,27 @@ class SubtitleRenderer:
                 if at_word_end:
                     self._schedule_draw(full_text)
                 time.sleep(self.CHAR_DELAY)
-            if chunk and not self._stop_event.is_set():
+            if allow_audio and chunk and not self._stop_event.is_set():
                 if self._voice_out and hasattr(self._voice_out, "speak_segment"):
                     try:
                         self._voice_out.speak_segment(chunk)
                     except Exception:
                         pass
             if pause > 0 and not self._stop_event.is_set():
-                if self._voice_out:
+                if allow_audio and self._voice_out:
                     try:
                         self._voice_out.pause()
                     except Exception:
                         pass
-                elif self._bleep:
+                elif allow_audio and self._bleep:
                     self._bleep.pause()
                 time.sleep(pause)
-                if self._voice_out:
+                if allow_audio and self._voice_out:
                     try:
                         self._voice_out.resume()
                     except Exception:
                         pass
-                elif self._bleep:
+                elif allow_audio and self._bleep:
                     self._bleep.resume()
         try:
             if self._voice_out:
@@ -1124,7 +1126,7 @@ class CompanionApp:
         )
         self.root.configure(bg=W95_BG)
         if IS_WINDOWS:
-            self.root.overrideredirect(True)
+            self.root.overrideredirect(not ui_test_mode_enabled())
         self.root.resizable(False, False)
         apply_window_icon(self.root)
         try:
@@ -1165,6 +1167,7 @@ class CompanionApp:
         self._ai_operation_token: object | None = None
         self._pending_user_message: str | None = None
         self._pending_user_origin: RequestOrigin = "user"
+        self._pending_screen_context: str | None = None
         self._post_ai_tick_callbacks: list[Callable[[], None]] = []
         self._deferred_ai_callbacks_inflight = False
         self._worker_lock = threading.Lock()
@@ -1184,6 +1187,43 @@ class CompanionApp:
         self._drag_x = self._drag_y = 0
         self._win_x, self._win_y = _SETTINGS.window_start_x, _SETTINGS.window_start_y
         self._geom_anim_job = None
+        self._typing_cancel_event: threading.Event | None = None
+        self._typing_operation_lock = threading.Lock()
+        self._senses_panel = None
+        self._sentinel_popups: set[object] = set()
+        self._recent_key_times: list[float] = []
+        self._presence_state_lock = threading.Lock()
+        self._last_observed_app_key: tuple[object, ...] | None = None
+        self._last_safe_scan_time: datetime | None = None
+        self._display_width = self.root.winfo_screenwidth()
+        self._display_height = self.root.winfo_screenheight()
+
+        from agetha.core.observation_bus import ObservationBus
+        from agetha.core.presence_etiquette import PresenceEtiquette
+        from agetha.features.terminal_sentinel import TerminalSentinel
+
+        self._observation_bus = ObservationBus(max_size=128, dedup_window_seconds=30)
+        self._presence = None
+        if _SETTINGS.enable_presence_etiquette:
+            try:
+                self._presence = PresenceEtiquette(
+                    quiet_hours_start=_SETTINGS.quiet_hours_start or None,
+                    quiet_hours_end=_SETTINGS.quiet_hours_end or None,
+                    dismiss_cooldown_seconds=_SETTINGS.presence_dismiss_cooldown_sec,
+                    rapid_typing_cooldown_seconds=_SETTINGS.presence_rapid_typing_cooldown_sec,
+                    fullscreen_silent=_SETTINGS.presence_fullscreen_silent,
+                )
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "Presence Etiquette quiet hours were invalid; using no quiet-hours window: %s",
+                    type(exc).__name__,
+                )
+                self._presence = PresenceEtiquette(
+                    dismiss_cooldown_seconds=_SETTINGS.presence_dismiss_cooldown_sec,
+                    rapid_typing_cooldown_seconds=_SETTINGS.presence_rapid_typing_cooldown_sec,
+                    fullscreen_silent=_SETTINGS.presence_fullscreen_silent,
+                )
+        self._terminal_sentinel = TerminalSentinel.from_settings(_SETTINGS)
 
         self._build_ui()
         if not IS_WINDOWS:
@@ -1643,9 +1683,46 @@ class CompanionApp:
     def _open_dashboard(self) -> None:
         try:
             from agetha.ui.dashboard import open_dashboard
-            open_dashboard(self.root, get_settings())
+            open_dashboard(
+                self.root,
+                get_settings(),
+                on_open_senses=self._open_senses_panel,
+            )
         except Exception as exc:
             logger.warning(f"Dashboard open failed: {exc}")
+
+    def _open_senses_panel(self) -> None:
+        settings = get_settings()
+        if not settings.enable_senses_panel or self._closing:
+            self._show_op_error("Senses Control Panel is disabled in config.")
+            return
+        current = getattr(self, "_senses_panel", None)
+        if current is not None and not bool(getattr(current, "_closing", True)):
+            try:
+                current.win.deiconify()
+                current.win.lift()
+                current.refresh()
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Existing Senses panel could not be restored: %s",
+                    type(exc).__name__,
+                )
+        try:
+            from agetha.ui.senses_panel import open_senses_panel
+            self._senses_panel = open_senses_panel(
+                self.root,
+                settings,
+                runtime=self,
+                schedule_ui=self._schedule_ui,
+                start_worker=self._start_worker,
+            )
+        except Exception as exc:
+            logger.warning("Senses Control Panel failed to open: %s", type(exc).__name__)
+            native_error_popup(
+                "Agetha — Senses",
+                "Could not open the Senses Control Panel.",
+            )
 
     def _on_file_drop(self, event=None) -> None:
         self._dragging_file = False
@@ -1882,7 +1959,7 @@ class CompanionApp:
                 def _on_map(event):
                     try:
                         if self.root.state() != "iconic":
-                            self.root.overrideredirect(True)
+                            self.root.overrideredirect(not ui_test_mode_enabled())
                             try:
                                 self.root.attributes("-topmost", True)
                             except Exception:
@@ -1958,15 +2035,167 @@ class CompanionApp:
             kwargs={"user_message": text, "origin": "user"},
         )
 
-    def _re_enable_input(self):
+    def _re_enable_input(self, *, request_focus: bool = True):
         if self._closing:
             return
         self._input_box.config(state="normal")
-        self._input_box.focus_set()
+        if request_focus:
+            self._input_box.focus_set()
         try:
             self._update_placeholder()
         except Exception:
             pass
+
+    def _publish_observation(
+        self,
+        kind,
+        *,
+        source: str,
+        summary: str,
+        confidence: float = 1.0,
+        sensitivity="internal",
+        dedup_key: str | None = None,
+        metadata: dict[str, object] | None = None,
+        expires_in_seconds: float | None = None,
+        request_origin: RequestOrigin | None = None,
+    ) -> bool:
+        """Publish one minimized local fact; publication performs no action."""
+        bus = getattr(self, "_observation_bus", None)
+        if bus is None or getattr(self, "_closing", False):
+            return False
+        try:
+            from agetha.core.observation_bus import Observation, Sensitivity
+
+            now = datetime.now(timezone.utc)
+            expires_at = (
+                now + timedelta(seconds=max(0.0, float(expires_in_seconds)))
+                if expires_in_seconds is not None
+                else None
+            )
+            item = Observation(
+                kind=kind,
+                source=source,
+                summary=summary,
+                confidence=confidence,
+                sensitivity=Sensitivity(sensitivity),
+                created_at=now,
+                expires_at=expires_at,
+                local_only=True,
+                dedup_key=dedup_key,
+                metadata=metadata or {},
+                request_origin=request_origin,
+            )
+            return bool(bus.publish(item))
+        except (TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("Local observation was rejected: %s", type(exc).__name__)
+            return False
+
+    def _presence_state(self, *, dangerous_condition: bool = False):
+        """Build etiquette input only from existing non-invasive runtime state."""
+        from agetha.core.presence_etiquette import PresenceState
+
+        now_wall = time.time()
+        now_mono = time.monotonic()
+        presence_lock = getattr(self, "_presence_state_lock", None)
+        if presence_lock is None:  # lightweight test/compatibility instances
+            presence_lock = threading.Lock()
+            self._presence_state_lock = presence_lock
+        with presence_lock:
+            recent_keys = [
+                stamp for stamp in self._recent_key_times
+                if now_mono - stamp <= 2.0
+            ]
+            self._recent_key_times = recent_keys
+        inactivity = max(
+            0.0,
+            now_wall - float(getattr(self, "_last_direct_interaction_time", now_wall)),
+        )
+        fullscreen = False
+        presentation = False
+        active_game = False
+        frame = getattr(getattr(self, "_screen", None), "last_capture_metadata", None)
+        if frame is not None:
+            try:
+                width, height = frame.image.size
+                fullscreen = (
+                    int(frame.left) <= 2
+                    and int(frame.top) <= 2
+                    and width >= int(getattr(self, "_display_width", width)) - 4
+                    and height >= int(getattr(self, "_display_height", height)) - 4
+                )
+                identity = f"{frame.process_name} {frame.title}".casefold()
+                presentation = fullscreen and any(
+                    token in identity
+                    for token in ("powerpnt", "slide show", "presentation mode", "keynote")
+                )
+                active_game = fullscreen and any(
+                    token in identity
+                    for token in ("minecraft", "unity", "unreal", " game", "steam_app")
+                )
+            except (AttributeError, TypeError, ValueError):
+                fullscreen = False
+                presentation = False
+                active_game = False
+        return PresenceState(
+            presentation_mode=presentation,
+            fullscreen_active=fullscreen,
+            active_game=active_game,
+            rapid_typing=len(recent_keys) >= 5,
+            user_idle=inactivity >= 120.0,
+            user_recently_active=inactivity <= 15.0,
+            agetha_minimized=bool(getattr(self, "_is_minimized", False)),
+            agetha_sleeping=getattr(self, "_state", None) == self.STATE_SLEEPING,
+            shutdown_in_progress=bool(getattr(self, "_closing", False)),
+            dangerous_condition=dangerous_condition,
+        )
+
+    def _presence_decision(self, *, urgency="nonurgent", dangerous_condition: bool = False):
+        from agetha.core.presence_etiquette import (
+            PresenceDecision,
+            PresenceUrgency,
+        )
+
+        presence = getattr(self, "_presence", None)
+        if presence is None:
+            return PresenceDecision(
+                allow_popup=True,
+                allow_voice=True,
+                allow_focus_request=False,
+                allow_window_motion=True,
+                queue_nonurgent=False,
+                reason="Presence Etiquette disabled",
+            )
+        return presence.decide(
+            self._presence_state(dangerous_condition=dangerous_condition),
+            urgency=PresenceUrgency(urgency),
+        )
+
+    def _observe_capture_target(self) -> None:
+        """Publish a coarse app-focus transition without titles or full paths."""
+        frame = getattr(getattr(self, "_screen", None), "last_capture_metadata", None)
+        if frame is None:
+            return
+        try:
+            key = tuple(frame.key)
+        except (AttributeError, TypeError):
+            return
+        if key == getattr(self, "_last_observed_app_key", None):
+            return
+        self._last_observed_app_key = key
+        process_name = Path(str(getattr(frame, "process_name", ""))).name[:64]
+        from agetha.core.observation_bus import ObservationKind
+
+        self._publish_observation(
+            ObservationKind.APP_FOCUSED,
+            source="screen_reader",
+            summary="Focused application changed",
+            confidence=1.0,
+            sensitivity="private",
+            dedup_key=f"app:{process_name.casefold() or 'unknown'}",
+            metadata={"process_name": process_name or "unknown"},
+            expires_in_seconds=300,
+            request_origin="ambient",
+        )
 
     # ── Phase 2: Attention-snap system ────────────────────────────────────────
 
@@ -1977,6 +2206,35 @@ class CompanionApp:
             def _on_any_key(event=None):
                 self._last_direct_interaction_time = time.time()
                 self._wake_from_presence_rest()
+                now = time.monotonic()
+                presence_lock = getattr(self, "_presence_state_lock", None)
+                if presence_lock is None:
+                    presence_lock = threading.Lock()
+                    self._presence_state_lock = presence_lock
+                with presence_lock:
+                    recent = [
+                        stamp for stamp in self._recent_key_times
+                        if now - stamp <= 2.0
+                    ]
+                    recent.append(now)
+                    self._recent_key_times = recent[-20:]
+                if len(recent) >= 5:
+                    presence = getattr(self, "_presence", None)
+                    if presence is not None:
+                        presence.note_rapid_typing()
+                    try:
+                        from agetha.core.observation_bus import ObservationKind
+                        self._publish_observation(
+                            ObservationKind.RAPID_TYPING,
+                            source="agetha_input",
+                            summary="Rapid input is active",
+                            confidence=1.0,
+                            dedup_key="rapid-input",
+                            expires_in_seconds=get_settings().presence_rapid_typing_cooldown_sec,
+                            request_origin="user",
+                        )
+                    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                        logger.debug("Rapid-input observation skipped: %s", type(exc).__name__)
             self._input_box.bind("<Key>", _on_any_key, add=True)
         except Exception as e:
             print(f"[InteractionClock] Could not bind keystroke tracking: {e}")
@@ -1994,6 +2252,8 @@ class CompanionApp:
         if mood not in _ATTENTION_MOODS or not _SETTINGS.enable_attention_snap:
             return
         if self._closing or self._is_minimized or self._is_dragging:
+            return
+        if not self._presence_decision().allow_window_motion:
             return
         threshold  = _MOOD_SNAP_THRESHOLDS.get(mood, 600)
         inactivity = time.time() - self._last_direct_interaction_time
@@ -2344,6 +2604,8 @@ class CompanionApp:
         """Schedule at most one motion for this completed response."""
         if self._closing or not hasattr(self, "_motion"):
             return
+        if not self._presence_decision().allow_window_motion:
+            return
         if self._motion_request_job is not None:
             return
 
@@ -2485,6 +2747,18 @@ class CompanionApp:
             ):
                 self._is_loafing = False
                 self._set_state(self.STATE_SLEEPING)
+                try:
+                    from agetha.core.observation_bus import ObservationKind
+                    self._publish_observation(
+                        ObservationKind.USER_BECAME_IDLE,
+                        source="presence_rest",
+                        summary="User interaction became idle",
+                        dedup_key="user-idle",
+                        expires_in_seconds=3600,
+                        request_origin="ambient",
+                    )
+                except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                    logger.debug("Idle observation skipped: %s", type(exc).__name__)
                 # v4.0.0 — she dreams while deep-sleeping (memory/ only, no OS)
                 try:
                     from agetha.core.dreams import generate_dream
@@ -2501,6 +2775,10 @@ class CompanionApp:
 
     def _wake_from_presence_rest(self) -> None:
         """Leave loaf/sleep when the user interacts (chat, touch, keystroke)."""
+        was_resting = (
+            getattr(self, "_state", None) == self.STATE_SLEEPING
+            or bool(getattr(self, "_is_loafing", False))
+        )
         try:
             if getattr(self, "_sleep_job", None):
                 self.root.after_cancel(self._sleep_job)
@@ -2525,6 +2803,19 @@ class CompanionApp:
                     self._set_state(self.STATE_IDLE, "surprised")
         except Exception:
             pass
+        if was_resting:
+            try:
+                from agetha.core.observation_bus import ObservationKind
+                self._publish_observation(
+                    ObservationKind.USER_BECAME_ACTIVE,
+                    source="presence_rest",
+                    summary="User became active",
+                    dedup_key="user-active",
+                    expires_in_seconds=300,
+                    request_origin="user",
+                )
+            except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                logger.debug("Active observation skipped: %s", type(exc).__name__)
 
     def _start_wake_sequence(self):
         self._set_state(self.STATE_SLEEPING)
@@ -2583,6 +2874,8 @@ class CompanionApp:
             get_settings().screen_poll_interval_ms,
             self._schedule_screen_poll,
         )
+        self._drain_presence_queue()
+        self._drain_terminal_sentinel_notifications()
         try:
             from agetha.core.companion_stats import update_stats
             update_stats("tick")
@@ -2607,9 +2900,215 @@ class CompanionApp:
         except Exception:
             pass
 
+    def _drain_presence_queue(self) -> None:
+        """Release at most one deferred local subtitle when etiquette permits."""
+        presence = getattr(self, "_presence", None)
+        if (
+            presence is None
+            or getattr(self, "_closing", False)
+            or getattr(self, "_speech_active", False)
+        ):
+            return
+        try:
+            ready = presence.drain_ready(self._presence_state(), limit=1)
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("Presence queue drain failed: %s", type(exc).__name__)
+            return
+        if ready and getattr(self, "_subtitle", None) is not None:
+            self._subtitle.show_message(ready[0].message, "#666699")
+
+    def _evaluate_terminal_sentinel_events(self, matches: list, ocr_text: str) -> bool:
+        """Consume confirmed OCR events locally; never call a provider here."""
+        sentinel = getattr(self, "_terminal_sentinel", None)
+        screen = getattr(self, "_screen", None)
+        if sentinel is None or not sentinel.enabled or not matches:
+            return False
+        if screen is None:
+            logger.warning("Terminal Sentinel dropped an event without screen metadata")
+            return True
+        frame = getattr(screen, "last_capture_metadata", None)
+        if frame is None:
+            logger.warning("Terminal Sentinel dropped an event without capture metadata")
+            return True
+        try:
+            from agetha.core.observation_bus import ObservationKind
+            from agetha.core.presence_etiquette import PresenceDecision
+            from agetha.features.terminal_sentinel import (
+                SentinelEventContext,
+                SentinelOutcome,
+            )
+
+            process_name = Path(str(getattr(frame, "process_name", ""))).name[:80]
+            title = str(getattr(frame, "title", ""))[:180]
+            identity = "|".join(str(part) for part in frame.key)[:180]
+            own_handle = getattr(screen, "_own_hwnd", None)
+            is_own = own_handle is not None and getattr(frame, "hwnd", None) == own_handle
+            decision = self._presence_decision()
+            context = SentinelEventContext(
+                window_title=title,
+                process_name=process_name,
+                window_identity=identity,
+                ocr_context=str(ocr_text or "")[: sentinel.config.max_context_chars],
+                validated=True,
+                capture_excluded=False,
+                is_agetha_window=is_own,
+            )
+            # While Sentinel is enabled, every supplied new-pattern event stays
+            # local unless the user later clicks Explain.  Rejections are drops,
+            # not permission to fall through to the ambient provider path.
+            consumed = True
+            visible_prepared = False
+            for match in list(matches)[:4]:
+                category = str(getattr(match, "category", "unknown"))[:80]
+                label = str(getattr(match, "label", "Error pattern"))[:120]
+                self._publish_observation(
+                    ObservationKind.ERROR_PATTERN_DETECTED,
+                    source="screen_reader",
+                    summary=f"{category}: {label}"[:512],
+                    confidence=(
+                        float(getattr(match, "confidence")) / 100.0
+                        if getattr(match, "confidence", None) is not None
+                        else 1.0
+                    ),
+                    sensitivity="private",
+                    dedup_key=f"terminal:{identity}:{category}"[:160],
+                    metadata={
+                        "category": category,
+                        "severity": str(getattr(match, "severity", "error"))[:20],
+                        "process_name": process_name or "unknown",
+                    },
+                    expires_in_seconds=300,
+                    request_origin="ambient",
+                )
+                effective_decision = decision
+                if visible_prepared:
+                    effective_decision = PresenceDecision(
+                        allow_popup=False,
+                        allow_voice=False,
+                        allow_focus_request=False,
+                        allow_window_motion=False,
+                        queue_nonurgent=True,
+                        reason="one Terminal Sentinel notice at a time",
+                    )
+                evaluation = sentinel.evaluate_event(
+                    match,
+                    context,
+                    etiquette=effective_decision,
+                )
+                if evaluation.outcome in {SentinelOutcome.NOTIFY, SentinelOutcome.QUEUED}:
+                    consumed = True
+                elif evaluation.reason in {
+                    "duplicate_or_cooldown", "ignored_pattern", "private_or_own_window",
+                    "ocr_exclusion", "capture_excluded",
+                }:
+                    consumed = True
+                if evaluation.should_notify and evaluation.notification is not None:
+                    visible_prepared = True
+                    self._schedule_ui(
+                        lambda notice=evaluation.notification:
+                        self._show_terminal_sentinel_notification(notice)
+                    )
+            return consumed
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("Terminal Sentinel event integration failed: %s", type(exc).__name__)
+            return True
+
+    def _drain_terminal_sentinel_notifications(self) -> None:
+        sentinel = getattr(self, "_terminal_sentinel", None)
+        if sentinel is None or not sentinel.enabled or self._closing:
+            return
+        decision = self._presence_decision()
+        try:
+            notices = sentinel.drain_queued(etiquette=decision, limit=1)
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("Terminal Sentinel queue drain failed: %s", type(exc).__name__)
+            return
+        for notice in notices:
+            screen = getattr(self, "_screen", None)
+            frame = getattr(screen, "last_capture_metadata", None) if screen is not None else None
+            matches = getattr(screen, "last_pattern_matches", ()) if screen is not None else ()
+            try:
+                current_identity = (
+                    "|".join(str(part) for part in frame.key)[:180]
+                    if frame is not None else ""
+                )
+            except (AttributeError, TypeError, ValueError):
+                current_identity = ""
+            if not sentinel.notification_is_current(
+                notice,
+                window_identity=current_identity,
+                matches=matches,
+            ):
+                sentinel.dismiss(notice.notification_id)
+                continue
+            self._show_terminal_sentinel_notification(notice)
+
+    def _show_terminal_sentinel_notification(self, notification) -> None:
+        """Create local buttons on the Tk owner thread without requesting focus."""
+        if self._closing:
+            return
+        sentinel = getattr(self, "_terminal_sentinel", None)
+        if sentinel is None:
+            return
+        from agetha.ui.terminal_sentinel_popup import TerminalSentinelPopup
+
+        notification_id = str(notification.notification_id)
+
+        def _dismiss() -> None:
+            sentinel.dismiss(notification_id)
+            presence = getattr(self, "_presence", None)
+            if presence is not None:
+                presence.record_dismissal()
+
+        def _ignore() -> None:
+            sentinel.ignore_pattern(notification_id)
+            presence = getattr(self, "_presence", None)
+            if presence is not None:
+                presence.record_dismissal()
+
+        def _explain() -> None:
+            request = sentinel.explain(notification_id)
+            if request is None or self._closing:
+                return
+            self._start_worker(
+                self._ai_tick,
+                name="terminal-sentinel-explain",
+                kwargs={
+                    "user_message": request.user_message,
+                    "origin": request.origin,
+                    "explicit_screen_context": request.screen_context,
+                },
+            )
+
+        def _remove(popup) -> None:
+            self._sentinel_popups.discard(popup)
+
+        try:
+            popup = TerminalSentinelPopup(
+                self.root,
+                notification,
+                on_explain=_explain,
+                on_dismiss=_dismiss,
+                on_ignore=_ignore,
+                on_close=_remove,
+            )
+        except Exception as exc:
+            logger.warning("Terminal Sentinel popup creation failed: %s", type(exc).__name__)
+            sentinel.dismiss(notification_id)
+            return
+        if bool(getattr(popup, "_closed", False)):
+            sentinel.dismiss(notification_id)
+            return
+        self._sentinel_popups.add(popup)
+        if not self._speech_active and self._subtitle is not None:
+            self._subtitle.show_message("เจอ error แล้ว", "#cc6600")
+
     def _on_cancel_ai(self, event=None):
         """Escape — cancel an in-flight AI request."""
         self._cancel_event.set()
+        typing_cancel = getattr(self, "_typing_cancel_event", None)
+        if typing_cancel is not None:
+            typing_cancel.set()
         self._re_enable_input()
         self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
         self.root.after(0, lambda: self._subtitle.show_message("Cancelled.", "#888888"))
@@ -2684,6 +3183,7 @@ class CompanionApp:
         direct: bool,
         user_message: str | None,
         origin: RequestOrigin,
+        explicit_screen_context: str | None = None,
         noninterruptible: bool = False,
     ) -> object | None:
         """Reserve the single provider slot or safely queue direct input."""
@@ -2701,6 +3201,7 @@ class CompanionApp:
                         self._cancel_event.set()
                     self._pending_user_message = user_message
                     self._pending_user_origin = origin
+                    self._pending_screen_context = explicit_screen_context
                 return None
             token = object()
             self._cancel_event.clear()
@@ -2723,6 +3224,7 @@ class CompanionApp:
         self,
         user_message: str | None = None,
         origin: RequestOrigin | None = None,
+        explicit_screen_context: str | None = None,
     ):
         if self._closing:
             return
@@ -2742,6 +3244,7 @@ class CompanionApp:
             direct=is_user,
             user_message=user_message,
             origin=origin,
+            explicit_screen_context=explicit_screen_context,
         )
         if operation_token is None:
             if not is_user:
@@ -2750,7 +3253,8 @@ class CompanionApp:
 
         if not self._ai:
             self._release_ai_operation(operation_token)
-            self._schedule_ui(self._re_enable_input)
+            if origin != "terminal_sentinel":
+                self._schedule_ui(self._re_enable_input)
             self._reschedule_screen_poll()
             self._drain_pending_user_message()
             return
@@ -2758,7 +3262,7 @@ class CompanionApp:
         if self._closing:
             self._release_ai_operation(operation_token)
             return
-        if is_user:
+        if is_user and origin != "terminal_sentinel":
             self._schedule_ui(lambda: self._input_box.config(state="disabled"))
             if origin == "user" and user_message:
                 try:
@@ -2776,13 +3280,14 @@ class CompanionApp:
                     pass
             self._schedule_ui(self._wake_from_presence_rest)
 
-        screen_text = ""
-        raw_screen_text = ""
+        screen_text = str(explicit_screen_context or "")
+        raw_screen_text = screen_text
         monitor_status = ""
         repeated_event = False
         has_new_pattern_event = False
+        sentinel_consumed = False
         previous_screen_text = self._last_screen_text
-        if self._screen:
+        if self._screen and explicit_screen_context is None:
             own_hwnd = None
             try:
                 own_hwnd = self._screen._get_own_hwnd()
@@ -2808,6 +3313,9 @@ class CompanionApp:
                     )
                 raw_screen_text = screen_text
                 monitor_status = getattr(self._screen, "last_monitor_status", "")
+                if monitor_status in {"ocr_complete", "ocr_empty", "unchanged"}:
+                    self._last_safe_scan_time = datetime.now().astimezone()
+                self._observe_capture_target()
                 preserve_previous_context = False
                 if monitor_status == "skipped_excluded_window":
                     active_title = ""
@@ -2876,9 +3384,38 @@ class CompanionApp:
                 if _important and (is_user or bool(_matches)) and not preserve_previous_context:
                     pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
                     screen_text = f"[Error positions: {pos_str}]\n" + screen_text
+                if not is_user and _matches:
+                    sentinel_consumed = self._evaluate_terminal_sentinel_events(
+                        list(_matches),
+                        raw_screen_text,
+                    )
             elif active_title:
                 screen_text = f"[Active: {active_title}]"
                 self._last_screen_text = screen_text
+
+        if sentinel_consumed:
+            logger.info("Terminal Sentinel kept a validated event local pending user action")
+            self._release_ai_operation(operation_token)
+
+            def _finish_sentinel_local() -> None:
+                self._reschedule_screen_poll()
+                self._drain_pending_user_message()
+
+            self._schedule_ui(_finish_sentinel_local)
+            return
+
+        if not is_user:
+            ambient_presence = self._presence_decision()
+            if not ambient_presence.allow_popup or ambient_presence.queue_nonurgent:
+                logger.debug("Ambient provider turn deferred by Presence Etiquette: %s", ambient_presence.reason)
+                self._release_ai_operation(operation_token)
+
+                def _finish_presence_local() -> None:
+                    self._reschedule_screen_poll()
+                    self._drain_pending_user_message()
+
+                self._schedule_ui(_finish_presence_local)
+                return
 
         if (
             fast_mode
@@ -2947,13 +3484,20 @@ class CompanionApp:
             err_str = str(exc)
             logger.error("AI tick failed: %s", type(exc).__name__)
             _groq_limit_keywords = ("rate_limit", "rate limit", "429", "quota", "groq_exhausted")
-            if not any(kw in err_str.lower() for kw in _groq_limit_keywords):
+            if origin == "terminal_sentinel":
+                self._schedule_ui(
+                    lambda: self._subtitle.show_message(
+                        "Explanation is unavailable right now.", "#888888",
+                    ),
+                )
+            elif not any(kw in err_str.lower() for kw in _groq_limit_keywords):
                 _short = err_str[:200] if len(err_str) > 200 else err_str
                 message = f"An error occurred:\n{_short}"
                 self._schedule_ui(
                     lambda msg=message: native_error_popup("Agetha — Error", msg),
                 )
-            self._schedule_ui(self._re_enable_input)
+            if origin != "terminal_sentinel":
+                self._schedule_ui(self._re_enable_input)
             self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
             self._release_ai_operation(operation_token)
             self._reschedule_screen_poll()
@@ -2962,7 +3506,8 @@ class CompanionApp:
 
         if self._cancel_event.is_set():
             self._release_ai_operation(operation_token)
-            self._schedule_ui(self._re_enable_input)
+            if origin != "terminal_sentinel":
+                self._schedule_ui(self._re_enable_input)
             self._drain_pending_user_message()
             return
 
@@ -2972,7 +3517,8 @@ class CompanionApp:
             response.get("command", "invalid") if isinstance(response, dict) else "invalid",
         )
 
-        self._schedule_ui(self._re_enable_input)
+        if origin != "terminal_sentinel":
+            self._schedule_ui(self._re_enable_input)
         self._schedule_ui(self._update_token_status)
         try:
             self._dispatch_response(response, user_message, origin=origin)
@@ -3065,6 +3611,7 @@ class CompanionApp:
             with self._ai_tick_lock:
                 self._pending_user_message = None
                 self._pending_user_origin = "user"
+                self._pending_screen_context = None
             return
         pending: str | None
         with self._ai_tick_lock:
@@ -3076,13 +3623,18 @@ class CompanionApp:
                 return
             pending = self._pending_user_message
             pending_origin = getattr(self, "_pending_user_origin", "user")
+            pending_screen_context = getattr(self, "_pending_screen_context", None)
             self._pending_user_message = None
             self._pending_user_origin = "user"
+            self._pending_screen_context = None
         if pending is not None:
+            kwargs = {"user_message": pending, "origin": pending_origin}
+            if pending_screen_context is not None:
+                kwargs["explicit_screen_context"] = pending_screen_context
             self._start_worker(
                 self._ai_tick,
                 name="queued-ai",
-                kwargs={"user_message": pending, "origin": pending_origin},
+                kwargs=kwargs,
             )
 
     # ── Emotion Sound Player ──────────────────────────────────────────────────
@@ -3155,7 +3707,14 @@ class CompanionApp:
         else:
             print("[SOUND] Pygame not available; sound fallback skipped.")
 
-    def _speak_and_continue(self, segments, mood, shutdown_requested: bool = False):
+    def _speak_and_continue(
+        self,
+        segments,
+        mood,
+        shutdown_requested: bool = False,
+        *,
+        allow_audio: bool = True,
+    ):
         if segments:
             self._speech_active = True
 
@@ -3166,7 +3725,7 @@ class CompanionApp:
                     maybe_mood_glitch(self.root, mood)
                 except Exception:
                     pass
-                if self._voice_out:
+                if allow_audio and self._voice_out:
                     try:
                         self._voice_out.start_speech(segments, mood)
                     except Exception:
@@ -3175,7 +3734,7 @@ class CompanionApp:
                                 self._bleep.start_talking(tone=mood)
                             except Exception:
                                 pass
-                elif self._bleep:
+                elif allow_audio and self._bleep:
                     try:
                         self._bleep.start_talking(tone=mood)
                     except Exception:
@@ -3183,6 +3742,7 @@ class CompanionApp:
                 self._subtitle.speak(
                     segments,
                     on_done=lambda: self._on_speech_done(shutdown_requested),
+                    allow_audio=allow_audio,
                 )
 
             self.root.after(0, _begin_speech)
@@ -3529,6 +4089,9 @@ class CompanionApp:
     def _disable_input_for_close(self) -> None:
         self._closing = True
         self._cancel_event.set()
+        typing_cancel = getattr(self, "_typing_cancel_event", None)
+        if typing_cancel is not None:
+            typing_cancel.set()
         try:
             self._input_box.config(state="disabled")
         except Exception:
@@ -3571,6 +4134,33 @@ class CompanionApp:
         self._shutdown_complete = True
         self._closing = True
         self._cancel_event.set()
+        typing_cancel = getattr(self, "_typing_cancel_event", None)
+        if typing_cancel is not None:
+            typing_cancel.set()
+
+        senses_panel = getattr(self, "_senses_panel", None)
+        if senses_panel is not None:
+            try:
+                senses_panel.close()
+            except Exception as exc:
+                logger.debug("Senses panel shutdown skipped: %s", type(exc).__name__)
+            self._senses_panel = None
+        for popup in tuple(getattr(self, "_sentinel_popups", ())):
+            try:
+                popup.close()
+            except Exception as exc:
+                logger.debug("Sentinel popup shutdown skipped: %s", type(exc).__name__)
+        getattr(self, "_sentinel_popups", set()).clear()
+        for resource, method in (
+            (getattr(self, "_terminal_sentinel", None), "stop"),
+            (getattr(self, "_presence", None), "shutdown"),
+            (getattr(self, "_observation_bus", None), "shutdown"),
+        ):
+            if resource is not None:
+                try:
+                    getattr(resource, method)()
+                except Exception as exc:
+                    logger.warning("Lifecycle resource shutdown failed: %s", type(exc).__name__)
 
         for cancel_picker in tuple(getattr(self, "_active_picker_cancellers", ())):
             try:

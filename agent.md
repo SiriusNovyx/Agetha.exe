@@ -3,7 +3,7 @@
 Guidance for humans and coding agents working on this fork.  
 **Priorities (locked):** (1) realism — she feels like a living process on this PC; (2) safety — Command Guard / confirmations / no real harm. Spectacle is optional flavor.
 
-**Version focus:** Overhaul v5.5.5 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+**Version focus:** Overhaul v5.7 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
 **Supported platforms:** Windows 10/11 x64; Windows 11 ARM64/Snapdragon through
 x64 Python under Prism; and Linux desktop environments through the existing
@@ -60,8 +60,13 @@ Agetha_Mod/
 |---------|----------------|
 | Avatar / GIF moods | `main.py` (`EXTRA_GIFS`, `TALKING_MOOD_GIFS`, `_apply_state`) |
 | Prompt / moods / commands | `agetha/core/ai_engine.py` |
+| Thai character voice | `agetha/core/ai_engine.py`, `agetha/core/memory_system.py` defaults |
 | Safety confirmations | `agetha/commands/command_guard.py` |
 | Command routing | `agetha/commands/command_handlers.py` |
+| Exact Unicode typing | `agetha/platform/unicode_typing.py`, `agetha/ui/typing_preview.py` |
+| Local observation/presence policy | `agetha/core/observation_bus.py`, `agetha/core/presence_etiquette.py` |
+| Confirmed terminal-error notices | `agetha/features/terminal_sentinel.py`, `agetha/ui/terminal_sentinel_popup.py` |
+| Capability display | `agetha/ui/senses_panel.py` |
 | Host heat / stats | `agetha/core/companion_stats.py` |
 | Session recap / BM25 | `agetha/core/memory_search.py` |
 | OCR errors | `agetha/platform/screen_reader.py` |
@@ -148,6 +153,14 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 3. Network (`ENABLE_WEB_RAG`), glitch (`ENABLE_GLITCH_EFFECTS`) stay config-gated.  
 4. Session recap / OCR coding-assist are **read / speak** paths — must not auto-mutate OS.  
 5. Denied action personality: flash `error.gif` + “Fine. I won’t.” (angry mood).
+6. Observation publication is data only: it never calls a provider, writes
+   memory, opens UI, or authorizes a command.
+7. Terminal Sentinel stays opt-in and empty-allowlist-safe. A confirmed OCR
+   event remains local until the user clicks **Explain**; explanation turns may
+   speak or show a popup but cannot dispatch model-suggested OS actions.
+8. `type_text` stays Caution-gated and obeys both
+   `ENABLE_COMMAND_EXECUTION` and `ENABLE_UNICODE_TYPING`; it never adds Enter,
+   Return, or Tab.
 
 ---
 
@@ -163,6 +176,12 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 - Emotion engine (v5): `agetha/core/emotion_engine.py` + `emotional_history.py` — tone only; denials are mild; memories untrusted in prompts  
 - Transparent Windows (v5): `autostart.py` (Startup shortcut only), `win_integration.py`, `status_providers.py`; tray is optional scaffold (`tray_scaffold.py`)  
 - Medic: `medic_helper.py realism` → `REALISM_OK` (covers v4+v5 APIs)
+- Natural Thai prompt contract: casual/neutral by default (`สวัสดี`), without a
+  global particle-stripping filter. Exact user text such as `ขอบคุณครับ` is
+  preserved in command payloads, quotations, code, documents, and formal text.
+- Polyglot Presence: exact Unicode entry, typed local observations, local
+  Presence Etiquette, opt-in Terminal Sentinel, and the Senses Control Panel.
+  See [`docs/testing/polyglot_presence_manual.md`](docs/testing/polyglot_presence_manual.md).
 
 ---
 
@@ -192,6 +211,12 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 | `ENABLE_WEB_RAG` | no (safe default) | Network |
 | `ENABLE_LONGTERM_MEMORY` | yes | BM25 + session recap archive |
 | `FASTER_MODE` | no | Reversible 13-setting performance profile plus adaptive request budgets; never add safety/provider/privacy keys |
+| `ENABLE_UNICODE_TYPING` | yes | Additional feature gate; `type_text` remains Caution |
+| `UNICODE_TYPING_MODE` | auto | `auto|unicode|paste|preview|paced` |
+| `ENABLE_PRESENCE_ETIQUETTE` | yes | Local popup/voice/focus/motion/queue policy |
+| `QUIET_HOURS_START` / `QUIET_HOURS_END` | empty | Optional `HH:MM` window |
+| `ENABLE_TERMINAL_SENTINEL` | no | Opt-in; empty app/title allowlists watch nothing |
+| `ENABLE_SENSES_PANEL` | yes | Dashboard capability view; no paid probe on open |
 
 ---
 
@@ -228,3 +253,6 @@ Manual GIF smoke:
 - Pure toy chaos that breaks immersion (spam BSOD, window flocks)  
 - Rewriting the entire Tk shell “for cleanliness”  
 - Turning cosplay virus into actual malware
+- Treating the design-only features A–O in
+  [`docs/roadmap/polyglot_presence_roadmap.md`](docs/roadmap/polyglot_presence_roadmap.md)
+  as implemented. Every roadmap item remains **planned / not implemented**.

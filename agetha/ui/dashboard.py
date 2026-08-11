@@ -9,7 +9,7 @@ import webbrowser
 from dataclasses import dataclass
 from tkinter import messagebox, ttk
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agetha.app_config import BASE_DIR, CONFIG_PATH, read_config_document
 from agetha.utils import logger, write_atomic
@@ -373,6 +373,15 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
         ),
     ),
     (
+        "Terminal Sentinel — restart required",
+        (
+            ("ENABLE_TERMINAL_SENTINEL", "bool", True, ()),
+            ("TERMINAL_SENTINEL_APPS", "text", True, ()),
+            ("TERMINAL_SENTINEL_TITLE_PATTERNS", "text", True, ()),
+            ("TERMINAL_SENTINEL_COOLDOWN_SEC", "text", True, ()),
+        ),
+    ),
+    (
         "Presence & realism (v4)",
         (
             ("ENABLE_CIRCADIAN_RHYTHM", "bool", False, ()),
@@ -625,7 +634,12 @@ def _system_snapshot() -> dict[str, str | float]:
     }
 
 
-def open_dashboard(parent: tk.Misc, app_settings) -> None:
+def open_dashboard(
+    parent: tk.Misc,
+    app_settings,
+    *,
+    on_open_senses: Callable[[], None] | None = None,
+) -> None:
     """Open a Toplevel dashboard with System / Virus / Notepad / Settings tabs."""
     import sys
     from agetha.ui.w95_window import (
@@ -800,6 +814,18 @@ def open_dashboard(parent: tk.Misc, app_settings) -> None:
     row.pack(fill="x", padx=8, pady=4)
     tk.Label(row, text="Processes:", width=12, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
     tk.Label(row, textvariable=sys_vars["processes"], anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
+    if on_open_senses is not None and bool(
+        getattr(app_settings, "enable_senses_panel", True)
+    ):
+        tk.Button(
+            sys_frame,
+            text="Open Senses Control Panel",
+            font=W95_FONT_BOLD,
+            bg=W95_BTN_BG,
+            relief="raised",
+            bd=2,
+            command=on_open_senses,
+        ).pack(anchor="w", padx=8, pady=(4, 2))
 
     def _poll_system() -> None:
         if _closing or not win.winfo_exists():

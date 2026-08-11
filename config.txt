@@ -107,6 +107,15 @@ FORCE_CLOSE_AUTO_ALLOW = yes
 PROTECTED_PROCESSES =
 
 
+# ── Universal Unicode typing ──────────────────────────────────────────────────
+# Exact user-provided text is preserved. The command never presses Enter/Tab.
+ENABLE_UNICODE_TYPING = yes
+UNICODE_TYPING_MODE = auto
+UNICODE_TYPING_DELAY_MS = 20
+UNICODE_TYPING_PREVIEW_THRESHOLD = 300
+UNICODE_TYPING_RESTORE_CLIPBOARD = yes
+
+
 # ── Context & Memory ─────────────────────────────────────────────────────────
 # soul.md = permanent personality (memory/soul.md). episodic = recent events JSON.
 
@@ -194,6 +203,23 @@ ENABLE_TASKS = yes
 
 # TASKS_MAX_ENTRIES — max stored tasks (10–1000). Oldest completed pruned first.
 TASKS_MAX_ENTRIES = 100
+
+
+# Local presence etiquette and opt-in developer observation.
+ENABLE_PRESENCE_ETIQUETTE = yes
+PRESENCE_FULLSCREEN_SILENT = yes
+PRESENCE_DISMISS_COOLDOWN_SEC = 900
+PRESENCE_RAPID_TYPING_COOLDOWN_SEC = 30
+QUIET_HOURS_START =
+QUIET_HOURS_END =
+
+# Opt-in exact-process allowlist for common terminal and developer apps.
+ENABLE_TERMINAL_SENTINEL = no
+TERMINAL_SENTINEL_APPS = WindowsTerminal.exe, powershell.exe, pwsh.exe, cmd.exe, Code.exe, VSCodium.exe, devenv.exe, pycharm64.exe, idea64.exe, webstorm64.exe, rider64.exe, clion64.exe, goland64.exe, rustrover64.exe, studio64.exe, eclipse.exe, sublime_text.exe, notepad++.exe, wezterm-gui.exe, alacritty.exe, kitty.exe, mintty.exe, Tabby.exe, ConEmu.exe, ConEmu64.exe
+TERMINAL_SENTINEL_TITLE_PATTERNS =
+TERMINAL_SENTINEL_COOLDOWN_SEC = 120
+
+ENABLE_SENSES_PANEL = yes
 
 
 # ── Emotion engine (v5.0.0) ──────────────────────────────────────────────────

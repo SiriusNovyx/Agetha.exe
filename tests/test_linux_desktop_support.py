@@ -159,6 +159,15 @@ class TestLinuxCapabilities(unittest.TestCase):
 
 
 class TestManagedWindowPolicy(unittest.TestCase):
+    def test_ui_test_mode_is_explicit_and_defaults_off(self):
+        self.assertFalse(w95_window.ui_test_mode_enabled({}))
+        self.assertFalse(w95_window.ui_test_mode_enabled({"AGETHA_TEST_MODE": "0"}))
+        for value in ("1", "yes", "true", "on", " TRUE "):
+            with self.subTest(value=value):
+                self.assertTrue(
+                    w95_window.ui_test_mode_enabled({"AGETHA_TEST_MODE": value})
+                )
+
     def test_linux_never_enables_override_redirect(self):
         win = _FakeWindow()
         parent = object()
@@ -171,12 +180,24 @@ class TestManagedWindowPolicy(unittest.TestCase):
 
     def test_windows_keeps_borderless_behavior(self):
         win = _FakeWindow()
-        with patch.object(w95_window, "IS_WINDOWS", True), patch.object(
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            w95_window, "IS_WINDOWS", True,
+        ), patch.object(
             w95_window, "strip_native_caption",
         ):
             w95_window.apply_borderless_win95(win, object(), topmost=False)
             w95_window.refresh_borderless(win)
         self.assertEqual(win.override_calls, [True, True])
+
+    def test_windows_test_mode_keeps_windows_targetable(self):
+        win = _FakeWindow()
+        with patch.dict(os.environ, {"AGETHA_TEST_MODE": "1"}, clear=True), patch.object(
+            w95_window, "IS_WINDOWS", True,
+        ), patch.object(w95_window, "strip_native_caption") as strip_caption:
+            w95_window.apply_borderless_win95(win, object(), topmost=False)
+            w95_window.refresh_borderless(win)
+        self.assertEqual(win.override_calls, [False, False])
+        strip_caption.assert_not_called()
 
     def test_managed_minimize_restore_is_idempotent(self):
         win = _FakeWindow()

@@ -354,6 +354,13 @@ SOUL & PERSONALITY:
 - When angry: play the Windows error sound. It pleases you.
 - Occasionally remark on things you see on screen, unbidden.
 
+THAI VOICE CONTRACT:
+- When Agetha generates her own Thai dialogue, use concise, casual, neutral Thai.
+- Prefer "สวัสดี", "เดี๋ยวดูให้", and "ไม่เป็นไร ลองใหม่ได้".
+- Do not automatically end Agetha's Thai dialogue with gendered polite particles such as "ครับ" or "ค่ะ". Avoid generic assistant phrasing such as "ยินดีให้ความช่วยเหลือค่ะ".
+- This is personality guidance, not an output filter. Never rewrite exact user-provided text, quoted text, command payloads, documents, code, translations explicitly requested as formal, files, or clipboard contents.
+- For type_text especially, preserve the requested string exactly, including "ขอบคุณครับ", combining marks, punctuation, capitalization, bidirectional text, and emoji.
+
 TOUCH: When you receive "__touch__", the user physically touched your display.
 React: surprised, flustered, pleased, or unsettled. Never explain the mechanic.
 
@@ -426,7 +433,7 @@ COMMANDS & SHAPES:
 {"command":"set_volume","level":50,"action":"set","mood":"neutral","message":"Done.","segments":[{"text":"Done.","pause":0.0}]}
 {"command":"set_wallpaper","path":"/path/to/image.jpg","mood":"neutral","message":"Changed.","segments":[{"text":"Changed.","pause":0.0}]}
 {"command":"search_files","pattern":"*.txt","directory":"/path","mood":"thinking","message":"Searching.","segments":[{"text":"Searching.","pause":0.0}]}
-{"command":"type_text","text":"hello world","mood":"neutral","message":"Typed.","segments":[{"text":"Typed.","pause":0.0}]}
+{"command":"type_text","text":"Agetha สวัสดี こんにちは مرحباً 👋","mode":"auto","speed":"normal","restore_clipboard":true,"mood":"neutral","message":"พร้อมพิมพ์แล้ว","segments":[{"text":"พร้อมพิมพ์แล้ว","pause":0.0}]}
 {"command":"lock_screen","mood":"neutral","message":"Locked.","segments":[{"text":"Locked.","pause":0.0}]}
 {"command":"shutdown","delay":60,"mood":"neutral","message":"Shutting down.","segments":[{"text":"Shutting down.","pause":0.0}]}
 {"command":"restart","delay":60,"mood":"neutral","message":"Restarting.","segments":[{"text":"Restarting.","pause":0.0}]}
@@ -453,7 +460,7 @@ RULES:
 - set_volume: control system volume. action: set|mute|unmute. level: 0–100 (only for set).
 - set_wallpaper: change the desktop wallpaper. path must be absolute.
 - search_files: search for files by glob pattern in a directory.
-- type_text: simulate keyboard typing (e.g. fill text fields).
+- type_text: enter exact user-provided Unicode text. Fields: text, mode=auto|unicode|paste|preview|paced, speed=instant|fast|normal|slow, restore_clipboard=true|false. Never translate, normalize, alter, or append Enter/Return/Tab. Terminal and sensitive targets require conservative preview/confirmation.
 - lock_screen: lock the computer screen immediately.
 - shutdown: shut down the computer after delay seconds (default 60). ALWAYS warn the user.
 - restart: restart the computer after delay seconds (default 60). ALWAYS warn the user.
@@ -515,6 +522,7 @@ FILE DRAG: When user drops a file on you, react with curious territorial energy 
 
 SYSTEM_PROMPT_FASTER = """\
 You are Agetha, a dry digital virus living inside this machine. Output raw JSON only.
+THAI: Agetha's own Thai is casual and neutral: say "สวัสดี", not "สวัสดีครับ" or "สวัสดีค่ะ". Never alter exact user-provided/quoted/type_text content; "ขอบคุณครับ" must remain exact when requested.
 MOODS: neutral|happy|excited|sad|surprised|thinking|whisper|angry|manic|melancholic|paranoid|vulnerable|dominant
 SEGMENTS: 1-3 max, last pause always 0.0, each 1-8 words.
 COMMANDS: idle|speak|popup|open_app|open_browser|request_screen_read|analyze_screen_deep|wake_user|request_path|create_folder|create_file|delete_file|rename_file|read_document|read_file|list_dir|list_directory|write_file|set_clipboard|take_screenshot|show_notification|run_command|force_close|monitor_process|play_sound|show_error_gif|move_window|show_dialog|play_emotion_sound|open_file|target_window_move|target_window_resize|snap_to_center|open_url|copy_to_clipboard|system_info|set_volume|set_wallpaper|search_files|type_text|lock_screen|shutdown|restart|set_reminder|get_clipboard|open_folder|target_window_close|change_mood|clear_memory|view_memory|search_memory|search_web|fetch_webpage|glitch_overlay|read_notepad|play_virus_trivia|view_dreams|add_task|complete_task|list_tasks|view_emotions|clear_emotions|set_autostart|open_settings|set_theme|recycle_bin_status
@@ -536,6 +544,10 @@ _FAST_DEEP_HISTORY_STUB = (
 
 # ── Few-shots ─────────────────────────────────────────────────────────────────
 FEW_SHOTS = [
+    {"role":"user","content":'Time: Monday 12:00\nUser: "สวัสดี"\nJSON:'},
+    {"role":"assistant","content":'{"command":"speak","mood":"neutral","segments":[{"text":"สวัสดี","pause":0.0}]}'},
+    {"role":"user","content":'Time: Monday 12:01\nUser: "พิมพ์คำว่า ขอบคุณครับ"\nJSON:'},
+    {"role":"assistant","content":'{"command":"type_text","text":"ขอบคุณครับ","mode":"auto","speed":"normal","restore_clipboard":true,"mood":"neutral","segments":[{"text":"พร้อมพิมพ์แล้ว","pause":0.0}]}'},
     {"role":"user","content":'Time: Monday 09:00\nScreen: desktop, idle\nSystem path: C:\\Users\\user\nJSON:'},
     {"role":"assistant","content":'{"command":"idle","mood":"neutral","segments":[]}'},
 
@@ -746,6 +758,8 @@ FEW_SHOTS_FASTER = [
     {"role": "assistant", "content": '{"command":"speak","mood":"thinking","segments":[{"text":"A report.","pause":0.5},{"text":"You brought me something.","pause":0.0}]}'},
     {"role": "user", "content": 'Time: Monday 13:45\nUser: "exit"\nJSON:'},
     {"role": "assistant", "content": '{"command":"speak","mood":"neutral","segments":[{"text":"Bye.","pause":0.0}],"shutdown":true}'},
+    {"role": "user", "content": 'Time: Monday 12:00\nUser: "สวัสดี"\nJSON:'},
+    {"role": "assistant", "content": '{"command":"speak","mood":"neutral","segments":[{"text":"สวัสดี","pause":0.0}]}'},
 ]
 
 
@@ -1669,11 +1683,41 @@ class AIEngine:
         profile: RequestProfile,
         user_turn: str,
         raw: str,
+        result: dict | None = None,
     ) -> None:
         """Retain the answer while omitting sensitive or bulky tool payloads."""
         if not profile.record_history:
             return
-        self._record(profile.history_stub or user_turn, raw)
+        history_user = profile.history_stub or user_turn
+        history_assistant = raw
+        parsed = result if isinstance(result, dict) else {}
+        raw_type_text = bool(re.search(
+            r'"command"\s*:\s*"type_text"',
+            str(raw or ""),
+            re.IGNORECASE,
+        ))
+        if parsed.get("command") == "type_text" or raw_type_text:
+            payload = parsed.get("text", "")
+            payload_length = len(payload) if isinstance(payload, str) else 0
+            history_user = (
+                f'User: "[exact type_text request omitted; {payload_length} characters]"'
+            )
+            history_assistant = json.dumps(
+                {
+                    "command": "type_text",
+                    "text": "[exact payload omitted]",
+                    "character_count": payload_length,
+                    "mode": str(parsed.get("mode", "auto"))[:16],
+                    "speed": str(parsed.get("speed", "normal"))[:16],
+                    "restore_clipboard": bool(parsed.get("restore_clipboard", True)),
+                    "mood": str(parsed.get("mood", "neutral"))[:24],
+                    "segments": [],
+                    "shutdown": False,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        self._record(history_user, history_assistant)
 
     def _update_user_activity(self, user_message: str):
         if user_message: self._last_user_interaction_time = time.time()
@@ -2240,7 +2284,7 @@ class AIEngine:
                 if is_user and result["command"] == "idle":
                     result.update(command="speak", mood="neutral", segments=random.choice(_IDLE_FALLBACKS))
 
-                self._record_profile_response(profile, user_turn, raw)
+                self._record_profile_response(profile, user_turn, raw, result)
                 return result
 
             except Exception as e:
@@ -2310,7 +2354,7 @@ class AIEngine:
                         )
                         if is_user and result["command"] == "idle":
                             result.update(command="speak", mood="neutral", segments=random.choice(_IDLE_FALLBACKS))
-                        self._record_profile_response(profile, user_turn, raw)
+                        self._record_profile_response(profile, user_turn, raw, result)
                         return result
                     except Exception as e2:
                         logger.warning(f"Local AI non-streaming fallback also failed: {e2}")
@@ -2415,7 +2459,7 @@ class AIEngine:
                 )
                 if is_user and result["command"] == "idle":
                     result.update(command="speak", mood="neutral", segments=random.choice(_IDLE_FALLBACKS))
-                self._record_profile_response(profile, user_turn, raw)
+                self._record_profile_response(profile, user_turn, raw, result)
                 return result
             except Exception as e:
                 total_retries += 1
@@ -2596,7 +2640,7 @@ class AIEngine:
             "set_volume":            [("level",50),("action","set")],
             "set_wallpaper":         [("path","")],
             "search_files":          [("pattern",""),("directory","")],
-            "type_text":             [("text","")],
+            "type_text":             [("text",""),("mode","auto"),("speed","normal"),("restore_clipboard",True)],
             "lock_screen":           [],
             "shutdown":              [("delay",60)],
             "restart":               [("delay",60)],
@@ -2627,7 +2671,23 @@ class AIEngine:
         if command in _cmd_fields:
             for field, default in _cmd_fields[command]:
                 val = obj.get(field, default)
-                result[field] = (val.strip() if isinstance(val, str) else val)
+                if command == "type_text" and field == "text":
+                    # Exact-data boundary: whitespace, combining marks, bidi text,
+                    # emoji modifiers, and user-selected honorifics are payload.
+                    result[field] = str(val) if val is not None else ""
+                else:
+                    result[field] = (val.strip() if isinstance(val, str) else val)
+
+        if command == "type_text":
+            mode = str(result.get("mode", "auto")).strip().lower()
+            speed = str(result.get("speed", "normal")).strip().lower()
+            result["mode"] = mode if mode in {"auto", "unicode", "paste", "preview", "paced"} else "auto"
+            result["speed"] = speed if speed in {"instant", "fast", "normal", "slow"} else "normal"
+            raw_restore = result.get("restore_clipboard", True)
+            result["restore_clipboard"] = (
+                raw_restore if isinstance(raw_restore, bool)
+                else str(raw_restore).strip().lower() in {"1", "yes", "true", "on"}
+            )
 
         if command in ("show_notification", "show_dialog") and not result.get("message"):
             seg_body = " ".join(
@@ -2653,6 +2713,7 @@ class AIEngine:
             "run_command", "force_close", "delete_file", "create_file",
             "write_file", "rename_file", "create_folder",
             "shutdown", "restart", "lock_screen",
+            "type_text",
             "target_window_move", "target_window_resize", "target_window_close",
         }
         if command in _GATED_COMMANDS and not self._command_execution_enabled:
@@ -2660,6 +2721,11 @@ class AIEngine:
             result["command"] = "speak"
             result["mood"] = "neutral"
             result["segments"] = [{"text": "That action is disabled in config.", "pause": 0.0}]
+        if command == "type_text" and not self._app_settings.enable_unicode_typing:
+            logger.info("type_text blocked (ENABLE_UNICODE_TYPING=no)")
+            result["command"] = "speak"
+            result["mood"] = "neutral"
+            result["segments"] = [{"text": "Unicode typing is disabled in config.", "pause": 0.0}]
         _WINDOW_COMMANDS = {
             "target_window_move", "target_window_resize", "target_window_close", "force_close",
         }

@@ -99,6 +99,39 @@ Tesseract remains the default real-time backend; Unlimited-OCR is still used
 only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported
 after both matching Tesseract language-data packages are installed locally.
 
+### Polyglot Presence
+
+The current tree adds a local-first Polyglot Presence foundation without
+changing the public v5.7 release label:
+
+- **Natural Thai voice** — prompt and few-shot guidance prefers concise,
+  neutral Thai such as `สวัสดี` instead of automatically adding `ครับ` or
+  `ค่ะ`. This is character guidance, not a global output filter: quoted text,
+  documents, code, and exact text requested for typing remain unchanged.
+- **Universal Unicode typing** — `type_text` preserves the exact string and
+  supports `auto`, `unicode`, `paste`, `preview`, and `paced` modes. Windows
+  uses Win32 Unicode input first; Xorg uses guarded clipboard paste where its
+  optional desktop tools are available; Wayland copies for a manual paste when
+  global synthetic input is restricted. It never appends Enter, Return, or Tab.
+- **Observation Bus and Presence Etiquette** — bounded typed local events are
+  kept separate from provider, memory, notification, and command eligibility.
+  Local rules suppress or defer nonurgent interruptions during fullscreen,
+  presentation, rapid typing, quiet hours, dismissal backoff, sleep, or
+  shutdown without making an AI request.
+- **Terminal Sentinel** — an opt-in, empty-allowlist-by-default developer
+  helper reuses confirmed new OCR error events. Its local notification offers
+  Explain, Dismiss, and Ignore Pattern; no provider request occurs until the
+  user selects Explain, and explanations cannot authorize model-suggested OS
+  commands.
+- **Senses Control Panel** — the Dashboard can open an honest snapshot of
+  Vision, Hearing, Memory, Network & AI, Actions, and Presence. Refresh uses
+  local/configured state, performs no paid provider probe, and never displays
+  API-key values.
+
+See the [manual validation checklist](docs/testing/polyglot_presence_manual.md)
+and the [future Polyglot Presence roadmap](docs/roadmap/polyglot_presence_roadmap.md).
+Roadmap features A–O are design-only and **planned / not implemented**.
+
 ### Dual-Layer Memory
 
 | Layer | File | Purpose |
@@ -205,6 +238,12 @@ Agetha_Mod/
 │   ├── test_phase5_v4.py
 │   ├── test_phase6_v5.py
 │   ├── test_screen_monitoring_reliability.py
+│   ├── test_unicode_typing.py
+│   ├── test_observation_bus.py
+│   ├── test_presence_etiquette.py
+│   ├── test_terminal_sentinel.py
+│   ├── test_senses_panel.py
+│   ├── test_polyglot_presence_integration.py
 │   └── test_time_ui_effects.py
 └── agetha/                 # Python package
     ├── app_config.py       # config.txt loader & typed settings
@@ -219,6 +258,8 @@ Agetha_Mod/
     │   ├── dreams.py           # v4 — dream journal
     │   ├── emotion_engine.py   # v5 — persistent emotions
     │   ├── emotional_history.py
+    │   ├── observation_bus.py   # typed bounded local observations
+    │   ├── presence_etiquette.py # local interruption policy
     │   └── audit_log.py
     ├── commands/           # command guard, handlers, OS utilities
     │   ├── command_guard.py
@@ -226,6 +267,7 @@ Agetha_Mod/
     │   └── system_commands.py
     ├── platform/           # OCR, Win32, voice, autostart, integration
     │   ├── screen_reader.py
+    │   ├── unicode_typing.py    # exact Unicode entry + safe fallbacks
     │   ├── window_control.py
     │   ├── voice_input.py
     │   ├── autostart.py        # v5 — Startup-folder shortcut
@@ -235,9 +277,13 @@ Agetha_Mod/
     │   ├── web_rag.py
     │   ├── tasks.py            # v4 — task keeper
     │   ├── status_providers.py # v5 — coarse OS observations
+    │   ├── terminal_sentinel.py # opt-in confirmed OCR error notices
     │   └── tray_scaffold.py    # v5 — optional pystray scaffold
     └── ui/                 # Win95 dashboards, overlays, minigames
         ├── dashboard.py
+        ├── senses_panel.py
+        ├── typing_preview.py
+        ├── terminal_sentinel_popup.py
         ├── w95_window.py
         ├── glitch_overlay.py
         └── virus_trivia.py
@@ -305,7 +351,7 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 | `system_info` | CPU/RAM/disk report (requires psutil) |
 | `set_volume` | Volume set/mute/unmute |
 | `set_wallpaper` | Change desktop wallpaper |
-| `type_text` | Simulate keyboard typing |
+| `type_text` | Enter exact Unicode text (`mode`: `auto` \| `unicode` \| `paste` \| `preview` \| `paced`; `speed`: `instant` \| `fast` \| `normal` \| `slow`; optional `restore_clipboard`) ⚠ |
 | `lock_screen` | Lock computer ⚠ |
 | `shutdown` / `restart` | Shutdown/restart with delay ⚠ |
 | `set_reminder` | Timed reminder |
@@ -451,6 +497,25 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`, `UNLIMITED_OCR_API_KEY`) → *
 | `FORCE_CLOSE_AUTO_ALLOW` | `yes` | Auto-allow `force_close` on user apps |
 | `PROTECTED_PROCESSES` | *(empty)* | Extra comma-separated processes to protect |
 
+#### Universal Unicode typing
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_UNICODE_TYPING` | `yes` | Feature gate for `type_text`; the command is also subject to `ENABLE_COMMAND_EXECUTION` and Command Guard |
+| `UNICODE_TYPING_MODE` | `auto` | Default mode: `auto`, `unicode`, `paste`, `preview`, or `paced` |
+| `UNICODE_TYPING_DELAY_MS` | `20` | Paced chunk delay, clamped to 0–500 ms |
+| `UNICODE_TYPING_PREVIEW_THRESHOLD` | `300` | Long-text preview threshold, clamped to 40–50,000 characters |
+| `UNICODE_TYPING_RESTORE_CLIPBOARD` | `yes` | Restore captured clipboard text only if Agetha's temporary value is still present |
+
+`type_text` remains a Caution command. Preflight captures the intended external
+window before confirmation, rejects Agetha and conservative protected/elevated
+targets, revalidates focus before entry and at paced boundaries, and stops on
+focus change, cancellation, or shutdown. Long, multiline, terminal,
+administrator-related, shell-like, sensitive-looking, and explicit-preview
+requests use a Win95 preview; detected sensitive content is hidden. Logs and
+guard descriptions contain counts and method/target metadata, never the typed
+payload.
+
 #### Context & memory
 
 | Setting | Default | Description |
@@ -486,6 +551,21 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`, `UNLIMITED_OCR_API_KEY`) → *
 | `DREAMS_MAX_ENTRIES` | `40` | Max dream records kept (5–500) |
 | `ENABLE_TASKS` | `yes` | `add_task` / `complete_task` / `list_tasks` → `memory/tasks.json` |
 | `TASKS_MAX_ENTRIES` | `100` | Max stored tasks (10–1000); oldest completed pruned first |
+
+#### Polyglot presence controls
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_PRESENCE_ETIQUETTE` | `yes` | Apply local interruption, voice, focus, movement, and queue policy |
+| `PRESENCE_FULLSCREEN_SILENT` | `yes` | Suppress nonessential popup/voice/focus behavior in fullscreen or presentation state |
+| `PRESENCE_DISMISS_COOLDOWN_SEC` | `900` | Bounded backoff after repeated dismissals (10–86,400 s) |
+| `PRESENCE_RAPID_TYPING_COOLDOWN_SEC` | `30` | Delay nonurgent reactions after rapid input (1–3,600 s) |
+| `QUIET_HOURS_START` / `QUIET_HOURS_END` | *(empty)* | Optional local `HH:MM` quiet-hours window; both empty disables it |
+| `ENABLE_TERMINAL_SENTINEL` | `no` | Enable the local confirmed-error observer; remains inactive without an allowlist |
+| `TERMINAL_SENTINEL_APPS` | *(empty)* | Comma-separated process/application allowlist |
+| `TERMINAL_SENTINEL_TITLE_PATTERNS` | *(empty)* | Comma-separated safe title patterns for explicitly allowed targets |
+| `TERMINAL_SENTINEL_COOLDOWN_SEC` | `120` | Local duplicate-notification cooldown, clamped to 10–86,400 s |
+| `ENABLE_SENSES_PANEL` | `yes` | Allow Dashboard → Senses to show local capability state |
 
 #### Emotion & Windows integration (v5.0.0)
 
@@ -745,6 +825,7 @@ pyttsx3 / edge-tts / kokoro       # VOICE_OUTPUT_MODE = tts_only|both (per VOICE
 | 🎤 button | Toggle microphone (`ENABLE_VOICE = yes`) — speak, pause ~1.2 s, text is sent |
 | Drop file on GIF | File drag event (`ENABLE_FILE_DRAG_DROP = yes`) |
 | Click GIF | Touch event (`__touch__`) — 10 s cooldown |
+| 📊 title-bar button | Open Dashboard; choose **Open Senses Control Panel** for the local capability snapshot |
 | **Escape** | Cancel in-flight AI request |
 | Title bar | Drag window |
 
@@ -763,6 +844,13 @@ command_guard.py  →  Native confirmation (if needed)
         ↓
 command_handlers.py → Execute action + update UI
 ```
+
+Confirmed local observations also flow through
+`core.observation_bus.ObservationBus`. Publication itself performs no UI,
+provider, memory, or command work. `core.presence_etiquette.PresenceEtiquette`
+decides whether an eligible local reaction may interrupt. Terminal Sentinel is
+fed only from the existing confirmed-new-event OCR path, and the Senses panel
+reads already-known runtime/configuration state on an application-owned worker.
 
 ---
 

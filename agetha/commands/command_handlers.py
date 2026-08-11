@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 import urllib.parse
 import webbrowser
 from dataclasses import dataclass
@@ -27,7 +28,18 @@ from agetha.core.request_context import (
 from agetha.commands.system_commands import (
     copy_to_clipboard, get_clipboard, lock_screen, open_folder, open_url,
     restart_system, screenshot_path, search_files, set_reminder, set_volume,
-    set_wallpaper, show_notification, shutdown_system, system_info, type_text,
+    set_wallpaper, show_notification, shutdown_system, system_info,
+)
+from agetha.platform.screen_monitoring import redact_sensitive_text
+from agetha.platform.unicode_typing import (
+    TypingPreview,
+    TypingTarget,
+    build_typing_preview,
+    capture_intended_target,
+    default_dependencies,
+    parse_mode,
+    parse_speed,
+    type_unicode_text,
 )
 from agetha.platform.window_control import kill_process_by_name, operate_on_target, is_self_window_target, is_self_process_target
 from agetha.utils import IS_LINUX, IS_WINDOWS, WINDOW_W, WINDOW_H, logger
@@ -42,6 +54,9 @@ _EMOTION_READONLY_COMMANDS = frozenset({
     "view_emotions", "view_memory", "view_dreams", "list_tasks",
     "search_memory", "recycle_bin_status", "read_notepad",
 })
+
+# Identity-only marker: model JSON cannot forge approval by naming a field.
+_TYPE_TEXT_GUARD_APPROVAL = object()
 
 if TYPE_CHECKING:
     from main import CompanionApp
@@ -109,6 +124,169 @@ def _call_app_ui_sync(app: "CompanionApp", callback: Callable[[], object]) -> ob
     if callable(caller):
         return caller(app, callback)
     return callback()
+
+
+def _schedule_app_ui(app: "CompanionApp", callback: Callable[[], None]) -> object | None:
+    scheduler = getattr(type(app), "_schedule_ui", None)
+    if callable(scheduler):
+        return scheduler(app, callback)
+    try:
+        return app.root.after(0, callback)
+    except Exception as exc:
+        logger.debug("Command UI scheduling failed: %s", type(exc).__name__)
+        return None
+
+
+def _typing_target_from_screen(app: "CompanionApp", platform_name: str) -> TypingTarget | None:
+    """Reuse ScreenReader's validated pre-dialog external target when possible."""
+    screen = getattr(app, "_screen", None)
+    if screen is None:
+        return None
+    try:
+        info = screen.preserve_external_target()
+    except Exception as exc:
+        logger.warning("Unicode target preservation failed: %s", type(exc).__name__)
+        return None
+    if not isinstance(info, dict) or info.get("hwnd") is None:
+        return None
+    try:
+        handle = int(info["hwnd"])
+        process_id = info.get("process_id")
+        pid_text = "" if process_id is None else str(int(process_id))
+    except (KeyError, TypeError, ValueError):
+        return None
+    platform_key = str(platform_name or "").casefold()
+    prefix = "win" if platform_key == "windows" else "x11" if platform_key == "linux" else "window"
+    own_handle = getattr(screen, "_own_hwnd", None)
+    return TypingTarget(
+        stable_id=f"{prefix}:{handle}:{pid_text}",
+        title=str(info.get("title", ""))[:512],
+        process_name=str(info.get("process_name", ""))[:260],
+        window_handle=handle,
+        is_own_window=own_handle is not None and handle == own_handle,
+    )
+
+
+def _prepare_unicode_typing(app: "CompanionApp", response: dict, settings) -> bool:
+    """Validate gates and capture the target before any owned confirmation UI."""
+    for key in (
+        "_typing_dependencies", "_typing_target", "_typing_preview",
+        "_typing_preview_approved", "_typing_guard_token",
+    ):
+        response.pop(key, None)
+    if not settings.enable_command_execution:
+        app._show_op_error("Command execution is disabled in config.")
+        app._speak_and_continue(
+            [{"text": "ปิดการพิมพ์ผ่านคำสั่งไว้ใน config", "pause": 0.0}],
+            "neutral",
+            False,
+        )
+        return False
+    if not settings.enable_unicode_typing:
+        app._show_op_error("Unicode typing is disabled in config.")
+        app._speak_and_continue(
+            [{"text": "ปิด Unicode typing ไว้ใน config", "pause": 0.0}],
+            "neutral",
+            False,
+        )
+        return False
+
+    text = response.get("text", "")
+    if not isinstance(text, str):
+        text = str(text or "")
+        response["text"] = text
+    if not text:
+        app._show_op_error("No text was supplied.")
+        return False
+    try:
+        mode = parse_mode(response.get("mode", settings.unicode_typing_mode))
+        speed = parse_speed(response.get("speed", "normal"))
+    except (TypeError, ValueError):
+        app._show_op_error("Unknown Unicode typing mode or speed.")
+        return False
+    response["mode"] = mode.value
+    response["speed"] = speed.value
+    raw_restore = response.get(
+        "restore_clipboard", settings.unicode_typing_restore_clipboard,
+    )
+    response["restore_clipboard"] = (
+        raw_restore if isinstance(raw_restore, bool)
+        else str(raw_restore).strip().casefold() in {"1", "yes", "true", "on"}
+    )
+
+    dependencies = default_dependencies()
+    target = _typing_target_from_screen(app, dependencies.platform_name)
+    if target is None:
+        target = capture_intended_target(dependencies)
+    preview = build_typing_preview(
+        text,
+        target,
+        mode=mode,
+        platform_name=dependencies.platform_name,
+        session_type=dependencies.session_type,
+        preview_threshold=settings.unicode_typing_preview_threshold,
+    )
+    if "restricted-target" in preview.reasons:
+        app._show_op_error("Typing into this protected or elevated target is refused.")
+        app._speak_and_continue(
+            [{"text": "เป้าหมายนี้เสี่ยงเกินไป ฉันไม่พิมพ์ให้", "pause": 0.0}],
+            "neutral",
+            False,
+        )
+        return False
+    response["_typing_dependencies"] = dependencies
+    response["_typing_target"] = target
+    response["_typing_preview"] = preview
+    return True
+
+
+def _confirm_typing_preview(
+    app: "CompanionApp",
+    preview: TypingPreview,
+    text: str,
+    *,
+    preview_only: bool,
+    timeout_seconds: float = 120.0,
+) -> bool:
+    """Request the Win95 preview without touching Tk from this worker."""
+    from agetha.ui.typing_preview import open_typing_preview
+
+    if "potentially-sensitive-text" in preview.reasons:
+        content = f"[Sensitive content hidden — {len(text)} characters]"
+    else:
+        content = redact_sensitive_text(text)
+        if len(content) > 600:
+            content = content[:599] + "…"
+    done = threading.Event()
+    approved = [False]
+
+    def _decision(value: bool) -> None:
+        approved[0] = bool(value)
+        done.set()
+
+    def _open() -> None:
+        if getattr(app, "_closing", False):
+            done.set()
+            return
+        try:
+            open_typing_preview(
+                app.root,
+                preview,
+                content_preview=content,
+                on_decision=_decision,
+                preview_only=preview_only,
+            )
+        except Exception as exc:
+            logger.warning("Typing preview failed: %s", type(exc).__name__)
+            done.set()
+
+    if _schedule_app_ui(app, _open) is None:
+        return False
+    deadline = time.monotonic() + max(1.0, min(float(timeout_seconds), 300.0))
+    while not done.wait(0.1):
+        if getattr(app, "_closing", False) or time.monotonic() >= deadline:
+            return False
+    return approved[0]
 
 
 def register(command: str) -> Callable[[HandlerFn], HandlerFn]:
@@ -194,9 +372,58 @@ def dispatch(
             except Exception as exc:
                 logger.warning(f"Could not preserve deep-OCR target: {exc}")
 
+    # Sentinel Explain is explicit analysis, never authority for actions,
+    # focus-stealing popup UI, or application shutdown.  Provider output is
+    # constrained to a passive subtitle response regardless of model fields.
+    if resolved_origin == "terminal_sentinel":
+        response = dict(response)
+        ctx.shutdown_requested = False
+        if command not in {"idle", "speak"}:
+            logger.info("Blocked command from Terminal Sentinel explanation: %s", command)
+            command = "speak" if ctx.segments else "idle"
+            response["command"] = command
+        response["shutdown"] = False
+        response.pop("popup", None)
+
+    settings = get_settings()
+    if command == "type_text" and not _prepare_unicode_typing(app, response, settings):
+        return
+
+    response_presence = None
+    presence_method = getattr(type(app), "_presence_decision", None)
+    if callable(presence_method):
+        try:
+            response_presence = presence_method(app)
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning("Presence decision failed closed for response UI: %s", type(exc).__name__)
+    ambient_presence = response_presence if resolved_origin == "ambient" else None
+    if resolved_origin == "ambient":
+        if (
+            ambient_presence is not None
+            and command in {"speak", "wake_user", "popup"}
+            and (
+                not bool(getattr(ambient_presence, "allow_popup", False))
+                or bool(getattr(ambient_presence, "queue_nonurgent", False))
+            )
+        ):
+            queued_text = " ".join(
+                str(item.get("text", "")).strip()
+                for item in ctx.segments
+                if isinstance(item, dict) and item.get("text")
+            )[:800]
+            presence_owner = getattr(app, "_presence", None)
+            if queued_text and presence_owner is not None:
+                try:
+                    presence_owner.queue_message(queued_text, ttl_seconds=300)
+                except (TypeError, ValueError, RuntimeError) as exc:
+                    logger.warning("Ambient presence queue rejected a message: %s", type(exc).__name__)
+            app.root.after(0, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
+            app._reschedule_screen_poll()
+            return
+
     if resolved_origin == "ambient" and ctx.mood in app._ATTENTION_MOODS:
         app._maybe_snap_to_center(ctx.mood)
-    elif hasattr(app, "_play_response_motion"):
+    elif resolved_origin != "terminal_sentinel" and hasattr(app, "_play_response_motion"):
         app._play_response_motion(ctx.mood)
 
     if command in _WINDOW_COMMANDS and not get_settings().enable_window_control:
@@ -205,7 +432,6 @@ def dispatch(
         app._speak_and_continue(denied, "neutral", False)
         return
 
-    settings = get_settings()
     _dry_run_skip = frozenset({
         "idle", "speak", "wake_user", "change_mood", "view_memory",
         "search_memory", "search_web", "fetch_webpage",
@@ -236,11 +462,34 @@ def dispatch(
         try:
             from agetha.core.emotion_engine import note
             note("command_declined", summary=f"user declined command {command}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Command-declined emotion update failed: %s", type(exc).__name__)
         denied = [{"text": "Fine. I won't.", "pause": 0.0}]
         app._speak_and_continue(denied, "angry", False)
         return
+
+    if command == "type_text":
+        preview = response.get("_typing_preview")
+        if not isinstance(preview, TypingPreview):
+            app._show_op_error("Typing target preview is unavailable.")
+            return
+        if preview.reasons:
+            preview_only = response.get("mode") == "preview"
+            if not _confirm_typing_preview(
+                app,
+                preview,
+                response.get("text", ""),
+                preview_only=preview_only,
+            ):
+                logger.info("Unicode typing preview was cancelled or unavailable")
+                app._speak_and_continue(
+                    [{"text": "ยกเลิกแล้ว ฉันยังไม่ได้พิมพ์", "pause": 0.0}],
+                    "neutral",
+                    False,
+                )
+                return
+            response["_typing_preview_approved"] = True
+        response["_typing_guard_token"] = _TYPE_TEXT_GUARD_APPROVAL
 
     if command not in ("idle", "speak", "wake_user"):
         try:
@@ -272,7 +521,18 @@ def dispatch(
         return
 
     if command in ("wake_user", "speak") and ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        if response_presence is None and resolved_origin != "terminal_sentinel":
+            app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        else:
+            app._speak_and_continue(
+                ctx.segments,
+                ctx.mood,
+                ctx.shutdown_requested,
+                allow_audio=(
+                    resolved_origin != "terminal_sentinel"
+                    and bool(getattr(response_presence, "allow_voice", False))
+                ),
+            )
     else:
         app._persistent_mood = None
         if command == "idle" and not ctx.segments:
@@ -864,10 +1124,109 @@ def handle_search_files(app, response, ctx):
 
 @register("type_text")
 def handle_type_text(app, response, ctx):
-    msg = type_text(response.get("text", ""))
-    if "error" in msg.lower():
-        app._show_op_error(msg)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    settings = get_settings()
+    approved = response.pop("_typing_guard_token", None) is _TYPE_TEXT_GUARD_APPROVAL
+    if (
+        not approved
+        or not settings.enable_command_execution
+        or not settings.enable_unicode_typing
+    ):
+        logger.warning("Direct or disabled Unicode typing handler call was blocked")
+        app._show_op_error("Unicode typing was blocked by command policy.")
+        app._speak_and_continue(
+            [{"text": "คำสั่งพิมพ์ไม่ผ่านการยืนยัน ฉันหยุดไว้ก่อน", "pause": 0.0}],
+            "neutral",
+            False,
+        )
+        return True
+
+    dependencies = response.pop("_typing_dependencies", None)
+    target = response.pop("_typing_target", None)
+    preview = response.pop("_typing_preview", None)
+    preview_approved = bool(response.pop("_typing_preview_approved", False))
+    if dependencies is None or not isinstance(preview, TypingPreview):
+        app._show_op_error("Unicode typing preflight state is unavailable.")
+        return True
+
+    operation_cancel = threading.Event()
+    previous_cancel = getattr(app, "_typing_cancel_event", None)
+    if previous_cancel is not None:
+        try:
+            previous_cancel.set()
+        except Exception as exc:
+            logger.debug("Previous Unicode typing cancellation failed: %s", type(exc).__name__)
+    app._typing_cancel_event = operation_cancel
+    operation_lock = getattr(app, "_typing_operation_lock", None)
+    if operation_lock is None:
+        operation_lock = threading.Lock()
+        app._typing_operation_lock = operation_lock
+    dependencies.cancel_requested = lambda: (
+        operation_cancel.is_set()
+        or bool(getattr(app, "_cancel_event", None) and app._cancel_event.is_set())
+    )
+    dependencies.shutdown_requested = lambda: bool(getattr(app, "_closing", False))
+
+    text = response.get("text", "")
+    mode = response.get("mode", settings.unicode_typing_mode)
+    speed = response.get("speed", "normal")
+    restore_clipboard = bool(response.get(
+        "restore_clipboard", settings.unicode_typing_restore_clipboard,
+    ))
+
+    def _run() -> None:
+        with operation_lock:
+            result = type_unicode_text(
+                text,
+                mode=mode,
+                speed=speed,
+                restore_clipboard=restore_clipboard,
+                preview_approved=preview_approved,
+                intended_target=target if isinstance(target, TypingTarget) else None,
+                dependencies=dependencies,
+                own_window_handles=tuple(
+                    handle for handle in (getattr(getattr(app, "_screen", None), "_own_hwnd", None),)
+                    if isinstance(handle, int)
+                ),
+                preview_threshold=settings.unicode_typing_preview_threshold,
+                paced_delay_ms=settings.unicode_typing_delay_ms,
+            )
+        logger.info(
+            "Unicode typing finished: method=%s success=%s requested=%d sent=%d restored=%s",
+            result.method,
+            result.success,
+            result.characters_requested,
+            result.characters_sent,
+            result.clipboard_restored,
+        )
+        if getattr(app, "_typing_cancel_event", None) is operation_cancel:
+            app._typing_cancel_event = None
+        if getattr(app, "_closing", False):
+            return
+        if result.success and result.method == "preview":
+            app._show_op_success(result.message)
+            app._speak_and_continue(
+                [{"text": "ดูตัวอย่างแล้ว ยังไม่ได้พิมพ์", "pause": 0.0}],
+                "neutral",
+                False,
+            )
+            return
+        if result.success:
+            app._show_op_success(result.message)
+            app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+            return
+        app._show_op_error(result.message)
+        message = "พิมพ์ไม่ได้ ลองใหม่ได้"
+        if result.method == "clipboard-copy-only":
+            message = "พิมพ์อัตโนมัติไม่ได้ คัดลอกไว้แล้ว กด Ctrl+V ได้เลย"
+        elif "focused window changed" in result.message.casefold():
+            message = "หน้าต่างเปลี่ยน ฉันหยุดก่อน"
+        app._speak_and_continue(
+            [{"text": message, "pause": 0.0}],
+            "neutral",
+            False,
+        )
+
+    _start_app_worker(app, _run, name="unicode-typing")
     return True
 
 

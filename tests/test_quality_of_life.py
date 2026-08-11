@@ -163,6 +163,7 @@ class TestExternalContextAndLogging(unittest.TestCase):
         app._speech_active = False
         app._pending_user_message = None
         app._pending_user_origin = "user"
+        app._pending_screen_context = None
         app._post_ai_tick_callbacks = []
         app._deferred_ai_callbacks_inflight = False
         app._cancel_event = threading.Event()
@@ -395,6 +396,25 @@ class TestThreadingAndArbitration(unittest.TestCase):
         app._drain_pending_user_message()
         kwargs = app._start_worker.call_args.kwargs["kwargs"]
         self.assertEqual(kwargs, {"user_message": "remember", "origin": "reminder"})
+
+    def test_queued_terminal_explain_preserves_its_authorized_context(self):
+        app = self._app()
+        app._ai_busy = True
+        self.assertIsNone(app._reserve_ai_operation(
+            direct=True,
+            user_message="Explain this failure",
+            origin="terminal_sentinel",
+            explicit_screen_context="SANITIZED SENTINEL CONTEXT",
+        ))
+        app._ai_busy = False
+        app._start_worker = MagicMock()
+        app._drain_pending_user_message()
+        kwargs = app._start_worker.call_args.kwargs["kwargs"]
+        self.assertEqual(kwargs, {
+            "user_message": "Explain this failure",
+            "origin": "terminal_sentinel",
+            "explicit_screen_context": "SANITIZED SENTINEL CONTEXT",
+        })
 
     def test_gif_schedule_failure_discards_decoded_result(self):
         import main

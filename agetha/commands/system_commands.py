@@ -204,16 +204,14 @@ def search_files(pattern: str, directory: str, limit: int = 50) -> list[str]:
 
 
 def type_text(text: str) -> str:
-    if not text:
-        return "[no text]"
-    try:
-        import pyautogui
-        pyautogui.write(text, interval=0.02)
-        return f"[typed {len(text)} chars]"
-    except ImportError:
-        return "[pyautogui not installed]"
-    except Exception as exc:
-        return f"[type_text error: {exc}]"
+    """Compatibility shim: direct text entry is intentionally refused.
+
+    The registered command handler owns feature gates, Command Guard, target
+    capture, preview, cancellation, and clipboard policy.  A standalone helper
+    cannot reproduce that authority safely, so callers must use normal dispatch.
+    """
+    _ = text
+    return "[type_text refused: use guarded command dispatch]"
 
 
 def lock_screen() -> str:

@@ -205,6 +205,25 @@ FORCE_CLOSE_AUTO_ALLOW = yes
 PROTECTED_PROCESSES =
 
 
+# ── Universal Unicode typing ──────────────────────────────────────────────────
+# Exact user-provided text is preserved. The command never presses Enter/Tab.
+
+# ENABLE_UNICODE_TYPING — no = reject type_text before any target/clipboard work.
+ENABLE_UNICODE_TYPING = yes
+
+# UNICODE_TYPING_MODE — auto|unicode|paste|preview|paced
+UNICODE_TYPING_MODE = auto
+
+# UNICODE_TYPING_DELAY_MS — paced chunk delay (0–500 ms).
+UNICODE_TYPING_DELAY_MS = 20
+
+# UNICODE_TYPING_PREVIEW_THRESHOLD — preview at or above this character count.
+UNICODE_TYPING_PREVIEW_THRESHOLD = 300
+
+# Restore the prior clipboard only if it still contains Agetha's temporary text.
+UNICODE_TYPING_RESTORE_CLIPBOARD = yes
+
+
 # ── Context & Memory ─────────────────────────────────────────────────────────
 # soul.md = permanent personality (memory/soul.md). episodic = recent events JSON.
 
@@ -292,6 +311,26 @@ ENABLE_TASKS = yes
 
 # TASKS_MAX_ENTRIES — max stored tasks (10–1000). Oldest completed pruned first.
 TASKS_MAX_ENTRIES = 100
+
+
+# Presence decisions are local rules; they never require an AI/provider request.
+ENABLE_PRESENCE_ETIQUETTE = yes
+PRESENCE_FULLSCREEN_SILENT = yes
+PRESENCE_DISMISS_COOLDOWN_SEC = 900
+PRESENCE_RAPID_TYPING_COOLDOWN_SEC = 30
+# Optional local quiet-hours window in 24-hour HH:MM form. Empty = disabled.
+QUIET_HOURS_START =
+QUIET_HOURS_END =
+
+# Narrow opt-in developer error observer. The switch remains off by default;
+# this conservative exact-process preset covers common terminal/developer apps.
+ENABLE_TERMINAL_SENTINEL = no
+TERMINAL_SENTINEL_APPS = WindowsTerminal.exe, powershell.exe, pwsh.exe, cmd.exe, Code.exe, VSCodium.exe, devenv.exe, pycharm64.exe, idea64.exe, webstorm64.exe, rider64.exe, clion64.exe, goland64.exe, rustrover64.exe, studio64.exe, eclipse.exe, sublime_text.exe, notepad++.exe, wezterm-gui.exe, alacritty.exe, kitty.exe, mintty.exe, Tabby.exe, ConEmu.exe, ConEmu64.exe
+TERMINAL_SENTINEL_TITLE_PATTERNS =
+TERMINAL_SENTINEL_COOLDOWN_SEC = 120
+
+# Real capability/status panel; opening it performs no paid provider request.
+ENABLE_SENSES_PANEL = yes
 
 
 # ── Emotion engine (v5.0.0) ──────────────────────────────────────────────────
@@ -611,6 +650,7 @@ _BOOL_KEYS = frozenset({
     "ENABLE_STREAMING", "ENABLE_AMBIENT_POLLS",
     "ENABLE_DATETIME_CONTEXT", "DATETIME_INCLUDE_SECONDS", "DATETIME_INCLUDE_TIMEZONE",
     "ENABLE_COMMAND_EXECUTION", "ENABLE_WINDOW_CONTROL", "ENABLE_COMMAND_CONFIRMATIONS",
+    "ENABLE_UNICODE_TYPING", "UNICODE_TYPING_RESTORE_CLIPBOARD",
     "FORCE_CLOSE_AUTO_ALLOW", "ENABLE_ATTENTION_SNAP", "ENABLE_SCREEN_READER",
     "OCR_FOCUSED_WINDOW_ONLY", "OCR_CHANGE_DETECTION",
     "OCR_REDACT_SENSITIVE_TEXT", "INCLUDE_WINDOW_TITLE_IN_CONTEXT", "WINDOW_TOPMOST",
@@ -622,6 +662,8 @@ _BOOL_KEYS = frozenset({
     "ENABLE_GLITCH_EFFECTS", "GLITCH_MOOD_AUTO", "GLITCH_FULLSCREEN",
     "ENABLE_COMPANION_STATS_CONTEXT",
     "ENABLE_CIRCADIAN_RHYTHM", "ENABLE_DREAMS", "ENABLE_TASKS",
+    "ENABLE_PRESENCE_ETIQUETTE", "PRESENCE_FULLSCREEN_SILENT",
+    "ENABLE_TERMINAL_SENTINEL", "ENABLE_SENSES_PANEL",
     "ENABLE_EMOTION_ENGINE", "ENABLE_AUTOSTART_CONTROL", "ENABLE_THEME_CONTROL",
     "ENABLE_STATUS_PROVIDERS", "ENABLE_TRAY", "TRAY_BACKGROUND_CLOSE",
     "ENABLE_CRT_CLOSE_ANIMATION", "REDUCED_MOTION", "ENABLE_MOOD_GLOW",
@@ -652,6 +694,9 @@ _INT_KEYS = frozenset({
     "UNLIMITED_OCR_TIMEOUT_SECONDS", "DEEP_OCR_MAX_OUTPUT_CHARS",
     "OCR_PATTERN_CONFIRM_SCANS", "OCR_LOW_CONFIDENCE_CONFIRM_SCANS",
     "OCR_PATTERN_CLEAR_SCANS",
+    "UNICODE_TYPING_DELAY_MS", "UNICODE_TYPING_PREVIEW_THRESHOLD",
+    "PRESENCE_DISMISS_COOLDOWN_SEC", "PRESENCE_RAPID_TYPING_COOLDOWN_SEC",
+    "TERMINAL_SENTINEL_COOLDOWN_SEC",
 })
 
 _FLOAT_KEYS = frozenset({
@@ -666,6 +711,7 @@ _FLOAT_KEYS = frozenset({
 
 _VOICE_OUTPUT_MODES = frozenset({"bleeps_only", "tts_only", "both"})
 _VOICE_TTS_ENGINES = frozenset({"pyttsx3", "edge_tts", "kokoro"})
+_UNICODE_TYPING_MODES = frozenset({"auto", "unicode", "paste", "preview", "paced"})
 _GLITCH_STYLES = frozenset({
     "scanlines", "static", "rgb_split", "flicker", "bsod", "matrix", "tear",
 })
@@ -779,6 +825,8 @@ def validate_config_value(
         return True
     if normalized == "OCR_PREPROCESSING":
         return raw.strip().lower() in {"basic", "auto"}
+    if normalized == "UNICODE_TYPING_MODE":
+        return raw.strip().lower() in _UNICODE_TYPING_MODES
     # Strict persisted profiles may contain only settings with an explicit
     # typed or enum validator. General config parsing remains permissive.
     return not enforce_range
@@ -1133,6 +1181,27 @@ class AppSettings:
         return self.bool("ENABLE_COMMAND_CONFIRMATIONS", True)
 
     @property
+    def enable_unicode_typing(self) -> bool:
+        return self.bool("ENABLE_UNICODE_TYPING", True)
+
+    @property
+    def unicode_typing_mode(self) -> str:
+        value = self.get("UNICODE_TYPING_MODE", "auto").strip().lower()
+        return value if value in _UNICODE_TYPING_MODES else "auto"
+
+    @property
+    def unicode_typing_delay_ms(self) -> int:
+        return self.int("UNICODE_TYPING_DELAY_MS", 20, 0, 500)
+
+    @property
+    def unicode_typing_preview_threshold(self) -> int:
+        return self.int("UNICODE_TYPING_PREVIEW_THRESHOLD", 300, 40, 50_000)
+
+    @property
+    def unicode_typing_restore_clipboard(self) -> bool:
+        return self.bool("UNICODE_TYPING_RESTORE_CLIPBOARD", True)
+
+    @property
     def force_close_auto_allow(self) -> bool:
         return self.bool("FORCE_CLOSE_AUTO_ALLOW", True)
 
@@ -1243,6 +1312,50 @@ class AppSettings:
     @property
     def tasks_max_entries(self) -> int:
         return self.int("TASKS_MAX_ENTRIES", 100, 10, 1000)
+
+    @property
+    def enable_presence_etiquette(self) -> bool:
+        return self.bool("ENABLE_PRESENCE_ETIQUETTE", True)
+
+    @property
+    def presence_fullscreen_silent(self) -> bool:
+        return self.bool("PRESENCE_FULLSCREEN_SILENT", True)
+
+    @property
+    def presence_dismiss_cooldown_sec(self) -> int:
+        return self.int("PRESENCE_DISMISS_COOLDOWN_SEC", 900, 10, 86_400)
+
+    @property
+    def presence_rapid_typing_cooldown_sec(self) -> int:
+        return self.int("PRESENCE_RAPID_TYPING_COOLDOWN_SEC", 30, 1, 3_600)
+
+    @property
+    def quiet_hours_start(self) -> str:
+        return self.get("QUIET_HOURS_START", "").strip()[:5]
+
+    @property
+    def quiet_hours_end(self) -> str:
+        return self.get("QUIET_HOURS_END", "").strip()[:5]
+
+    @property
+    def enable_terminal_sentinel(self) -> bool:
+        return self.bool("ENABLE_TERMINAL_SENTINEL", False)
+
+    @property
+    def terminal_sentinel_apps(self) -> str:
+        return self.get("TERMINAL_SENTINEL_APPS", "")[:2000]
+
+    @property
+    def terminal_sentinel_title_patterns(self) -> str:
+        return self.get("TERMINAL_SENTINEL_TITLE_PATTERNS", "")[:4000]
+
+    @property
+    def terminal_sentinel_cooldown_sec(self) -> int:
+        return self.int("TERMINAL_SENTINEL_COOLDOWN_SEC", 120, 10, 86_400)
+
+    @property
+    def enable_senses_panel(self) -> bool:
+        return self.bool("ENABLE_SENSES_PANEL", True)
 
     # ── v5.0.0 — Emotion engine ───────────────────────────────────────────────
     @property
