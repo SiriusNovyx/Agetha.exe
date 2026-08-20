@@ -262,6 +262,17 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
 | **OpenRouter** | `ENABLE_OPENROUTER = yes` | `OPENROUTER_API_KEY` |
 | **Ollama** | `USE_LOCAL_AI = yes` | *(none — local)* |
 
+- **Groq model policy** — `openai/gpt-oss-120b` is the default. Existing
+  configuration that names the retired `llama-3.3-70b-versatile` model is
+  normalized to the supported default at runtime. GPT-OSS command-envelope
+  requests use JSON Object Mode and map fast/normal/deep profiles to
+  low/medium/high reasoning effort. Permanent model or request failures skip
+  unchanged key retries and enter the configured provider fallback path.
+- **Response recovery** — intentional `idle`, malformed JSON, schema failures,
+  and unsupported commands remain distinct local outcomes. An explicit direct
+  user request can make one format-repair call; ambient, OCR-only,
+  web/document, terminal-sentinel, and tool-result traffic never starts a
+  repair cycle. Only the final response is eligible for history or memory.
 - **Token %** — when using Groq, the input placeholder shows `key 1/3 • 87% tokens left` (estimated daily budget per key); status bar shows the same after each reply
 - **Fast Mode 2.0** — `FASTER_MODE = yes` activates a reversible performance
   profile plus request-aware prompt budgets. Original managed values are kept in
@@ -562,7 +573,7 @@ All **non-secret** settings live in `config.txt` and are loaded by `app_config.p
 | `ENABLE_OPENROUTER` | `no` | Use OpenRouter instead of Groq |
 | `OPENROUTER_MODEL` | see `config.txt` | OpenRouter model slug |
 | `FASTER_MODE` | `no` | Reversible AI/context/polling/OCR performance profile; restores prior managed values when disabled |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model name |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model name |
 | `LOCAL_AI_MODEL` | *(empty)* | Ollama model (`ollama list`) |
 | `LOCAL_AI_TIMEOUT` | `30` | Ollama request timeout (seconds) |
 

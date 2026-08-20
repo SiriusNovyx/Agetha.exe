@@ -149,8 +149,8 @@ FASTER_MODE = no
 # Copy .env.example → .env and set GROQ_API_KEY_1=… (up to _10 for rotation).
 # Do not put GROQ_API_KEY* lines in this file — they are ignored.
 
-# GROQ_MODEL — model name from Groq console (default: llama-3.3-70b-versatile).
-GROQ_MODEL = llama-3.3-70b-versatile
+# GROQ_MODEL — model name from Groq console (default: openai/gpt-oss-120b).
+GROQ_MODEL = openai/gpt-oss-120b
 
 
 # ── Local AI (Ollama) ─────────────────────────────────────────────────────────

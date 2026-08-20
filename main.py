@@ -4665,6 +4665,7 @@ class CompanionApp:
             "screen_context": ai_screen_context,
             "user_message": provider_message,
             "request_profile": request_profile,
+            "request_origin": origin,
         }
         if not is_user or origin == "terminal_sentinel":
             if not _ambient_generation_is_current():
@@ -5448,10 +5449,11 @@ class CompanionApp:
                     self._screen.redact_for_external_context if self._screen else None
                 ),
             ).text
+            normalized_origin = normalize_request_origin(origin, default="ambient")
             provider_message = (
                 user_message
                 if preserve_user_message
-                else render_request_message(normalize_request_origin(origin), user_message)
+                else render_request_message(normalized_origin, user_message)
             )
             if _SETTINGS.enable_streaming:
                 result = self._ai.query_streaming(
@@ -5462,6 +5464,7 @@ class CompanionApp:
                     suppress_search_memory=suppress_search_memory,
                     on_token=_on_token,
                     request_profile=request_profile,
+                    request_origin=normalized_origin,
                 )
             else:
                 result = self._ai.query(
@@ -5471,6 +5474,7 @@ class CompanionApp:
                     memory_search_context=memory_search_context,
                     suppress_search_memory=suppress_search_memory,
                     request_profile=request_profile,
+                    request_origin=normalized_origin,
                 )
             if result_is_current is not None and not result_is_current():
                 return None

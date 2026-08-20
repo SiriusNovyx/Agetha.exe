@@ -21,6 +21,17 @@ from agetha.app_config import get_settings, parse_config_file, DEFAULT_CONFIG, e
 from agetha.platform.window_control import is_self_window_target, is_self_process_target
 from agetha.core.time_context import build_datetime_context, local_now
 from agetha.core.external_context import prepare_external_context
+from agetha.core.request_context import RequestOrigin, normalize_request_origin
+from agetha.core.provider_protocol import (
+    PROVIDER_RESPONSE_STATUS_KEY,
+    ProviderErrorKind,
+    ProviderHTTPError,
+    ProviderResponseStatus,
+    classify_provider_error,
+    groq_request_options,
+    normalize_groq_model,
+    provider_response_failed,
+)
 
 try:
     from groq import Groq
@@ -242,7 +253,7 @@ class _OpenRouterClient:
                         detail = f"HTTP Error {code}: {api_msg}"
                 except Exception:
                     pass
-            raise RuntimeError(detail) from exc
+            raise ProviderHTTPError(code or 0, detail) from exc
 
         if stream:
             def _gen():
@@ -285,7 +296,6 @@ class _OpenRouterClient:
 
 
 CONFIG_FILE_NAME = "config.txt"
-GROQ_MODELS = ["llama-3.3-70b-versatile"]
 TIMEOUT = 30
 
 VALID_MOODS = {
@@ -1058,12 +1068,7 @@ class AIEngine:
                     self._groq_keys.append(key)
 
         self._current_groq_key_index = 0
-        self._current_groq_model_index = 0
-        configured_model = self._config.get("GROQ_MODEL", "").strip()
-        if configured_model:
-            if configured_model not in GROQ_MODELS:
-                GROQ_MODELS.insert(0, configured_model)
-            self._current_groq_model_index = GROQ_MODELS.index(configured_model)
+        self._groq_model = normalize_groq_model(self._config.get("GROQ_MODEL", ""))
 
         self._groq_exhausted = False
         self._groq_token_limits = {i: 100000 for i in range(len(self._groq_keys))}
@@ -1326,7 +1331,7 @@ class AIEngine:
             if not self._provider_call_allowed(provider_authorization):
                 return False
             self._client = Groq(api_key=self._groq_keys[self._current_groq_key_index])
-            logger.info(f"Using Groq/{GROQ_MODELS[self._current_groq_model_index]} (Key {self._current_groq_key_index+1}/{len(self._groq_keys)})")
+            logger.info(f"Using Groq/{self._groq_model} (Key {self._current_groq_key_index+1}/{len(self._groq_keys)})")
         else:
             self._client = None
         return True
@@ -1337,24 +1342,11 @@ class AIEngine:
     ) -> bool:
         if not self._provider_call_allowed(provider_authorization):
             return False
-        nxt_model = self._current_groq_model_index + 1
-        if nxt_model < len(GROQ_MODELS):
-            self._current_groq_model_index = nxt_model
-            return self._init_client(provider_authorization)
         nxt_key = self._current_groq_key_index + 1
         if nxt_key < len(self._groq_keys):
             self._current_groq_key_index = nxt_key
-            self._current_groq_model_index = 0
             return self._init_client(provider_authorization)
         return False
-
-    @staticmethod
-    def _is_rate_limit_error(exc: BaseException) -> bool:
-        """True for HTTP 429 / rate-limit messages (urllib HTTPError is an OSError)."""
-        if getattr(exc, "code", None) == 429:
-            return True
-        errtxt = str(exc).lower()
-        return "429" in errtxt or "rate limit" in errtxt or "too many" in errtxt or "rate_limit" in errtxt
 
     def _openrouter_rate_limit_wait(self, attempt: int) -> float:
         """Exponential backoff seconds for OpenRouter 429 (capped)."""
@@ -1365,7 +1357,7 @@ class AIEngine:
         Windows Yes/No dialog when both Groq and OpenRouter are enabled.
         Returns 'groq' (Yes / default) or 'openrouter' (No).
         """
-        groq_model = self._config.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+        groq_model = self._groq_model
         paid_note = (
             f"\n       (not free — may be billed)"
             if not self._openrouter_is_free
@@ -2011,7 +2003,7 @@ class AIEngine:
             return f"LocalAI/{self._config.get('LOCAL_AI_MODEL', '?')}"
         if self._use_openrouter:
             return f"OpenRouter/{self._openrouter_model}"
-        return f"Groq/{GROQ_MODELS[self._current_groq_model_index]}"
+        return f"Groq/{self._groq_model}"
 
     def get_token_status(self) -> dict:
         if self._use_local_ai:
@@ -2412,6 +2404,66 @@ class AIEngine:
         )
         return system, user_turn, messages
 
+    @staticmethod
+    def _format_repair_instruction(status: str) -> str:
+        failure_class = str(status or ProviderResponseStatus.SCHEMA_FAILURE.value)
+        return (
+            "\n\nFORMAT REPAIR (local validation only): The previous provider response "
+            f"failed local envelope validation ({failure_class}). Return exactly one "
+            "valid JSON object matching the existing command envelope. Preserve the "
+            "user's intent, do not add authority, and do not include Markdown."
+        )
+
+    def _final_parse_failure(
+        self,
+        result: dict,
+        profile: RequestProfile,
+        user_turn: str,
+        *,
+        direct_user_request: bool,
+    ) -> dict:
+        status = str(
+            result.get(PROVIDER_RESPONSE_STATUS_KEY)
+            or ProviderResponseStatus.SCHEMA_FAILURE.value
+        )
+        if not provider_response_failed({PROVIDER_RESPONSE_STATUS_KEY: status}):
+            status = ProviderResponseStatus.SCHEMA_FAILURE.value
+        final = {
+            "command": "idle",
+            "mood": "neutral",
+            "segments": [],
+            "shutdown": False,
+            PROVIDER_RESPONSE_STATUS_KEY: status,
+        }
+        if direct_user_request:
+            final.update(
+                command="speak",
+                segments=[{
+                    "text": "I couldn't interpret that response. Please try again.",
+                    "pause": 0.0,
+                }],
+            )
+            serialized = json.dumps(
+                final,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            self._record_profile_response(profile, user_turn, serialized, final)
+        return final
+
+    @staticmethod
+    def _publish_stream_update(on_token, raw: str) -> None:
+        """Publish validated output without making UI callbacks provider failures."""
+        if not on_token:
+            return
+        try:
+            on_token(raw)
+        except Exception as exc:
+            logger.warning(
+                "Streaming callback failed: %s",
+                type(exc).__name__,
+            )
+
     # ── Main query entry point ────────────────────────────────────────────────
 
     def query_streaming(
@@ -2425,6 +2477,7 @@ class AIEngine:
         web_rag_context: str = "",
         suppress_web_rag: bool = False,
         request_profile: str | RequestProfile | None = None,
+        request_origin: RequestOrigin | None = None,
         provider_authorization: Callable[[], bool] | None = None,
     ) -> dict:
         if not self._ensure_provider_initialized(provider_authorization):
@@ -2435,7 +2488,11 @@ class AIEngine:
             return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
         self._update_user_activity(user_message)
-        is_user = bool(user_message)
+        normalized_origin = normalize_request_origin(request_origin, default="ambient")
+        direct_user_request = (
+            normalized_origin == "user" and bool(str(user_message or "").strip())
+        )
+        is_user = direct_user_request
         web_rag_context, suppress_web_rag = self._resolve_web_rag_kwargs(
             web_rag_context, suppress_web_rag,
         )
@@ -2463,11 +2520,12 @@ class AIEngine:
         _IDLE_FALLBACKS = [[{"text": "Mm.", "pause": 0.0}]]
 
         retries = 0
-        total_retries = 0
         or_rate_retries = 0
         MAX_RETRIES_PER_KEY = 3
-        MAX_TOTAL_RETRIES = 30
         MAX_OR_RATE_RETRIES = 5
+        MAX_TRANSIENT_RETRIES = 2
+        repair_attempted = False
+        repair_failure_result: dict | None = None
 
         while True:
             try:
@@ -2478,7 +2536,12 @@ class AIEngine:
                 elif self._use_openrouter:
                     current_model = self._openrouter_model
                 else:
-                    current_model = GROQ_MODELS[self._current_groq_model_index]
+                    current_model = self._groq_model
+                request_options = (
+                    {}
+                    if self._use_local_ai or self._use_openrouter
+                    else groq_request_options(current_model, profile.name)
+                )
                 if not self._provider_call_allowed(provider_authorization):
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                 stream = self._client.chat.completions.create(
@@ -2488,6 +2551,7 @@ class AIEngine:
                     max_tokens=output_limit,
                     top_p=self._app_settings.ai_top_p,
                     timeout=TIMEOUT, stream=True,
+                    **request_options,
                 )
                 for chunk in stream:
                     if not self._provider_call_allowed(provider_authorization):
@@ -2495,8 +2559,8 @@ class AIEngine:
                     delta = chunk.choices[0].delta.content or ""
                     if delta:
                         raw += delta
-                        if on_token:
-                            on_token(raw)
+                        if not direct_user_request:
+                            self._publish_stream_update(on_token, raw)
                     if hasattr(chunk, "usage") and chunk.usage:
                         usage_obj = chunk.usage
 
@@ -2510,6 +2574,20 @@ class AIEngine:
                     suppress_search_memory=suppress_search_memory,
                     suppress_web_rag=suppress_web_rag,
                 )
+                if provider_response_failed(result):
+                    if direct_user_request and not repair_attempted:
+                        repair_attempted = True
+                        repair_failure_result = result
+                        system += self._format_repair_instruction(
+                            str(result.get(PROVIDER_RESPONSE_STATUS_KEY, ""))
+                        )
+                        continue
+                    return self._final_parse_failure(
+                        result,
+                        profile,
+                        user_turn,
+                        direct_user_request=direct_user_request,
+                    )
                 result = self._enforce_profile_response_safety(
                     result, profile, user_message,
                 )
@@ -2524,21 +2602,26 @@ class AIEngine:
                     result.update(command="speak", mood="neutral", segments=random.choice(_IDLE_FALLBACKS))
 
                 self._record_profile_response(profile, user_turn, raw, result)
+                if direct_user_request:
+                    self._publish_stream_update(on_token, raw)
                 return result
 
             except Exception as e:
                 if not self._provider_call_allowed(provider_authorization):
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
-                total_retries += 1
-                if total_retries >= MAX_TOTAL_RETRIES:
-                    logger.error(f"{self._provider_label()} exhausted max total retries ({MAX_TOTAL_RETRIES}).")
-                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                if repair_attempted and repair_failure_result is not None:
+                    return self._final_parse_failure(
+                        repair_failure_result,
+                        profile,
+                        user_turn,
+                        direct_user_request=direct_user_request,
+                    )
                 provider = self._provider_label()
                 logger.warning(f"{provider} error: {e}")
-                errtxt = str(e).lower()
+                error_kind = classify_provider_error(e)
 
                 # Rate-limit: OpenRouter backoff retry; Groq rotates keys then OpenRouter failover
-                if self._is_rate_limit_error(e):
+                if error_kind is ProviderErrorKind.RATE_LIMIT:
                     retries = 0
                     if self._use_openrouter:
                         or_rate_retries += 1
@@ -2560,19 +2643,31 @@ class AIEngine:
                         continue
                     return exhausted
 
-                # HTTPError is an OSError — do not treat 429 as a connection failure
-                if (
-                    not self._use_local_ai
-                    and not self._is_rate_limit_error(e)
-                    and (
-                        isinstance(e, (OSError, ConnectionError, TimeoutError))
-                        or "connection" in errtxt
-                        or "network" in errtxt
-                        or "unreachable" in errtxt
+                if error_kind in {
+                    ProviderErrorKind.PERMANENT_MODEL,
+                    ProviderErrorKind.PERMANENT_REQUEST,
+                }:
+                    if self._use_openrouter or not self._enable_groq:
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                    exhausted = self._groq_exhausted_or_failover(
+                        error_kind.value.replace("_", " "), provider_authorization,
                     )
-                ):
-                    self._show_error_gif = True
-                    return {"command": "show_error_gif", "path": getattr(self, "_error_gif_path", ""), "segments": [], "shutdown": False}
+                    if exhausted is None:
+                        continue
+                    return exhausted
+
+                if error_kind is ProviderErrorKind.AUTHENTICATION:
+                    if self._use_openrouter or not self._enable_groq:
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                    if self._rotate_key(provider_authorization):
+                        continue
+                    exhausted = self._groq_exhausted_or_failover(
+                        "authentication failure", provider_authorization,
+                    )
+                    if exhausted is None:
+                        continue
+                    return exhausted
+
                 if self._use_local_ai:
                     logger.warning(f"Local AI streaming failed ({e}), retrying non-streaming…")
                     try:
@@ -2596,6 +2691,20 @@ class AIEngine:
                             suppress_search_memory=suppress_search_memory,
                             suppress_web_rag=suppress_web_rag,
                         )
+                        if provider_response_failed(result):
+                            if direct_user_request and not repair_attempted:
+                                repair_attempted = True
+                                repair_failure_result = result
+                                system += self._format_repair_instruction(
+                                    str(result.get(PROVIDER_RESPONSE_STATUS_KEY, ""))
+                                )
+                                continue
+                            return self._final_parse_failure(
+                                result,
+                                profile,
+                                user_turn,
+                                direct_user_request=direct_user_request,
+                            )
                         result = self._enforce_profile_response_safety(
                             result, profile, user_message,
                         )
@@ -2607,40 +2716,38 @@ class AIEngine:
                         ):
                             result.update(command="speak", mood="neutral", segments=random.choice(_IDLE_FALLBACKS))
                         self._record_profile_response(profile, user_turn, raw, result)
+                        if direct_user_request:
+                            self._publish_stream_update(on_token, raw)
                         return result
                     except Exception as e2:
                         logger.warning(f"Local AI non-streaming fallback also failed: {e2}")
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
                 if self._use_openrouter or not self._enable_groq:
+                    retries += 1
+                    if retries <= MAX_TRANSIENT_RETRIES:
+                        continue
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
-                # Non-rate-limit error: increment retries (Groq only)
+                # Transient Groq failures retry the same route before key failover.
                 retries += 1
-                if retries >= MAX_RETRIES_PER_KEY:
-                    retries = 0
-                    if not self._rotate_key(provider_authorization):
-                        exhausted = self._groq_exhausted_or_failover(
-                            "max retries", provider_authorization,
-                        )
-                        if exhausted is None:
-                            continue
-                        return exhausted
-                    # Key rotated, retry with new key
+                if retries < MAX_RETRIES_PER_KEY:
                     continue
-
+                retries = 0
                 if not self._rotate_key(provider_authorization):
                     exhausted = self._groq_exhausted_or_failover(
-                        "key/model rotation exhausted", provider_authorization,
+                        "max transient retries", provider_authorization,
                     )
                     if exhausted is None:
                         continue
                     return exhausted
+                continue
 
     def query(self, screen_context: str = "", user_message: str = "", doc_content: str = "",
               memory_search_context: str = "", suppress_search_memory: bool = False,
               web_rag_context: str = "", suppress_web_rag: bool = False,
               request_profile: str | RequestProfile | None = None,
+              request_origin: RequestOrigin | None = None,
               provider_authorization: Callable[[], bool] | None = None) -> dict:
         if not self._ensure_provider_initialized(provider_authorization):
             return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
@@ -2650,7 +2757,11 @@ class AIEngine:
             return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
         self._update_user_activity(user_message)
-        is_user = bool(user_message)
+        normalized_origin = normalize_request_origin(request_origin, default="ambient")
+        direct_user_request = (
+            normalized_origin == "user" and bool(str(user_message or "").strip())
+        )
+        is_user = direct_user_request
         web_rag_context, suppress_web_rag = self._resolve_web_rag_kwargs(
             web_rag_context, suppress_web_rag,
         )
@@ -2683,11 +2794,12 @@ class AIEngine:
         ]
 
         retries = 0
-        total_retries = 0
         or_rate_retries = 0
         MAX_RETRIES_PER_KEY = 3
-        MAX_TOTAL_RETRIES = 30
         MAX_OR_RATE_RETRIES = 5
+        MAX_TRANSIENT_RETRIES = 2
+        repair_attempted = False
+        repair_failure_result: dict | None = None
 
         while True:
             try:
@@ -2695,9 +2807,14 @@ class AIEngine:
                     self._config.get("LOCAL_AI_MODEL", "").strip()
                     if self._use_local_ai
                     else self._openrouter_model if self._use_openrouter
-                    else GROQ_MODELS[self._current_groq_model_index]
+                    else self._groq_model
                 )
                 timeout = int(self._config.get("LOCAL_AI_TIMEOUT", TIMEOUT)) if self._use_local_ai else TIMEOUT
+                request_options = (
+                    {}
+                    if self._use_local_ai or self._use_openrouter
+                    else groq_request_options(current_model, profile.name)
+                )
                 if not self._provider_call_allowed(provider_authorization):
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                 resp = self._client.chat.completions.create(
@@ -2707,6 +2824,7 @@ class AIEngine:
                     max_tokens=output_limit,
                     top_p=self._app_settings.ai_top_p,
                     timeout=timeout,
+                    **request_options,
                 )
                 if not self._provider_call_allowed(provider_authorization):
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
@@ -2717,6 +2835,20 @@ class AIEngine:
                     suppress_search_memory=suppress_search_memory,
                     suppress_web_rag=suppress_web_rag,
                 )
+                if provider_response_failed(result):
+                    if direct_user_request and not repair_attempted:
+                        repair_attempted = True
+                        repair_failure_result = result
+                        system += self._format_repair_instruction(
+                            str(result.get(PROVIDER_RESPONSE_STATUS_KEY, ""))
+                        )
+                        continue
+                    return self._final_parse_failure(
+                        result,
+                        profile,
+                        user_turn,
+                        direct_user_request=direct_user_request,
+                    )
                 result = self._enforce_profile_response_safety(
                     result, profile, user_message,
                 )
@@ -2732,16 +2864,19 @@ class AIEngine:
             except Exception as e:
                 if not self._provider_call_allowed(provider_authorization):
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
-                total_retries += 1
-                if total_retries >= MAX_TOTAL_RETRIES:
-                    logger.error(f"{self._provider_label()} exhausted max total retries ({MAX_TOTAL_RETRIES}).")
-                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                if repair_attempted and repair_failure_result is not None:
+                    return self._final_parse_failure(
+                        repair_failure_result,
+                        profile,
+                        user_turn,
+                        direct_user_request=direct_user_request,
+                    )
                 provider = self._provider_label()
                 logger.warning(f"{provider} error: {e}")
-                errtxt = str(e).lower()
+                error_kind = classify_provider_error(e)
                 if self._use_local_ai:
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
-                if self._is_rate_limit_error(e):
+                if error_kind is ProviderErrorKind.RATE_LIMIT:
                     retries = 0
                     if self._use_openrouter:
                         or_rate_retries += 1
@@ -2762,37 +2897,46 @@ class AIEngine:
                     if exhausted is None:
                         continue
                     return exhausted
-                if self._use_openrouter:
-                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
-                if (
-                    not self._is_rate_limit_error(e)
-                    and (
-                        isinstance(e, (OSError, ConnectionError, TimeoutError))
-                        or "connection" in errtxt
-                        or "network" in errtxt
-                        or "unreachable" in errtxt
-                    )
-                ):
-                    self._show_error_gif = True
-                    return {"command": "show_error_gif", "path": getattr(self, "_error_gif_path", ""), "segments": [], "shutdown": False}
-                retries += 1
-                if retries >= MAX_RETRIES_PER_KEY:
-                    retries = 0
-                    if not self._rotate_key(provider_authorization):
-                        exhausted = self._groq_exhausted_or_failover(
-                            "max retries", provider_authorization,
-                        )
-                        if exhausted is None:
-                            continue
-                        return exhausted
-                    continue
-                if not self._rotate_key(provider_authorization):
+                if error_kind in {
+                    ProviderErrorKind.PERMANENT_MODEL,
+                    ProviderErrorKind.PERMANENT_REQUEST,
+                }:
+                    if self._use_openrouter or not self._enable_groq:
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     exhausted = self._groq_exhausted_or_failover(
-                        "key/model rotation exhausted", provider_authorization,
+                        error_kind.value.replace("_", " "), provider_authorization,
                     )
                     if exhausted is None:
                         continue
                     return exhausted
+                if error_kind is ProviderErrorKind.AUTHENTICATION:
+                    if self._use_openrouter or not self._enable_groq:
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                    if self._rotate_key(provider_authorization):
+                        continue
+                    exhausted = self._groq_exhausted_or_failover(
+                        "authentication failure", provider_authorization,
+                    )
+                    if exhausted is None:
+                        continue
+                    return exhausted
+                if self._use_openrouter:
+                    retries += 1
+                    if retries <= MAX_TRANSIENT_RETRIES:
+                        continue
+                    return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                retries += 1
+                if retries < MAX_RETRIES_PER_KEY:
+                    continue
+                retries = 0
+                if not self._rotate_key(provider_authorization):
+                    exhausted = self._groq_exhausted_or_failover(
+                        "max transient retries", provider_authorization,
+                    )
+                    if exhausted is None:
+                        continue
+                    return exhausted
+                continue
 
     def request_structured(
         self,
@@ -2828,6 +2972,7 @@ class AIEngine:
         client = None
         selected_model = str(model or "").strip()[:300]
         timeout = TIMEOUT
+        provider_is_groq = False
         if selected in {"inherit", "primary"}:
             client = self._client
             if self._use_local_ai:
@@ -2836,7 +2981,8 @@ class AIEngine:
             elif self._use_openrouter:
                 selected_model = selected_model or self._openrouter_model
             else:
-                selected_model = selected_model or GROQ_MODELS[self._current_groq_model_index]
+                selected_model = selected_model or self._groq_model
+                provider_is_groq = True
         elif selected == "ollama":
             selected_model = selected_model or self._config.get("LOCAL_AI_MODEL", "").strip()
             if not selected_model:
@@ -2863,11 +3009,17 @@ class AIEngine:
         else:
             if not GROQ_OK or not self._groq_keys:
                 raise RuntimeError("Groq is not configured")
-            selected_model = selected_model or GROQ_MODELS[self._current_groq_model_index]
+            selected_model = selected_model or self._groq_model
             client = Groq(api_key=self._groq_keys[self._current_groq_key_index])
+            provider_is_groq = True
 
         if client is None or not selected_model:
             raise RuntimeError("Structured-request provider is unavailable")
+        request_options = (
+            groq_request_options(selected_model, "normal")
+            if provider_is_groq
+            else {}
+        )
         response = client.chat.completions.create(
             model=selected_model,
             messages=[
@@ -2879,6 +3031,7 @@ class AIEngine:
             top_p=0.9,
             timeout=timeout,
             stream=False,
+            **request_options,
         )
         if cancel_event is not None and cancel_event.is_set():
             return ""
@@ -2907,49 +3060,58 @@ class AIEngine:
             m = re.search(fr'"{re.escape(field)}"\s*:\s*"([^"]*)', text)
             return m.group(1) if m else None
 
-        def _strs(field, text):
-            b = re.search(fr'"{re.escape(field)}"\s*:\s*\[(.*)', text, re.DOTALL)
-            return re.findall(r'"([^"]*)"', b.group(1)) if b else []
+        def _failure(status: ProviderResponseStatus) -> dict:
+            return {
+                "command": "idle",
+                "mood": "neutral",
+                "segments": [],
+                "shutdown": False,
+                PROVIDER_RESPONSE_STATUS_KEY: status.value,
+            }
 
-        cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
-        cleaned = _extract_json(cleaned)
+        raw_text = str(raw or "")
+        stripped = raw_text.strip()
+        cleaned = re.sub(r"```(?:json)?\s*", "", stripped).strip().rstrip("`").strip()
+        if not cleaned.startswith(("{", "[")):
+            cleaned = _extract_json(cleaned)
+        parse_status = (
+            ProviderResponseStatus.REPAIRED
+            if cleaned != stripped
+            else ProviderResponseStatus.OK
+        )
 
         try:
             obj = json.loads(cleaned)
         except json.JSONDecodeError as e:
             cmd = _str("command", cleaned)
-            if not cmd:
+            if cmd not in {"idle", "speak"}:
                 logger.warning("JSON parse error from provider: %s", type(e).__name__)
-                return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                return _failure(ProviderResponseStatus.MALFORMED_JSON)
             obj = {"command": cmd}
-            for k, fn in [("mood",None),("app",None),("url",None),("search",None),("engine",None),
-                          ("path",None),("file_name",None),("file_path",None),("content",None),
-                          ("new_name",None),("text",None),("sound",None),("save_path",None),
-                          ("title",None),("message",None),("cmd",None),("process_name",None),
-                          ("dialog_type",None),("emotion",None),("mode",None)]:
-                v = _str(k, cleaned)
-                if v: obj[k] = v
-            popup_items = _strs("popup", cleaned)
-            if popup_items: obj["popup"] = popup_items
-            texts = re.findall(r'"text"\s*:\s*"([^"]*)', cleaned)
-            obj["segments"] = [{"text": t, "pause": 0.0} for t in texts] if texts else []
+            if cmd == "speak":
+                texts = re.findall(r'"text"\s*:\s*"([^"]*)', cleaned)
+                if not any(text.strip() for text in texts):
+                    return _failure(ProviderResponseStatus.MALFORMED_JSON)
+                obj["segments"] = [
+                    {"text": text, "pause": 0.0}
+                    for text in texts
+                    if text.strip()
+                ]
+            parse_status = ProviderResponseStatus.REPAIRED
 
         if not isinstance(obj, dict):
             logger.warning("Provider response JSON was not an object")
-            return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+            return _failure(ProviderResponseStatus.SCHEMA_FAILURE)
 
         if "command" not in obj:
-            rescued = (obj.get("response") or obj.get("text") or obj.get("message") or
-                       obj.get("content") or obj.get("reply") or
-                       next((v for v in obj.values() if isinstance(v, str) and len(v) > 2), None))
-            if rescued and len(str(rescued).split()) > 1:
-                chunks = [c.strip() for c in re.split(r'(?<=[.!?])\s+', str(rescued).strip()) if c.strip()][:3]
-                segs = [{"text": c, "pause": 0.3 if i < len(chunks)-1 else 0.0} for i, c in enumerate(chunks)]
-                return {"command": "speak", "mood": "neutral", "segments": segs, "shutdown": False}
-            return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+            return _failure(ProviderResponseStatus.SCHEMA_FAILURE)
 
-        command = obj.get("command", "idle")
-        if command not in VALID_COMMANDS: command = "idle"
+        raw_command = obj.get("command")
+        if not isinstance(raw_command, str) or not raw_command.strip():
+            return _failure(ProviderResponseStatus.SCHEMA_FAILURE)
+        command = raw_command.strip()
+        if command not in VALID_COMMANDS:
+            return _failure(ProviderResponseStatus.UNSUPPORTED_COMMAND)
 
         raw_mood = obj.get("mood", "neutral")
         mood = "neutral"
@@ -2964,8 +3126,11 @@ class AIEngine:
             for s in raw_segs:
                 try:
                     if isinstance(s, dict) and "text" in s:
+                        segment_text = str(s["text"])
+                        if not segment_text.strip():
+                            continue
                         pause = max(0.0, min(1.2, float(s.get("pause", 0.2))))
-                        segments.append({"text": str(s["text"]), "pause": pause})
+                        segments.append({"text": segment_text, "pause": pause})
                 except (ValueError, TypeError, KeyError) as exc:
                     logger.warning(f"Malformed segment skipped: {exc}")
                     segments.append({"text": str(s.get("text", "...") if isinstance(s, dict) else s), "pause": 0.0})
@@ -2973,7 +3138,13 @@ class AIEngine:
         raw_sd = obj.get("shutdown", False)
         shutdown = raw_sd if isinstance(raw_sd, bool) else str(raw_sd).lower() in ("true","yes","1")
 
-        result = {"command": command, "mood": mood, "segments": segments, "shutdown": shutdown}
+        result = {
+            "command": command,
+            "mood": mood,
+            "segments": segments,
+            "shutdown": shutdown,
+            PROVIDER_RESPONSE_STATUS_KEY: parse_status.value,
+        }
 
         # ── Command-specific field extraction ─────────────────────────────────
         _cmd_fields = {
@@ -2993,6 +3164,7 @@ class AIEngine:
             "show_dialog":           [("dialog_type","info"),("title","Agetha"),("message","")],
             "run_command":           [("cmd",""),("shell",True)],
             "read_document":         [("path","")],
+            "read_file":             [("path","")],
             "force_close":           [("app",""),("process",""),("name","")],
             "list_dir":              [("path","")],
             "list_directory":        [("path","")],
@@ -3076,10 +3248,119 @@ class AIEngine:
             result["memory_scope"] = scope
 
         if command == "create_file":
-            result["path"]      = obj.get("path","").strip()
-            result["file_name"] = obj.get("file_name","").strip()
-            result["file_path"] = (obj.get("file_path","") or obj.get("filePath","")).strip()
+            result["path"] = obj.get("path", "")
+            result["file_name"] = obj.get("file_name", "")
+            result["file_path"] = obj.get("file_path", "") or obj.get("filePath", "")
+            for field in ("path", "file_name", "file_path"):
+                value = result[field]
+                result[field] = value.strip() if isinstance(value, str) else value
             result["content"]   = str(obj.get("content",""))
+
+        required_text_fields = {
+            "open_file": ("path",),
+            "create_folder": ("path",),
+            "delete_file": ("path",),
+            "rename_file": ("path", "new_name"),
+            "set_clipboard": ("text",),
+            "copy_to_clipboard": ("text",),
+            "show_notification": ("message",),
+            "show_dialog": ("message",),
+            "run_command": ("cmd",),
+            "read_document": ("path",),
+            "read_file": ("path",),
+            "monitor_process": ("process_name",),
+            "computer_use": ("goal",),
+            "write_file": ("file_path",),
+            "target_window_move": ("target_app",),
+            "target_window_resize": ("target_app",),
+            "open_url": ("url",),
+            "set_wallpaper": ("path",),
+            "search_files": ("pattern",),
+            "open_folder": ("path",),
+            "target_window_close": ("target_app",),
+            "search_memory": ("query",),
+            "search_web": ("query",),
+            "fetch_webpage": ("url",),
+            "add_task": ("text",),
+            "complete_task": ("task",),
+            "set_reminder": ("reminder_text",),
+            "set_theme": ("mode",),
+        }
+        required_any_text_fields = {
+            "open_app": ("app", "app_name"),
+            "open_browser": ("url", "search"),
+            "force_close": ("app", "process", "name"),
+        }
+
+        def _nonempty_text(field: str) -> bool:
+            value = result.get(field)
+            return isinstance(value, str) and bool(value.strip())
+
+        required = required_text_fields.get(command, ())
+        alternatives = required_any_text_fields.get(command, ())
+        fields_valid = not (
+            any(not _nonempty_text(field) for field in required)
+            or (alternatives and not any(_nonempty_text(field) for field in alternatives))
+        )
+
+        if command == "create_file":
+            fields_valid = fields_valid and (
+                _nonempty_text("file_path")
+                or (_nonempty_text("path") and _nonempty_text("file_name"))
+            )
+
+        if command == "type_text":
+            raw_text = obj.get("text")
+            fields_valid = fields_valid and isinstance(raw_text, str) and bool(raw_text)
+
+        def _integer_field(field: str, *, required: bool, positive: bool = False) -> bool:
+            if field not in obj:
+                return not required
+            value = obj.get(field)
+            if isinstance(value, bool) or not isinstance(value, int):
+                return False
+            return value > 0 if positive else True
+
+        if command == "move_window":
+            has_direction = _nonempty_text("direction")
+            has_coordinates = (
+                _integer_field("x", required=True)
+                and _integer_field("y", required=True)
+            )
+            fields_valid = fields_valid and (has_direction or has_coordinates)
+        elif command == "target_window_move":
+            fields_valid = fields_valid and all(
+                _integer_field(field, required=True) for field in ("x", "y")
+            )
+        elif command == "target_window_resize":
+            fields_valid = fields_valid and all(
+                _integer_field(field, required=True) for field in ("x", "y")
+            ) and all(
+                _integer_field(field, required=True, positive=True)
+                for field in ("width", "height")
+            )
+
+        optional_integer_fields = {
+            "set_volume": (("level", False),),
+            "shutdown": (("delay", False),),
+            "restart": (("delay", False),),
+            "set_reminder": (("seconds", True),),
+            "view_memory": (("limit", True),),
+            "search_memory": (("limit", True),),
+            "search_web": (("limit", True),),
+            "view_dreams": (("limit", True),),
+            "view_emotions": (("limit", True),),
+            "glitch_overlay": (("duration_ms", False),),
+        }
+        for field, positive in optional_integer_fields.get(command, ()):
+            fields_valid = fields_valid and _integer_field(
+                field,
+                required=False,
+                positive=positive,
+            )
+
+        if not fields_valid:
+            return _failure(ProviderResponseStatus.SCHEMA_FAILURE)
 
         # ── ENABLE_COMMAND_EXECUTION gate ─────────────────────────────────────
         _GATED_COMMANDS = {
@@ -3113,11 +3394,15 @@ class AIEngine:
             raw_popup = obj.get("popup", [])
             lines = [str(p) for p in raw_popup if str(p).strip()][:4] if isinstance(raw_popup, list) else []
             if lines: result["popup"] = lines
-            else: result["command"] = "idle"
+            else:
+                result["command"] = "idle"
+                result[PROVIDER_RESPONSE_STATUS_KEY] = ProviderResponseStatus.SCHEMA_FAILURE.value
 
         if result["command"] in ("speak", "wake_user"):
             result["segments"] = _filter_segments(result["segments"], raw)
-            if not result["segments"]: result["command"] = "idle"
+            if not result["segments"]:
+                result["command"] = "idle"
+                result[PROVIDER_RESPONSE_STATUS_KEY] = ProviderResponseStatus.SCHEMA_FAILURE.value
 
         if suppress_search_memory and result.get("command") == "search_memory":
             result["command"] = "speak" if result.get("segments") else "idle"
@@ -3167,8 +3452,16 @@ class AIEngine:
                         if m2:
                             direction = m2.group(1).lower()
 
-                    new = {"command": "move_window", "mood": result.get("mood", "neutral"),
-                           "segments": result.get("segments", []), "shutdown": result.get("shutdown", False)}
+                    new = {
+                        "command": "move_window",
+                        "mood": result.get("mood", "neutral"),
+                        "segments": result.get("segments", []),
+                        "shutdown": result.get("shutdown", False),
+                        PROVIDER_RESPONSE_STATUS_KEY: result.get(
+                            PROVIDER_RESPONSE_STATUS_KEY,
+                            ProviderResponseStatus.OK.value,
+                        ),
+                    }
                     if x is not None and y is not None:
                         new["x"] = x; new["y"] = y
                     elif direction:

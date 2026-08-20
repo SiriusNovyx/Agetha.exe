@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import io
 import threading
 import unittest
+import urllib.error
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agetha.core.ai_engine import (
     AIEngine, FEW_SHOTS, REQUEST_PROFILES, SYSTEM_PROMPT,
     SYSTEM_PROMPT_FASTER, VALID_COMMANDS, _LocalOllamaClient,
+    _OpenRouterClient,
     format_external_context_for_prompt,
 )
 from agetha.core import dreams
+from agetha.core.provider_protocol import ProviderHTTPError
 from agetha.features import status_providers
 from agetha.platform.ocr_backends.base import OCRResult, format_deep_ocr_for_prompt
 
@@ -388,6 +392,289 @@ class TestProviderBudgets(unittest.TestCase):
         engine.query_streaming(screen_context="event", request_profile="fast_ambient")
         self.assertEqual(engine._client.calls[-1]["max_tokens"], 96)
         engine._record.assert_not_called()
+
+    def test_groq_nonstreaming_request_uses_gpt_oss_options(self):
+        engine = _query_engine()
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+
+        engine.query(user_message="hello", request_profile="fast_user")
+
+        request = engine._client.calls[-1]
+        self.assertEqual(request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(request["reasoning_effort"], "low")
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+
+    def test_groq_streaming_request_uses_gpt_oss_options(self):
+        engine = _query_engine(streaming=True)
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+
+        engine.query_streaming(
+            user_message="analyze this",
+            request_profile="deep_analysis",
+        )
+
+        request = engine._client.calls[-1]
+        self.assertEqual(request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(request["reasoning_effort"], "high")
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+
+    def test_openrouter_and_ollama_requests_remain_provider_neutral(self):
+        openrouter = _query_engine()
+        openrouter.query(user_message="hello", request_profile="fast_user")
+
+        ollama = _query_engine()
+        ollama._use_local_ai = True
+        ollama._use_openrouter = False
+        ollama._config = {
+            "LOCAL_AI_MODEL": "local-model",
+            "LOCAL_AI_TIMEOUT": "30",
+        }
+        ollama.query(user_message="hello", request_profile="fast_user")
+
+        for request in (openrouter._client.calls[-1], ollama._client.calls[-1]):
+            self.assertNotIn("reasoning_effort", request)
+            self.assertNotIn("response_format", request)
+
+    def test_inherited_groq_structured_request_uses_json_mode(self):
+        engine = _query_engine()
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+        engine._config = {}
+
+        engine.request_structured(
+            route="inherit",
+            system_prompt="Return JSON.",
+            payload={"question": "status"},
+        )
+
+        request = engine._client.calls[-1]
+        self.assertEqual(request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(request["reasoning_effort"], "medium")
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+
+    def test_groq_key_rotation_never_cycles_to_a_retired_model(self):
+        engine = AIEngine.__new__(AIEngine)
+        engine._groq_keys = ["first", "second"]
+        engine._current_groq_key_index = 0
+        engine._groq_model = "custom/current-model"
+        engine._init_client = MagicMock(return_value=True)
+
+        self.assertTrue(engine._rotate_key())
+
+        self.assertEqual(engine._current_groq_key_index, 1)
+        self.assertEqual(engine._groq_model, "custom/current-model")
+
+    def test_nonstreaming_transient_failures_retry_same_route_before_rotation(self):
+        valid = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"command":"speak","segments":[{"text":"Recovered","pause":0}]}'
+            ))],
+            usage=None,
+        )
+        failures = (
+            TimeoutError("timed out"),
+            ConnectionError("connection lost"),
+            ProviderHTTPError(503, "service unavailable"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                engine = _query_engine()
+                engine._use_openrouter = False
+                engine._enable_groq = True
+                engine._groq_model = "openai/gpt-oss-120b"
+                engine._client.chat.completions.create = MagicMock(
+                    side_effect=[failure, valid]
+                )
+                engine._rotate_key = MagicMock(return_value=True)
+
+                result = engine.query(
+                    user_message="hello",
+                    request_profile="fast_user",
+                    request_origin="user",
+                )
+
+                self.assertEqual(result["segments"][0]["text"], "Recovered")
+                self.assertEqual(engine._client.chat.completions.create.call_count, 2)
+                engine._rotate_key.assert_not_called()
+                self.assertFalse(engine._show_error_gif)
+
+    def test_streaming_transient_failures_retry_same_route(self):
+        failures = (
+            TimeoutError("timed out"),
+            ConnectionError("connection lost"),
+            ProviderHTTPError(503, "service unavailable"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                valid_stream = iter([SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(
+                        content='{"command":"speak","segments":[{"text":"Recovered","pause":0}]}'
+                    ))],
+                    usage=None,
+                )])
+                engine = _query_engine(streaming=True)
+                engine._use_openrouter = False
+                engine._enable_groq = True
+                engine._groq_model = "openai/gpt-oss-120b"
+                engine._client.chat.completions.create = MagicMock(
+                    side_effect=[failure, valid_stream]
+                )
+                engine._rotate_key = MagicMock(return_value=True)
+
+                result = engine.query_streaming(
+                    user_message="hello",
+                    request_profile="fast_user",
+                    request_origin="user",
+                )
+
+                self.assertEqual(result["segments"][0]["text"], "Recovered")
+                self.assertEqual(engine._client.chat.completions.create.call_count, 2)
+                engine._rotate_key.assert_not_called()
+                self.assertFalse(engine._show_error_gif)
+
+    def test_openrouter_transient_failures_retry_with_bounded_policy(self):
+        valid = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"command":"speak","segments":[{"text":"Recovered","pause":0}]}'
+            ))],
+            usage=None,
+        )
+        engine = _query_engine()
+        engine._client.chat.completions.create = MagicMock(
+            side_effect=[ProviderHTTPError(503, "service unavailable"), valid]
+        )
+
+        result = engine.query(
+            user_message="hello",
+            request_profile="fast_user",
+            request_origin="user",
+        )
+
+        self.assertEqual(result["segments"][0]["text"], "Recovered")
+        self.assertEqual(engine._client.chat.completions.create.call_count, 2)
+
+    def test_nonstreaming_tenth_groq_key_exhaustion_reaches_fallback(self):
+        engine = _query_engine()
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+        engine._groq_keys = [f"key-{index}" for index in range(10)]
+        engine._current_groq_key_index = 0
+        engine._client.chat.completions.create = MagicMock(
+            side_effect=ProviderHTTPError(503, "service unavailable")
+        )
+
+        def rotate(_authorization=None):
+            if engine._current_groq_key_index >= len(engine._groq_keys) - 1:
+                return False
+            engine._current_groq_key_index += 1
+            return True
+
+        fallback = {
+            "command": "speak",
+            "mood": "neutral",
+            "segments": [{"text": "Fallback", "pause": 0.0}],
+            "shutdown": False,
+        }
+        engine._rotate_key = MagicMock(side_effect=rotate)
+        engine._groq_exhausted_or_failover = MagicMock(return_value=fallback)
+
+        result = engine.query(
+            user_message="hello",
+            request_profile="fast_user",
+            request_origin="user",
+        )
+
+        self.assertEqual(result, fallback)
+        self.assertEqual(engine._client.chat.completions.create.call_count, 30)
+        engine._groq_exhausted_or_failover.assert_called_once()
+
+    def test_streaming_tenth_groq_key_exhaustion_reaches_fallback(self):
+        engine = _query_engine(streaming=True)
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+        engine._groq_keys = [f"key-{index}" for index in range(10)]
+        engine._current_groq_key_index = 0
+        engine._client.chat.completions.create = MagicMock(
+            side_effect=ProviderHTTPError(503, "service unavailable")
+        )
+
+        def rotate(_authorization=None):
+            if engine._current_groq_key_index >= len(engine._groq_keys) - 1:
+                return False
+            engine._current_groq_key_index += 1
+            return True
+
+        fallback = {
+            "command": "speak",
+            "mood": "neutral",
+            "segments": [{"text": "Fallback", "pause": 0.0}],
+            "shutdown": False,
+        }
+        engine._rotate_key = MagicMock(side_effect=rotate)
+        engine._groq_exhausted_or_failover = MagicMock(return_value=fallback)
+
+        result = engine.query_streaming(
+            user_message="hello",
+            request_profile="fast_user",
+            request_origin="user",
+        )
+
+        self.assertEqual(result, fallback)
+        self.assertEqual(engine._client.chat.completions.create.call_count, 30)
+        engine._groq_exhausted_or_failover.assert_called_once()
+
+    def test_permanent_groq_model_failure_does_not_rotate_keys(self):
+        engine = _query_engine()
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+        engine._client.chat.completions.create = MagicMock(
+            side_effect=ProviderHTTPError(400, "model has been decommissioned")
+        )
+        engine._rotate_key = MagicMock(return_value=False)
+        engine._groq_exhausted_or_failover = MagicMock(return_value={
+            "command": "idle",
+            "mood": "neutral",
+            "segments": [],
+            "shutdown": False,
+        })
+
+        result = engine.query(user_message="hello", request_profile="fast_user")
+
+        self.assertEqual(result["command"], "idle")
+        engine._rotate_key.assert_not_called()
+
+    def test_openrouter_http_error_preserves_status_code(self):
+        body = io.BytesIO(b'{"error":{"message":"model not found"}}')
+        failure = urllib.error.HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            404,
+            "Not Found",
+            {},
+            body,
+        )
+        client = _OpenRouterClient("secret", "missing/model")
+
+        raised = None
+        with patch("urllib.request.urlopen", side_effect=failure):
+            try:
+                client.chat_completions_create(
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+            except Exception as exc:
+                raised = exc
+            else:
+                self.fail("OpenRouter HTTP failures must be raised")
+
+        self.assertIsInstance(raised, ProviderHTTPError)
+        self.assertEqual(raised.status_code, 404)
 
     def test_ollama_receives_generation_options(self):
         class _Reply:

@@ -205,6 +205,7 @@ class TestExternalContextAndLogging(unittest.TestCase):
         self.assertNotIn("AI_PRIVATE_RESPONSE", output)
         self.assertFalse(any("USER_PRIVATE_TEXT" in str(call) for call in printed.call_args_list))
         self.assertEqual(app._ai.query.call_args.kwargs["request_profile"], "fast_user")
+        self.assertEqual(app._ai.query.call_args.kwargs.get("request_origin"), "user")
 
 
 class TestRequestOrigins(unittest.TestCase):

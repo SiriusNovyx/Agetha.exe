@@ -567,6 +567,10 @@ class TestDeepOCRIntegration(unittest.TestCase):
 
         self.assertEqual(result, {"command": "idle"})
         self.assertTrue(app._ai_busy)
+        self.assertEqual(
+            app._ai.query.call_args.kwargs.get("request_origin"),
+            "tool_result",
+        )
         app._drain_pending_user_message.assert_not_called()
 
 
