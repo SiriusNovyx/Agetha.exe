@@ -844,6 +844,153 @@ class TestDelayedCapabilityOwnership(unittest.TestCase):
 
         self.assertEqual(delivered, [])
 
+    def test_direct_filesystem_effect_holds_dispatch_authorization(self) -> None:
+        from agetha.commands import command_handlers
+
+        settings = self._full_settings()
+        app, controller, _notifications, _provider_calls = self._app(settings)
+        transition_started = threading.Event()
+        transition_finished = threading.Event()
+        transition_was_blocked: list[bool] = []
+        transition_threads: list[threading.Thread] = []
+
+        def make_directory(_path, *, exist_ok=False) -> None:
+            self.assertTrue(exist_ok)
+
+            def downgrade() -> None:
+                transition_started.set()
+                controller.begin_compact_transition()
+                transition_finished.set()
+
+            worker = threading.Thread(target=downgrade)
+            transition_threads.append(worker)
+            worker.start()
+            self.assertTrue(transition_started.wait(2.0))
+            transition_was_blocked.append(not transition_finished.wait(0.05))
+
+        with patch.object(
+            command_handlers, "get_settings", return_value=settings,
+        ), patch.object(command_handlers.os, "makedirs", side_effect=make_directory):
+            command_handlers.dispatch(
+                app,
+                {
+                    "command": "create_folder",
+                    "path": "authorized-folder",
+                    "segments": [],
+                },
+                "create it",
+            )
+
+        transition_threads[0].join(2.0)
+        self.assertEqual(transition_was_blocked, [True])
+        self.assertFalse(transition_threads[0].is_alive())
+        self.assertTrue(transition_finished.is_set())
+
+    def test_stale_direct_filesystem_handlers_have_no_effect(self) -> None:
+        from agetha.commands import command_handlers
+
+        settings = self._full_settings()
+        ctx = command_handlers.DispatchCtx("do it", "neutral", [], False)
+
+        def stale_response(command: str, **arguments):
+            app, controller, _notifications, _provider_calls = self._app(settings)
+            token = controller.authorize(Capability.ADVANCED_OS_INTEGRATION)
+            self.assertIsNotNone(token)
+            controller.begin_compact_transition()
+            return app, {
+                "command": command,
+                "segments": [],
+                command_handlers._CAPABILITY_AUTHORIZATION: token,
+                **arguments,
+            }
+
+        effects: list[str] = []
+        app, response = stale_response("create_folder", path="folder")
+        with patch.object(
+            command_handlers.os,
+            "makedirs",
+            side_effect=lambda *_a, **_k: effects.append("create_folder"),
+        ):
+            command_handlers.HANDLERS["create_folder"](app, response, ctx)
+
+        app, response = stale_response("create_file", file_path="file.txt")
+        fake_file = MagicMock()
+        fake_file.__enter__.return_value.write.side_effect = (
+            lambda *_a, **_k: effects.append("create_file")
+        )
+        with patch("builtins.open", return_value=fake_file):
+            command_handlers.HANDLERS["create_file"](app, response, ctx)
+
+        app, response = stale_response("delete_file", path="file.txt")
+        with patch.object(Path, "is_dir", return_value=False), patch.object(
+            Path, "exists", return_value=True,
+        ), patch.object(
+            Path, "unlink", side_effect=lambda *_a, **_k: effects.append("delete_file"),
+        ):
+            command_handlers.HANDLERS["delete_file"](app, response, ctx)
+
+        app, response = stale_response(
+            "rename_file", path="file.txt", new_name="renamed.txt",
+        )
+        with patch.object(
+            Path, "rename", side_effect=lambda *_a, **_k: effects.append("rename_file"),
+        ):
+            command_handlers.HANDLERS["rename_file"](app, response, ctx)
+
+        app, response = stale_response(
+            "write_file", file_path="file.txt", content="data",
+        )
+        app._ai = SimpleNamespace(
+            write_file=lambda *_a, **_k: effects.append("write_file") or "[written]",
+        )
+        command_handlers.HANDLERS["write_file"](app, response, ctx)
+
+        self.assertEqual(effects, [])
+
+    def test_move_window_animation_rechecks_dispatch_authorization_per_frame(self) -> None:
+        from agetha.commands import command_handlers
+
+        settings = self._full_settings()
+        app, controller, _notifications, _provider_calls = self._app(settings)
+        callbacks: list[object] = []
+        geometry_writes: list[str] = []
+
+        def animate(_x, _y, *, effect_runner):
+            first, _result = effect_runner(lambda: geometry_writes.append("first"))
+            self.assertTrue(first)
+            controller.begin_compact_transition()
+            second, _result = effect_runner(lambda: geometry_writes.append("second"))
+            self.assertFalse(second)
+
+        app.animate_geometry = animate
+        app.root.winfo_screenwidth = lambda: 1920
+        app.root.winfo_screenheight = lambda: 1080
+        app.root.winfo_width = lambda: 420
+        app.root.winfo_height = lambda: 520
+        app.root.winfo_x = lambda: 100
+        app.root.winfo_y = lambda: 100
+
+        with patch.object(
+            command_handlers, "get_settings", return_value=settings,
+        ), patch.object(
+            command_handlers,
+            "_schedule_app_ui",
+            side_effect=lambda _app, callback: callbacks.append(callback),
+        ):
+            command_handlers.dispatch(
+                app,
+                {
+                    "command": "move_window",
+                    "direction": "left",
+                    "segments": [],
+                },
+                "move left",
+            )
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()
+
+        self.assertEqual(geometry_writes, ["first"])
+
     def test_main_geometry_animation_rechecks_each_scheduled_write(self) -> None:
         import main
 

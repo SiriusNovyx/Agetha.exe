@@ -337,6 +337,68 @@ class TestUnicodeCommandIntegration(unittest.TestCase):
         self.assertFalse(app._speak_and_continue.call_args.kwargs["allow_audio"])
 
 
+class TestDispatchPresenceBoundaries(unittest.TestCase):
+    @staticmethod
+    def _app(*, short_result: bool = False):
+        class App:
+            _ATTENTION_MOODS = set()
+
+            def _presence_decision(self):
+                return SimpleNamespace(
+                    allow_popup=True,
+                    allow_voice=False,
+                    queue_nonurgent=False,
+                )
+
+        app = App()
+        app._capabilities = CapabilityController(
+            CapabilityPolicy.from_settings(AppSettings({})),
+        )
+        app._guard = MagicMock()
+        app._try_short_mood_speak = MagicMock(return_value=short_result)
+        app._speak_and_continue = MagicMock()
+        app._play_response_motion = MagicMock()
+        app._set_state = MagicMock()
+        app._reschedule_screen_poll = MagicMock()
+        app._persistent_mood = None
+        return app
+
+    def test_direct_user_reply_voice_is_not_suppressed_by_presence_policy(self) -> None:
+        app = self._app()
+
+        dispatch(
+            app,
+            {
+                "command": "speak",
+                "mood": "neutral",
+                "segments": [{"text": "Direct answer", "pause": 0.0}],
+            },
+            "answer me",
+            origin="user",
+        )
+
+        app._speak_and_continue.assert_called_once()
+        self.assertNotIn("allow_audio", app._speak_and_continue.call_args.kwargs)
+
+    def test_ambient_voice_policy_precedes_short_mood_fast_path(self) -> None:
+        app = self._app(short_result=True)
+
+        dispatch(
+            app,
+            {
+                "command": "speak",
+                "mood": "happy",
+                "segments": [{"text": "Tiny hello", "pause": 0.0}],
+            },
+            None,
+            origin="ambient",
+        )
+
+        app._try_short_mood_speak.assert_not_called()
+        app._speak_and_continue.assert_called_once()
+        self.assertFalse(app._speak_and_continue.call_args.kwargs["allow_audio"])
+
+
 class TestSentinelMainIntegration(unittest.TestCase):
     @staticmethod
     def _full_capabilities() -> CapabilityController:

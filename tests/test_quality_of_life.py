@@ -712,22 +712,17 @@ class TestCommandSafetyRegression(unittest.TestCase):
             "command": "write_file",
             "file_path": r"C:\notes\failed report.txt",
             "content": "done",
+            "mood": "happy",
+            "segments": [{"text": "Done.", "pause": 0.0}],
         }
-        ctx = DispatchCtx(
-            user_message="write it",
-            origin="user",
-            mood="happy",
-            segments=[{"text": "Done.", "pause": 0.0}],
-            shutdown_requested=False,
-        )
 
-        HANDLERS["write_file"](app, response, ctx)
+        dispatch(app, response, "write it", origin="user")
 
         app._show_op_error.assert_not_called()
         app._speak_and_continue.assert_called_once_with(
-            ctx.segments,
-            ctx.mood,
-            ctx.shutdown_requested,
+            response["segments"],
+            response["mood"],
+            False,
         )
 
     def test_parser_rejects_non_object_json(self):

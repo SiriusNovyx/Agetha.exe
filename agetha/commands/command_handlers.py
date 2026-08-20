@@ -804,13 +804,17 @@ def dispatch(
         return
 
     response_presence = None
-    presence_method = getattr(type(app), "_presence_decision", None)
-    if callable(presence_method):
-        try:
-            response_presence = presence_method(app)
-        except (AttributeError, TypeError, ValueError) as exc:
-            logger.warning("Presence decision failed closed for response UI: %s", type(exc).__name__)
-    ambient_presence = response_presence if resolved_origin == "ambient" else None
+    if resolved_origin == "ambient":
+        presence_method = getattr(type(app), "_presence_decision", None)
+        if callable(presence_method):
+            try:
+                response_presence = presence_method(app)
+            except (AttributeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Presence decision failed closed for response UI: %s",
+                    type(exc).__name__,
+                )
+    ambient_presence = response_presence
     if resolved_origin == "ambient":
         if (
             ambient_presence is not None
@@ -918,7 +922,12 @@ def dispatch(
             except Exception:
                 pass
 
-    if app._try_short_mood_speak(command, ctx):
+    ambient_voice_blocked = (
+        resolved_origin == "ambient"
+        and ambient_presence is not None
+        and not bool(getattr(ambient_presence, "allow_voice", False))
+    )
+    if not ambient_voice_blocked and app._try_short_mood_speak(command, ctx):
         return
 
     handler = HANDLERS.get(command)
@@ -996,6 +1005,7 @@ def handle_show_error_gif(app, response, ctx):
 def handle_move_window(app, response, ctx):
     x, y = response.get("x"), response.get("y")
     direction = str(response.get("direction", "")).lower()
+    capability_authorization = response.get(_CAPABILITY_AUTHORIZATION)
 
     def _go() -> None:
         try:
@@ -1012,7 +1022,13 @@ def handle_move_window(app, response, ctx):
                     "center": (max(0, (sw - ww) // 2), max(0, (sh - wh) // 2)),
                 }
                 nx, ny = dirs.get(direction, (10, cury))
-            app.animate_geometry(nx, ny)
+            app.animate_geometry(
+                nx,
+                ny,
+                effect_runner=lambda effect: _perform_authorized_effect(
+                    app, capability_authorization, effect,
+                ),
+            )
         except Exception as exc:
             logger.error("move_window failed safely: %s", type(exc).__name__)
 
@@ -1040,9 +1056,16 @@ def handle_create_folder(app, response, ctx):
     result = "[no path]"
     if path:
         try:
-            os.makedirs(path, exist_ok=True)
-            logger.info("Created folder: name=%s", Path(path).name)
-            result = "[folder created]"
+            performed, _value = _perform_authorized_effect(
+                app,
+                response.get(_CAPABILITY_AUTHORIZATION),
+                lambda: os.makedirs(path, exist_ok=True),
+            )
+            if performed:
+                logger.info("Created folder: name=%s", Path(path).name)
+                result = "[folder created]"
+            else:
+                result = "[create folder blocked: capability changed]"
         except Exception as exc:
             result = f"[create folder error: {type(exc).__name__}]"
     _finish_verified_command(app, ctx, result)
@@ -1059,13 +1082,21 @@ def handle_create_file(app, response, ctx):
     result = "[no path]"
     if file_path:
         try:
-            parent = os.path.dirname(file_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(file_path, "w", encoding="utf-8") as fh:
-                fh.write(response.get("content", ""))
-            logger.info("Created file: name=%s", Path(file_path).name)
-            result = "[file created]"
+            def _create() -> None:
+                parent = os.path.dirname(file_path)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                with open(file_path, "w", encoding="utf-8") as fh:
+                    fh.write(response.get("content", ""))
+
+            performed, _value = _perform_authorized_effect(
+                app, response.get(_CAPABILITY_AUTHORIZATION), _create,
+            )
+            if performed:
+                logger.info("Created file: name=%s", Path(file_path).name)
+                result = "[file created]"
+            else:
+                result = "[create file blocked: capability changed]"
         except Exception as exc:
             result = f"[create file error: {type(exc).__name__}]"
     _finish_verified_command(app, ctx, result)
@@ -1078,15 +1109,23 @@ def handle_delete_file(app, response, ctx):
     result = "[no path]"
     if path:
         try:
-            p = Path(path)
-            if p.is_dir():
-                shutil.rmtree(p)
-                result = "[folder deleted]"
-            elif p.exists():
-                p.unlink()
-                result = "[file deleted]"
-            else:
-                result = "[delete error: not found]"
+            def _delete() -> str:
+                p = Path(path)
+                if p.is_dir():
+                    shutil.rmtree(p)
+                    return "[folder deleted]"
+                if p.exists():
+                    p.unlink()
+                    return "[file deleted]"
+                return "[delete error: not found]"
+
+            performed, value = _perform_authorized_effect(
+                app, response.get(_CAPABILITY_AUTHORIZATION), _delete,
+            )
+            result = (
+                str(value)
+                if performed else "[delete blocked: capability changed]"
+            )
         except Exception as exc:
             result = f"[delete error: {type(exc).__name__}]"
     _finish_verified_command(app, ctx, result)
@@ -1099,8 +1138,15 @@ def handle_rename_file(app, response, ctx):
     result = "[missing path or name]"
     if path and new_name:
         try:
-            Path(path).rename(Path(path).parent / new_name)
-            result = "[file renamed]"
+            performed, _value = _perform_authorized_effect(
+                app,
+                response.get(_CAPABILITY_AUTHORIZATION),
+                lambda: Path(path).rename(Path(path).parent / new_name),
+            )
+            result = (
+                "[file renamed]"
+                if performed else "[rename blocked: capability changed]"
+            )
         except Exception as exc:
             result = f"[rename error: {type(exc).__name__}]"
     _finish_verified_command(app, ctx, result)
@@ -1291,7 +1337,19 @@ def handle_write_file(app, response, ctx):
     file_path = response.get("file_path", "").strip()
     msg = "[no path]"
     if file_path and app._ai:
-        msg = app._ai.write_file(file_path, response.get("content", ""), response.get("mode", "overwrite"))
+        performed, value = _perform_authorized_effect(
+            app,
+            response.get(_CAPABILITY_AUTHORIZATION),
+            lambda: app._ai.write_file(
+                file_path,
+                response.get("content", ""),
+                response.get("mode", "overwrite"),
+            ),
+        )
+        msg = (
+            str(value)
+            if performed else "[write blocked: capability changed]"
+        )
     _finish_verified_command(app, ctx, msg)
     return True
 

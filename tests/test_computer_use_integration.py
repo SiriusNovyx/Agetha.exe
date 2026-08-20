@@ -10,7 +10,7 @@ from agetha.commands.command_handlers import (
     guarded_launch_application,
     guarded_type_for_computer_use,
 )
-from agetha.core.capabilities import CapabilityController, CapabilityPolicy
+from agetha.core.capabilities import Capability, CapabilityController, CapabilityPolicy
 from agetha.computer_use.activation import extract_local_activation
 from agetha.computer_use.executor import ExecutorDependencies
 from agetha.computer_use.integration import (
@@ -350,6 +350,62 @@ class ComputerUseIntegrationTests(unittest.TestCase):
         allowed["value"] = False
         self.assertFalse(gated.focus_window(target))
         self.assertEqual(focused, [target])
+
+    def test_desktop_effect_holds_capability_authorization_through_input(self) -> None:
+        settings = AppSettings({
+            "COMPACT_MODE": "no",
+            "ENABLE_COMMAND_EXECUTION": "yes",
+            "ENABLE_PROCESS_AWARENESS": "yes",
+            "ENABLE_COMPUTER_USE": "yes",
+        })
+        controller = CapabilityController(CapabilityPolicy.from_settings(settings))
+        authorization = controller.authorize(Capability.COMPUTER_USE)
+        self.assertIsNotNone(authorization)
+        transition_started = threading.Event()
+        transition_finished = threading.Event()
+        transition_was_blocked: list[bool] = []
+        transition_threads: list[threading.Thread] = []
+
+        def click(_x: int, _y: int) -> bool:
+            def downgrade() -> None:
+                transition_started.set()
+                controller.begin_compact_transition()
+                transition_finished.set()
+
+            worker = threading.Thread(target=downgrade)
+            transition_threads.append(worker)
+            worker.start()
+            self.assertTrue(transition_started.wait(2.0))
+            transition_was_blocked.append(not transition_finished.wait(0.05))
+            return True
+
+        dependencies = ExecutorDependencies(
+            validate_target=lambda value, foreground: LiveTargetState(
+                value, True, foreground, True,
+            ),
+            move_pointer=lambda _x, _y: True,
+            click=click,
+            double_click=lambda _x, _y: True,
+            scroll=lambda _amount, _x, _y: True,
+            keypress=lambda _key: True,
+            hotkey=lambda _keys: True,
+            focus_window=lambda _target: True,
+            guarded_type=lambda _text, _target, _cancel: True,
+        )
+        gated = _gate_effect_dependencies(
+            dependencies,
+            feature_gate=lambda: True,
+            is_shutdown=lambda: False,
+            effect_runner=lambda effect: controller.perform_authorized(
+                authorization, effect,
+            ),
+        )
+
+        self.assertTrue(gated.click(10, 20))
+        transition_threads[0].join(2.0)
+        self.assertEqual(transition_was_blocked, [True])
+        self.assertFalse(transition_threads[0].is_alive())
+        self.assertTrue(transition_finished.is_set())
 
     def test_stale_queued_status_cannot_touch_a_new_session_ui(self) -> None:
         import main

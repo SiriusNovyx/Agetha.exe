@@ -71,6 +71,9 @@ def build_runtime_bundle(
     ],
     feature_gate: Callable[[], bool],
     is_shutdown: Callable[[], bool],
+    effect_runner: Callable[
+        [Callable[[], object]], tuple[bool, object | None]
+    ] | None = None,
     focus_allowed: Callable[[], bool] = lambda: True,
     status_sink: Callable[[SessionSnapshot], None] | None = None,
     audit_sink: Callable[[ComputerUseAuditEvent], None] | None = None,
@@ -167,6 +170,7 @@ def build_runtime_bundle(
     dependencies = _gate_effect_dependencies(
         base_dependencies,
         feature_gate=feature_gate,
+        effect_runner=effect_runner,
         is_shutdown=is_shutdown,
         focus_allowed=focus_allowed,
     )
@@ -196,6 +200,9 @@ def _gate_effect_dependencies(
     *,
     feature_gate: Callable[[], bool],
     is_shutdown: Callable[[], bool],
+    effect_runner: Callable[
+        [Callable[[], object]], tuple[bool, object | None]
+    ] | None = None,
     focus_allowed: Callable[[], bool] = lambda: True,
 ) -> ExecutorDependencies:
     """Recheck global feature/command gates immediately before each effect."""
@@ -211,9 +218,20 @@ def _gate_effect_dependencies(
             return LiveTargetState(None, False, False, False)
         return dependencies.validate_target(target, foreground)
 
+    def run_effect(callback: Callable[[], object]) -> tuple[bool, object | None]:
+        if effect_runner is None:
+            if not allowed():
+                return False, None
+            return True, callback()
+        try:
+            return effect_runner(lambda: callback() if allowed() else False)
+        except Exception:
+            return False, None
+
     def effect(callback):
         def gated(*args):
-            return bool(allowed() and callback(*args))
+            performed, result = run_effect(lambda: callback(*args))
+            return bool(performed and result)
 
         return gated
 
@@ -222,11 +240,13 @@ def _gate_effect_dependencies(
             current_focus_allowed = bool(focus_allowed())
         except Exception:
             current_focus_allowed = False
-        return bool(
-            allowed()
-            and current_focus_allowed
-            and dependencies.focus_window(target)
+        performed, result = run_effect(
+            lambda: bool(
+                current_focus_allowed
+                and dependencies.focus_window(target)
+            ),
         )
+        return bool(performed and result)
 
     return replace(
         dependencies,

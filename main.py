@@ -2781,6 +2781,19 @@ class CompanionApp:
             from agetha.commands.command_handlers import guarded_type_for_computer_use
 
             settings = get_settings()
+            computer_use_authorization = self._capabilities.authorize(
+                Capability.COMPUTER_USE,
+            )
+            if computer_use_authorization is None:
+                return
+
+            def _perform_computer_use_effect(
+                effect: Callable[[], object],
+            ) -> tuple[bool, object | None]:
+                return self._capabilities.perform_authorized(
+                    computer_use_authorization,
+                    effect,
+                )
 
             def _reserve_planner() -> object | None:
                 return self._reserve_ai_operation(
@@ -2810,6 +2823,7 @@ class CompanionApp:
                     validate_locked_target=validate,
                 ),
                 feature_gate=self._computer_use_feature_gate,
+                effect_runner=_perform_computer_use_effect,
                 is_shutdown=lambda: bool(self._closing),
                 focus_allowed=self._computer_use_focus_allowed_now,
                 status_sink=self._on_computer_use_snapshot,
@@ -4207,11 +4221,35 @@ class CompanionApp:
                 resources.add(AuthorizedResource("url", match.rstrip(".,);]")))
             except (TypeError, ValueError):
                 pass
+        quoted_path_pattern = re.compile(
+            r"(?P<quote>[\"'])(?P<path>"
+            r"(?:[A-Za-z]:[\\/]|(?:~|\.{1,2})?[\\/])[^\"'\r\n]+)"
+            r"(?P=quote)",
+        )
+        quoted_spans: list[tuple[int, int]] = []
+        for match in quoted_path_pattern.finditer(text):
+            quoted_spans.append(match.span())
+            try:
+                resources.add(AuthorizedResource("path", match.group("path")))
+            except (TypeError, ValueError):
+                pass
+        unquoted_text = list(text)
+        for start, end in quoted_spans:
+            unquoted_text[start:end] = " " * (end - start)
         path_candidates = re.findall(
             r"(?:[A-Za-z]:[\\/][^\r\n\"']+|(?:~|\.{1,2})?[\\/][^\r\n\"']+)",
-            text,
+            "".join(unquoted_text),
         )
         for value in path_candidates[:16]:
+            trailing_instruction = re.search(
+                r"\s+(?:and(?:\s+then)?|then)\s+(?:please\s+)?"
+                r"(?:summarize|explain|analyze|describe|compare|translate|"
+                r"read|open|show|tell|search|check|review)\b",
+                value,
+                re.IGNORECASE,
+            )
+            if trailing_instruction is not None:
+                value = value[:trailing_instruction.start()]
             try:
                 resources.add(AuthorizedResource("path", value.strip().rstrip(".,);]")))
             except (TypeError, ValueError):
@@ -5465,6 +5503,7 @@ class CompanionApp:
                     on_token=_on_token,
                     request_profile=request_profile,
                     request_origin=normalized_origin,
+                    provider_authorization=result_is_current,
                 )
             else:
                 result = self._ai.query(
@@ -5475,6 +5514,7 @@ class CompanionApp:
                     suppress_search_memory=suppress_search_memory,
                     request_profile=request_profile,
                     request_origin=normalized_origin,
+                    provider_authorization=result_is_current,
                 )
             if result_is_current is not None and not result_is_current():
                 return None

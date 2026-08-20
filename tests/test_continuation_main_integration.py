@@ -10,6 +10,29 @@ from agetha.core.continuation import ContinuationEngine
 
 
 class ContinuationMainIntegrationTests(unittest.TestCase):
+    def test_unquoted_authorized_path_stops_before_followup_instruction(self) -> None:
+        cases = (
+            (r"Read C:\temp\report.txt and summarize it", "c:/temp/report.txt"),
+            ("Read /tmp/report.txt and summarize it", "/tmp/report.txt"),
+        )
+        for message, expected in cases:
+            with self.subTest(message=message):
+                resources = main.CompanionApp._continuation_resources_from_user(message)
+                paths = {
+                    resource.value
+                    for resource in resources
+                    if resource.kind == "path"
+                }
+                self.assertEqual(paths, {expected})
+
+    def test_quoted_authorized_path_keeps_instruction_words_in_filename(self) -> None:
+        resources = main.CompanionApp._continuation_resources_from_user(
+            'Read "C:\\Research and Review\\report.txt"',
+        )
+
+        paths = {resource.value for resource in resources if resource.kind == "path"}
+        self.assertEqual(paths, {"c:/research and review/report.txt"})
+
     def test_sensitive_outbound_authority_requires_explicit_transfer_to_web(self) -> None:
         allows = main.CompanionApp._allows_sensitive_outbound_continuation
 
@@ -135,6 +158,40 @@ class ContinuationMainIntegrationTests(unittest.TestCase):
         queued.pop()()
 
         app._speak_and_continue.assert_not_called()
+
+    def test_cancelled_continuation_cannot_transmit_private_provider_context(self) -> None:
+        current = {"value": True}
+        transmitted: list[str] = []
+
+        class AuthorizationAwareAI:
+            def query(self, **kwargs):
+                current["value"] = False
+                authorization = kwargs.get("provider_authorization")
+                if authorization is None or authorization():
+                    transmitted.append(kwargs["doc_content"])
+                return {"command": "idle"}
+
+        app = main.CompanionApp.__new__(main.CompanionApp)
+        app._cancel_event = threading.Event()
+        app._ai = AuthorizationAwareAI()
+        app._screen = None
+        app._last_screen_text = ""
+        app._reserve_ai_operation = MagicMock(return_value=object())
+        app._release_ai_operation = MagicMock()
+        app._drain_pending_user_message = MagicMock()
+        app._schedule_owned_ai_ui = MagicMock()
+
+        runtime_settings = type("Settings", (), {"enable_streaming": False})()
+        with unittest.mock.patch.object(main, "_SETTINGS", runtime_settings):
+            result = app._ai_query(
+                "continue",
+                screen_context="",
+                doc_content="private local notes",
+                result_is_current=lambda: current["value"],
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(transmitted, [])
 
 
 if __name__ == "__main__":
