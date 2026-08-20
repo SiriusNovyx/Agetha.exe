@@ -131,7 +131,6 @@ class ContinuationMainIntegrationTests(unittest.TestCase):
 
     def test_cancelled_context_worker_clears_unresolved_objective(self) -> None:
         store = UnresolvedContextObjectiveStore()
-        store.remember("What am I looking at?", ContextKind.SCREEN, origin="user")
         engine = ContinuationEngine(id_factory=lambda: "session:screen")
         started = engine.start("What now?", authority_origin="user")
         run_context = engine.accept_context_request(
@@ -139,6 +138,12 @@ class ContinuationMainIntegrationTests(unittest.TestCase):
             started.generation,
             ContextRequest(ContextKind.SCREEN),
             request_origin="user",
+        )
+        store.remember(
+            "What am I looking at?",
+            ContextKind.SCREEN,
+            origin="user",
+            owner=(started.session_id, started.generation),
         )
         engine.cancel_active("escape")
         app = main.CompanionApp.__new__(main.CompanionApp)
@@ -152,6 +157,70 @@ class ContinuationMainIntegrationTests(unittest.TestCase):
 
         self.assertIsNone(store.current())
         app._acquire_read_only_context.assert_not_called()
+
+    def test_preempted_context_worker_cannot_clear_newer_failed_objective(self) -> None:
+        old_acquisition_started = threading.Event()
+        release_old_acquisition = threading.Event()
+        acquisition_count = 0
+
+        store = UnresolvedContextObjectiveStore()
+        engine = ContinuationEngine()
+        old_started = engine.start("Describe the old screen", authority_origin="user")
+        old_context = engine.accept_context_request(
+            old_started.session_id,
+            old_started.generation,
+            ContextRequest(ContextKind.SCREEN),
+            request_origin="user",
+        )
+        app = main.CompanionApp.__new__(main.CompanionApp)
+        app._closing = False
+        app._continuation = engine
+        app._handle_continuation_decision = MagicMock()
+        app._unresolved_context_objectives = store
+
+        def acquire(_request, **_kwargs) -> ContextOutcome:
+            nonlocal acquisition_count
+            acquisition_count += 1
+            if acquisition_count == 1:
+                old_acquisition_started.set()
+                self.assertTrue(release_old_acquisition.wait(2.0))
+            return ContextOutcome(
+                ContextKind.SCREEN,
+                False,
+                "target_unavailable",
+                "[The current screen context is unavailable.]",
+            )
+
+        app._acquire_read_only_context = acquire
+        old_worker = threading.Thread(
+            target=app._run_continuation_context,
+            args=(old_context,),
+        )
+        old_worker.start()
+        self.assertTrue(old_acquisition_started.wait(2.0))
+
+        newer_started = engine.start(
+            "Describe the newer screen",
+            authority_origin="user",
+        )
+        newer_context = engine.accept_context_request(
+            newer_started.session_id,
+            newer_started.generation,
+            ContextRequest(ContextKind.SCREEN),
+            request_origin="user",
+        )
+        app._run_continuation_context(newer_context)
+        current = store.current()
+        self.assertIsNotNone(current)
+        self.assertEqual(current.message, "Describe the newer screen")
+
+        release_old_acquisition.set()
+        old_worker.join(2.0)
+
+        self.assertFalse(old_worker.is_alive())
+        current = store.current()
+        self.assertIsNotNone(current)
+        self.assertEqual(current.message, "Describe the newer screen")
 
     def test_successful_context_final_records_and_clears_exactly_once(self) -> None:
         store = UnresolvedContextObjectiveStore()
