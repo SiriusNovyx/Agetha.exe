@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Literal, get_args
 
 
@@ -12,10 +13,28 @@ RequestOrigin = Literal[
     "reminder",
     "ambient",
     "tool_result",
+    "terminal_sentinel",
 ]
 
 REQUEST_ORIGINS = frozenset(get_args(RequestOrigin))
 INTERNAL_ORIGINS = REQUEST_ORIGINS - {"user", "ambient"}
+
+
+class AmbientRelevance(str, Enum):
+    """Presentation metadata for conservative ambient responses."""
+
+    MUNDANE = "mundane"
+    INTERESTING = "interesting"
+    IMPORTANT = "important"
+
+
+def normalize_ambient_relevance(value: object) -> AmbientRelevance:
+    """Fail closed without changing request origin or authority."""
+    candidate = str(value or "").strip().casefold()
+    try:
+        return AmbientRelevance(candidate)
+    except ValueError:
+        return AmbientRelevance.MUNDANE
 
 
 def normalize_request_origin(value: object, *, default: RequestOrigin = "user") -> RequestOrigin:
@@ -37,6 +56,8 @@ def render_request_message(origin: RequestOrigin, text: str) -> str:
 
 
 def request_profile_for_origin(origin: RequestOrigin) -> str:
+    if origin == "tool_result":
+        return "tool_continuation"
     if origin == "ambient":
         return "fast_ambient"
     if origin in INTERNAL_ORIGINS:

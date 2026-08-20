@@ -31,13 +31,43 @@ shortcuts, and Windows Settings remain feature-gated on Linux.
 
 ## About
 
-Agetha is a **desktop AI companion** — a small always-on-top Windows 95–style window with an animated character who lives on your machine. She chats with you, watches your screen via OCR, remembers context across sessions, and can execute real OS actions through a JSON command system powered by **Groq** (default), **OpenRouter** (optional), or **Ollama** (local).
+Agetha is a **desktop AI companion** — a small always-on-top Windows 95–style
+window with an animated character who lives on your machine. She chats, remembers
+context across sessions, and can use configured providers: **Groq** (default),
+**OpenRouter** (optional), or **Ollama** (local).
 
-This fork makes Agetha feel sharper, more autonomous, and more integrated with your desktop: spatial error detection, mood-driven window snapping, process monitoring, voice input, file drag-and-drop, Groq token usage in the UI, and a full command library with **native confirmation dialogs** before dangerous actions.
+The default Compact profile keeps the classic companion experience and blocks
+the fork's advanced screen/process observation and OS-control capabilities. A
+deliberately enabled Full profile can expose spatial OCR, process awareness,
+voice input, file drag-and-drop, and guarded OS actions. Full Mode is not
+unrestricted access: native confirmations, Command Guard, individual feature
+gates, target validation, cancellation, and protected-process rules remain on.
 
 ---
 
 ## Features
+
+### Compact Mode by default
+
+Fresh or missing configuration starts with `COMPACT_MODE = yes`. Compact keeps
+chat, memory, emotion/personality, WebRAG, and bounded read-only continuation
+available according to their ordinary settings. It is an outer capability gate,
+not just a hidden Dashboard tab: Computer Use, planner/recovery, Process
+Awareness, Terminal Sentinel, OS typing/control, background sensing, and other
+advanced OS integration do not start or perform effects while Compact is on.
+
+Turning Compact off starts an explicit two-confirmation flow. After the first
+confirmation, a narrow Windows-only presentation may open a validated Notepad
+window and type one compiled warning. It is not Computer Use, accepts no
+arbitrary app or text, and makes zero provider calls. Full remains disabled until
+the user selects **Enable Full Mode** at the final confirmation. A safe in-app
+fallback is used if Notepad cannot be validated. Returning to Compact is
+immediate and invalidates active Full work before cleanup.
+
+The Compact Dashboard uses the existing classic/upstream-compatible basic
+surfaces; Full reveals only applicable advanced sections. See
+[`docs/compact_full_mode.md`](docs/compact_full_mode.md) and the entirely
+unperformed [34-item manual checklist](docs/testing/compact_full_mode_manual.md).
 
 ### Spatial OCR & Focused Window Scanning
 
@@ -98,6 +128,73 @@ remain unsupported as of v5.5.5.
 Tesseract remains the default real-time backend; Unlimited-OCR is still used
 only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported
 after both matching Tesseract language-data packages are installed locally.
+
+### Polyglot Presence
+
+The current tree adds a local-first Polyglot Presence foundation without
+changing the public v5.7 release label:
+
+- **Language-neutral multilingual voice** — Agetha mirrors the user's current
+  language and approximate conversational register without inventing
+  translation, transliteration, gendered speech, honorifics, cultural particles,
+  formality, or slang. This is character guidance, not a global output filter:
+  quoted text, documents, code, and exact text requested for typing remain
+  unchanged. English, Thai, Japanese, Chinese, Korean, Arabic, Russian, French,
+  mixed-script text, and emoji are validation vectors rather than personality
+  preferences.
+- **Universal Unicode typing** — `type_text` preserves the exact string and
+  supports `auto`, `unicode`, `paste`, `preview`, and `paced` modes. Windows
+  uses Win32 Unicode input first; Xorg uses guarded clipboard paste where its
+  optional desktop tools are available; Wayland copies for a manual paste when
+  global synthetic input is restricted. It never appends Enter, Return, or Tab.
+- **Observation Bus and Presence Etiquette** — bounded typed local events are
+  kept separate from provider, memory, notification, and command eligibility.
+  Local rules suppress or defer nonurgent interruptions during fullscreen,
+  presentation, rapid typing, quiet hours, dismissal backoff, sleep, or
+  shutdown without making an AI request.
+- **Terminal Sentinel** — an opt-in, empty-allowlist-by-default developer
+  helper reuses confirmed new OCR error events. Its local notification offers
+  Explain, Dismiss, and Ignore Pattern; no provider request occurs until the
+  user selects Explain, and explanations cannot authorize model-suggested OS
+  commands.
+- **Senses Control Panel** — the Dashboard can open an honest snapshot of
+  Vision, Hearing, Memory, Network & AI, Actions, and Presence. Refresh uses
+  local/configured state, performs no paid provider probe, and never displays
+  API-key values.
+
+See the [manual validation checklist](docs/testing/polyglot_presence_manual.md)
+and the [future Polyglot Presence roadmap](docs/roadmap/polyglot_presence_roadmap.md).
+Roadmap features A–O are design-only and **planned / not implemented**.
+
+### Bounded Continuation, Process Awareness & Computer Use Lite
+
+- **True bounded continuation** — one direct user goal may produce a short
+  status, one or more allowlisted read-only lookups, and a later final answer.
+  Sessions have step/time/result limits, generation-safe cancellation, and no
+  recursive AI-turn loop. Tool results remain untrusted and cannot authorize a
+  state-changing command or start Computer Use.
+- **Application awareness** — Agetha distinguishes the foreground application,
+  visible interactive windows, and background processes. Identity combines PID,
+  executable basename, and creation time where available; provider context is
+  minimized and sensitive applications are suppressed.
+- **Computer Use Lite** — an opt-in, **disabled-by-default** Windows-first
+  observe → one-action plan → policy → execute → verify loop. Every effect is
+  locked to PID/name/creation-time/HWND/bounds and the allowed app. Exact text
+  stays behind a local payload reference and reuses guarded Unicode typing.
+- **Cost-aware planning** — a small isolated planner can use an existing
+  Groq/OpenRouter/Ollama route. Local verification avoids unnecessary calls;
+  repeated ambiguity may use a bounded primary-model recovery call.
+- **Immediate stop** — a non-activating Win95 status window provides STOP, and
+  Escape cancels the same session generation. Late planner results cannot
+  produce input after cancellation.
+
+There is no real accessibility/UI-Automation backend in this phase; the honest
+unavailable abstraction falls back to local OCR controls. Xorg support is
+degraded, autonomous Computer Use is unavailable on Wayland, and full visual
+vision-model Computer Use remains future work. See
+[`docs/continuation_engine.md`](docs/continuation_engine.md),
+[`docs/computer_use.md`](docs/computer_use.md), and the unperformed
+[25-item manual checklist](docs/testing/computer_use_manual.md).
 
 ### Dual-Layer Memory
 
@@ -165,6 +262,17 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
 | **OpenRouter** | `ENABLE_OPENROUTER = yes` | `OPENROUTER_API_KEY` |
 | **Ollama** | `USE_LOCAL_AI = yes` | *(none — local)* |
 
+- **Groq model policy** — `openai/gpt-oss-120b` is the default. Existing
+  configuration that names the retired `llama-3.3-70b-versatile` model is
+  normalized to the supported default at runtime. GPT-OSS command-envelope
+  requests use JSON Object Mode and map fast/normal/deep profiles to
+  low/medium/high reasoning effort. Permanent model or request failures skip
+  unchanged key retries and enter the configured provider fallback path.
+- **Response recovery** — intentional `idle`, malformed JSON, schema failures,
+  and unsupported commands remain distinct local outcomes. An explicit direct
+  user request can make one format-repair call; ambient, OCR-only,
+  web/document, terminal-sentinel, and tool-result traffic never starts a
+  repair cycle. Only the final response is eligible for history or memory.
 - **Token %** — when using Groq, the input placeholder shows `key 1/3 • 87% tokens left` (estimated daily budget per key); status bar shows the same after each reply
 - **Fast Mode 2.0** — `FASTER_MODE = yes` activates a reversible performance
   profile plus request-aware prompt budgets. Original managed values are kept in
@@ -205,12 +313,38 @@ Agetha_Mod/
 │   ├── test_phase5_v4.py
 │   ├── test_phase6_v5.py
 │   ├── test_screen_monitoring_reliability.py
+│   ├── test_unicode_typing.py
+│   ├── test_observation_bus.py
+│   ├── test_presence_etiquette.py
+│   ├── test_terminal_sentinel.py
+│   ├── test_senses_panel.py
+│   ├── test_polyglot_presence_integration.py
+│   ├── test_continuation.py
+│   ├── test_read_only_tools.py
+│   ├── test_process_awareness.py
+│   ├── test_computer_use_models.py
+│   ├── test_computer_use_activation.py
+│   ├── test_computer_use_observer_policy.py
+│   ├── test_computer_use_executor_verifier.py
+│   ├── test_computer_use_planner_session.py
+│   ├── test_computer_use_runtime.py
+│   ├── test_computer_use_integration.py
+│   ├── test_language_policy.py
+│   ├── test_capabilities.py
+│   ├── test_capability_main_integration.py
+│   ├── test_dashboard_profiles.py
+│   ├── test_full_mode_consent_state.py
+│   ├── test_full_mode_consent_demo.py
+│   ├── test_full_mode_consent_ui.py
+│   ├── test_frozen_runtime.py
 │   └── test_time_ui_effects.py
 └── agetha/                 # Python package
     ├── app_config.py       # config.txt loader & typed settings
     ├── utils.py            # logging, paths, .env loader
     ├── core/               # AI brain, memory, companion stats
     │   ├── ai_engine.py
+    │   ├── capabilities.py      # Compact/Full policy + effect generations
+    │   ├── capability_consent.py # pure deliberate-consent state machine
     │   ├── fast_mode_profile.py # reversible Fast Mode snapshot/recovery
     │   ├── memory_system.py
     │   ├── memory_search.py
@@ -219,6 +353,10 @@ Agetha_Mod/
     │   ├── dreams.py           # v4 — dream journal
     │   ├── emotion_engine.py   # v5 — persistent emotions
     │   ├── emotional_history.py
+    │   ├── observation_bus.py   # typed bounded local observations
+    │   ├── presence_etiquette.py # local interruption policy
+    │   ├── continuation.py      # bounded multi-message/read-only sessions
+    │   ├── read_only_tools.py   # untrusted ToolOutcome adapters
     │   └── audit_log.py
     ├── commands/           # command guard, handlers, OS utilities
     │   ├── command_guard.py
@@ -226,6 +364,10 @@ Agetha_Mod/
     │   └── system_commands.py
     ├── platform/           # OCR, Win32, voice, autostart, integration
     │   ├── screen_reader.py
+    │   ├── process_awareness.py # foreground/visible/background identity
+    │   ├── full_mode_consent.py # fixed validated Notepad warning only
+    │   ├── self_identity.py     # source/frozen self-target protection
+    │   ├── unicode_typing.py    # exact Unicode entry + safe fallbacks
     │   ├── window_control.py
     │   ├── voice_input.py
     │   ├── autostart.py        # v5 — Startup-folder shortcut
@@ -235,9 +377,15 @@ Agetha_Mod/
     │   ├── web_rag.py
     │   ├── tasks.py            # v4 — task keeper
     │   ├── status_providers.py # v5 — coarse OS observations
+    │   ├── terminal_sentinel.py # opt-in confirmed OCR error notices
     │   └── tray_scaffold.py    # v5 — optional pystray scaffold
+    ├── computer_use/       # opt-in deterministic Computer Use Lite loop
     └── ui/                 # Win95 dashboards, overlays, minigames
         ├── dashboard.py
+        ├── senses_panel.py
+        ├── typing_preview.py
+        ├── terminal_sentinel_popup.py
+        ├── computer_use_status.py
         ├── w95_window.py
         ├── glitch_overlay.py
         └── virus_trivia.py
@@ -284,6 +432,9 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 | `open_browser` | Open URL or search (Google/DuckDuckGo/Bing) |
 | `force_close` | Kill process (user apps auto-allowed; system apps confirmed) |
 | `monitor_process` | Check if process is running |
+| `get_active_app` | Read the current foreground application without a full path |
+| `list_running_apps` | List visible interactive applications, not background services |
+| `computer_use` | Start one explicit opt-in Computer Use Lite session against an authorized app ⚠ |
 
 ### Window Control
 
@@ -305,7 +456,7 @@ Agetha responds with JSON commands. The AI chooses actions based on context; you
 | `system_info` | CPU/RAM/disk report (requires psutil) |
 | `set_volume` | Volume set/mute/unmute |
 | `set_wallpaper` | Change desktop wallpaper |
-| `type_text` | Simulate keyboard typing |
+| `type_text` | Enter exact Unicode text (`mode`: `auto` \| `unicode` \| `paste` \| `preview` \| `paced`; `speed`: `instant` \| `fast` \| `normal` \| `slow`; optional `restore_clipboard`) ⚠ |
 | `lock_screen` | Lock computer ⚠ |
 | `shutdown` / `restart` | Shutdown/restart with delay ⚠ |
 | `set_reminder` | Timed reminder |
@@ -422,7 +573,7 @@ All **non-secret** settings live in `config.txt` and are loaded by `app_config.p
 | `ENABLE_OPENROUTER` | `no` | Use OpenRouter instead of Groq |
 | `OPENROUTER_MODEL` | see `config.txt` | OpenRouter model slug |
 | `FASTER_MODE` | `no` | Reversible AI/context/polling/OCR performance profile; restores prior managed values when disabled |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model name |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model name |
 | `LOCAL_AI_MODEL` | *(empty)* | Ollama model (`ollama list`) |
 | `LOCAL_AI_TIMEOUT` | `30` | Ollama request timeout (seconds) |
 
@@ -436,10 +587,57 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`, `UNLIMITED_OCR_API_KEY`) → *
 | `AI_MAX_TOKENS` | `400` | Max tokens per reply |
 | `AI_TOP_P` | `0.95` | Nucleus sampling (0–1) |
 | `ENABLE_STREAMING` | `yes` | Stream Groq responses to UI |
-| `ENABLE_AMBIENT_POLLS` | `yes` | Periodic screen-context AI polls |
+| `ENABLE_AMBIENT_POLLS` | `yes` | Periodic screen-context AI polls when the active profile permits background sensing |
 | `ENABLE_DATETIME_CONTEXT` | `yes` | Include compact local weekday/date/time in every AI prompt |
 | `DATETIME_INCLUDE_SECONDS` | `no` | Include seconds in datetime context |
 | `DATETIME_INCLUDE_TIMEZONE` | `yes` | Include local zone name and UTC offset |
+
+#### Capability profile
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `COMPACT_MODE` | `yes` | Outer safe profile. `yes` blocks advanced observation/OS effects; `no` is persisted only after the deliberate Full Mode flow |
+
+Fast Mode never manages `COMPACT_MODE`. A previously consented
+`COMPACT_MODE=no` survives restart without replaying the demonstration; Full
+still obeys every individual feature switch below.
+
+#### Continuation and process awareness
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_AGENT_CONTINUATION` | `yes` | Allow one direct-user goal to use the bounded read-only continuation loop |
+| `AGENT_MAX_STEPS` | `6` | Maximum automatic read-only tool steps per goal |
+| `AGENT_MAX_DURATION_SEC` | `120` | Continuation deadline in seconds |
+| `AGENT_MAX_TOOL_RESULT_CHARS` | `8000` | Maximum provider-facing characters from one tool outcome |
+| `ENABLE_PROCESS_AWARENESS` | `yes` | Enable local foreground/visible/process snapshots in Full; Compact overrides this flag |
+| `PROCESS_CONTEXT_MODE` | `visible_apps` | `off`, `foreground_only`, `visible_apps`, or local `all_processes` inspection |
+| `PROCESS_MAX_VISIBLE_APPS` | `20` | Bound visible application results |
+| `PROCESS_CONTEXT_EXCLUDED_APPS` | *(empty)* | Additional comma-separated sensitive application basenames to suppress |
+
+`all_processes` does not automatically transmit the full background inventory
+to a cloud provider. Normal context remains minimized; an explicit user process
+listing is required for broader output.
+
+#### Computer Use Lite (opt-in)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_COMPUTER_USE` | `no` | Master opt-in for explicit direct-user Computer Use sessions |
+| `COMPUTER_USE_MAX_STEPS` | `30` | Maximum session steps |
+| `COMPUTER_USE_TIMEOUT_SEC` | `120` | Session deadline in seconds |
+| `COMPUTER_USE_PLANNER_PROVIDER` | `inherit` | `inherit`, `groq`, `openrouter`, or `ollama` using existing credentials/config |
+| `COMPUTER_USE_PLANNER_MODEL` | *(empty)* | Optional cheaper planner model; blank inherits the selected route's model |
+| `COMPUTER_USE_PLANNER_CONFIDENCE_MIN` | `0.65` | Below this, reobserve/recover rather than guess |
+| `COMPUTER_USE_RECOVERY_AFTER_FAILURES` | `2` | Repeated failures before primary-model recovery is eligible |
+| `COMPUTER_USE_MAX_RECOVERY_CALLS` | `2` | Hard recovery-call budget |
+| `COMPUTER_USE_ALLOWED_APPS` | *(empty)* | Additional comma-separated application allowlist |
+
+Computer Use also requires the Full capability profile and obeys
+`ENABLE_COMMAND_EXECUTION`, Command Guard, protected targets, and Unicode typing
+settings. Fast Mode never changes these permission, provider-selection, profile,
+or safety values. Exact typing payloads are kept local and are not sent to the
+Computer Planner.
 
 #### OS permissions
 
@@ -450,6 +648,25 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`, `UNLIMITED_OCR_API_KEY`) → *
 | `ENABLE_COMMAND_CONFIRMATIONS` | `yes` | Native confirm dialogs for risky cmds |
 | `FORCE_CLOSE_AUTO_ALLOW` | `yes` | Auto-allow `force_close` on user apps |
 | `PROTECTED_PROCESSES` | *(empty)* | Extra comma-separated processes to protect |
+
+#### Universal Unicode typing
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_UNICODE_TYPING` | `yes` | Full-only feature gate for `type_text`; the command also requires `ENABLE_COMMAND_EXECUTION` and Command Guard |
+| `UNICODE_TYPING_MODE` | `auto` | Default mode: `auto`, `unicode`, `paste`, `preview`, or `paced` |
+| `UNICODE_TYPING_DELAY_MS` | `20` | Paced chunk delay, clamped to 0–500 ms |
+| `UNICODE_TYPING_PREVIEW_THRESHOLD` | `300` | Long-text preview threshold, clamped to 40–50,000 characters |
+| `UNICODE_TYPING_RESTORE_CLIPBOARD` | `yes` | Restore captured clipboard text only if Agetha's temporary value is still present |
+
+`type_text` remains a Caution command. Preflight captures the intended external
+window before confirmation, rejects Agetha and conservative protected/elevated
+targets, revalidates focus before entry and at paced boundaries, and stops on
+focus change, cancellation, or shutdown. Long, multiline, terminal,
+administrator-related, shell-like, sensitive-looking, and explicit-preview
+requests use a Win95 preview; detected sensitive content is hidden. Logs and
+guard descriptions contain counts and method/target metadata, never the typed
+payload.
 
 #### Context & memory
 
@@ -486,6 +703,21 @@ API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`, `UNLIMITED_OCR_API_KEY`) → *
 | `DREAMS_MAX_ENTRIES` | `40` | Max dream records kept (5–500) |
 | `ENABLE_TASKS` | `yes` | `add_task` / `complete_task` / `list_tasks` → `memory/tasks.json` |
 | `TASKS_MAX_ENTRIES` | `100` | Max stored tasks (10–1000); oldest completed pruned first |
+
+#### Polyglot presence controls
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_PRESENCE_ETIQUETTE` | `yes` | Apply local interruption, voice, focus, movement, and queue policy |
+| `PRESENCE_FULLSCREEN_SILENT` | `yes` | Suppress nonessential popup/voice/focus behavior in fullscreen or presentation state |
+| `PRESENCE_DISMISS_COOLDOWN_SEC` | `900` | Bounded backoff after repeated dismissals (10–86,400 s) |
+| `PRESENCE_RAPID_TYPING_COOLDOWN_SEC` | `30` | Delay nonurgent reactions after rapid input (1–3,600 s) |
+| `QUIET_HOURS_START` / `QUIET_HOURS_END` | *(empty)* | Optional local `HH:MM` quiet-hours window; both empty disables it |
+| `ENABLE_TERMINAL_SENTINEL` | `no` | Enable the Full-only local confirmed-error observer; Compact and an empty allowlist both keep it inactive |
+| `TERMINAL_SENTINEL_APPS` | *(empty)* | Comma-separated process/application allowlist |
+| `TERMINAL_SENTINEL_TITLE_PATTERNS` | *(empty)* | Comma-separated safe title patterns for explicitly allowed targets |
+| `TERMINAL_SENTINEL_COOLDOWN_SEC` | `120` | Local duplicate-notification cooldown, clamped to 10–86,400 s |
+| `ENABLE_SENSES_PANEL` | `yes` | Allow Full Dashboard → Senses to show passive local capability state; Compact hides the entry |
 
 #### Emotion & Windows integration (v5.0.0)
 
@@ -545,7 +777,7 @@ The glitch effect is **disabled by default** (`ENABLE_GLITCH_EFFECTS = no`). Whe
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ENABLE_SCREEN_READER` | `yes` | Enable OCR screen context |
+| `ENABLE_SCREEN_READER` | `yes` | Enable OCR screen context when the active profile permits sensing |
 | `OCR_MAX_DIMENSION` | `2560` | Max capture dimension (px) |
 | `OCR_FOCUSED_WINDOW_ONLY` | `yes` | OCR focused window only |
 | `OCR_CHANGE_DETECTION` | `yes` | Skip Tesseract while the captured target is visually unchanged |
@@ -719,6 +951,18 @@ On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used 
 - **Microphone** — optional, for voice input (`ENABLE_VOICE = yes`)
 - **PyAudio** — optional, required for microphone (installed by Medic_Checker)
 
+### Frozen executable caveat
+
+The repository contains existing PyInstaller-style spec files. `main.spec`
+currently produces a console artifact named `main.exe`, has an empty data-file
+manifest, and does not by itself stage `assets/`; its presence is not proof that
+a current distributable was built or smoke-tested. In frozen mode Agetha uses
+the executable directory—not the process current directory or `_MEIPASS`—for
+mutable config/state and sibling assets. Do not add a new packager for this
+feature, and report source tests, frozen compatibility audits, local builds, and
+real `.exe` smoke tests separately. Windows ARM64 remains the documented x64
+process-under-Prism path, not a native ARM64 executable claim.
+
 ### Python packages (`requirements.txt`)
 
 **Core:**
@@ -745,7 +989,8 @@ pyttsx3 / edge-tts / kokoro       # VOICE_OUTPUT_MODE = tts_only|both (per VOICE
 | 🎤 button | Toggle microphone (`ENABLE_VOICE = yes`) — speak, pause ~1.2 s, text is sent |
 | Drop file on GIF | File drag event (`ENABLE_FILE_DRAG_DROP = yes`) |
 | Click GIF | Touch event (`__touch__`) — 10 s cooldown |
-| **Escape** | Cancel in-flight AI request |
+| 📊 title-bar button | Open Dashboard; choose **Open Senses Control Panel** for the local capability snapshot |
+| **Escape** | Cancel an in-flight AI/Continuation request and the active Computer Use session |
 | Title bar | Drag window |
 
 ---
@@ -753,16 +998,37 @@ pyttsx3 / edge-tts / kokoro       # VOICE_OUTPUT_MODE = tts_only|both (per VOICE
 ## Architecture Overview
 
 ```
-User input / ambient poll (every ~2 min)
+Config → central Compact/Full capability policy
         ↓
-screen_reader.py  →  OCR + pattern tags + window title
+Direct user goal / eligible ambient poll
         ↓
-ai_engine.py      →  Groq / OpenRouter / Ollama → JSON command
+screen_reader.py + process_awareness.py → minimized local context
         ↓
-command_guard.py  →  Native confirmation (if needed)
+ai_engine.py → Groq / OpenRouter / Ollama → validated response
         ↓
-command_handlers.py → Execute action + update UI
+continuation.py → bounded status / read-only tool / final decisions
+        ↓
+capability decision → command_guard.py + command_handlers.py → guarded actions
+
+Explicit opt-in Computer Use goal
+        ↓
+Observer → isolated one-action Planner → deterministic Policy
+        ↓
+PID/name/creation-time/HWND/bounds revalidation → Executor → Verifier
 ```
+
+Confirmed local observations also flow through
+`core.observation_bus.ObservationBus`. Publication itself performs no UI,
+provider, memory, or command work. `core.presence_etiquette.PresenceEtiquette`
+decides whether an eligible local reaction may interrupt. Terminal Sentinel is
+fed only from the existing confirmed-new-event OCR path, and the Senses panel
+reads already-known runtime/configuration state on an application-owned worker.
+
+Continuation tool results are untrusted read-only observations, never a new
+user-authority source. Computer Use is a separate default-off direct-user
+session and is Full-only: planner output is only a proposal and cannot bypass
+the Compact outer gate, deterministic policy, target locking, Command Guard,
+cancellation, or shutdown.
 
 ---
 

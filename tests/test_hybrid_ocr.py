@@ -407,6 +407,14 @@ class TestDeepOCRIntegration(unittest.TestCase):
 
     def test_external_target_is_preserved_before_confirmation(self):
         app = MagicMock()
+        from agetha.app_config import AppSettings
+        from agetha.core.capabilities import CapabilityController, CapabilityPolicy
+        app._capabilities = CapabilityController(
+            CapabilityPolicy.from_settings(AppSettings({
+                "COMPACT_MODE": "no",
+                "ENABLE_COMMAND_EXECUTION": "yes",
+            }))
+        )
         app._ATTENTION_MOODS = set()
         target = {
             "left": 10, "top": 20, "width": 300, "height": 200,
@@ -546,6 +554,7 @@ class TestDeepOCRIntegration(unittest.TestCase):
         app._ai_tick_lock = __import__("threading").Lock()
         app._ai_busy = True
         app._ai_busy_noninterruptible = True
+        app._ai_operation_token = object()
         app._speech_active = False
         app.root = MagicMock()
         app.root.after.side_effect = lambda _delay, callback: callback()
@@ -558,6 +567,10 @@ class TestDeepOCRIntegration(unittest.TestCase):
 
         self.assertEqual(result, {"command": "idle"})
         self.assertTrue(app._ai_busy)
+        self.assertEqual(
+            app._ai.query.call_args.kwargs.get("request_origin"),
+            "tool_result",
+        )
         app._drain_pending_user_message.assert_not_called()
 
 

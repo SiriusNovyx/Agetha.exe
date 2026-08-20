@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import queue
 import tempfile
 import threading
 import time
@@ -15,6 +16,7 @@ from agetha.commands.command_handlers import DispatchCtx, HANDLERS, dispatch
 from agetha.core.ai_engine import AIEngine
 from agetha.core.external_context import prepare_external_context
 from agetha.core.file_drop import prepare_file_drop
+from agetha.core.context_dependencies import ContextKind, ContextRequest
 from agetha.core.request_context import (
     render_request_message,
     request_profile_for_origin,
@@ -163,11 +165,22 @@ class TestExternalContextAndLogging(unittest.TestCase):
         app._speech_active = False
         app._pending_user_message = None
         app._pending_user_origin = "user"
+        app._pending_screen_context = None
         app._post_ai_tick_callbacks = []
         app._deferred_ai_callbacks_inflight = False
         app._cancel_event = threading.Event()
         app._last_screen_text = ""
         app._screen = None
+        from agetha.app_config import AppSettings
+        from agetha.core.capabilities import CapabilityController, CapabilityPolicy
+        app._capabilities = CapabilityController(
+            CapabilityPolicy.from_settings(AppSettings({
+                "COMPACT_MODE": "no",
+                "ENABLE_AMBIENT_POLLS": "yes",
+                "ENABLE_PROCESS_AWARENESS": "no",
+            }))
+        )
+        app._process_awareness = None
         app._ai = MagicMock()
         app._ai.query.return_value = {
             "command": "idle", "mood": "neutral", "segments": [],
@@ -193,6 +206,7 @@ class TestExternalContextAndLogging(unittest.TestCase):
         self.assertNotIn("AI_PRIVATE_RESPONSE", output)
         self.assertFalse(any("USER_PRIVATE_TEXT" in str(call) for call in printed.call_args_list))
         self.assertEqual(app._ai.query.call_args.kwargs["request_profile"], "fast_user")
+        self.assertEqual(app._ai.query.call_args.kwargs.get("request_origin"), "user")
 
 
 class TestRequestOrigins(unittest.TestCase):
@@ -203,10 +217,15 @@ class TestRequestOrigins(unittest.TestCase):
                 self.assertEqual(render_request_message("user", text), text)
 
     def test_real_internal_events_are_labelled_and_use_command_profile(self):
-        for origin in ("touch", "file_drop", "reminder", "tool_result"):
+        for origin in ("touch", "file_drop", "reminder"):
             with self.subTest(origin=origin):
                 self.assertEqual(request_profile_for_origin(origin), "fast_command")
                 self.assertIn(f"internal event: {origin}", render_request_message(origin, "event"))
+        self.assertEqual(request_profile_for_origin("tool_result"), "tool_continuation")
+        self.assertIn(
+            "internal event: tool_result",
+            render_request_message("tool_result", "event"),
+        )
         self.assertEqual(request_profile_for_origin("ambient"), "fast_ambient")
 
     def test_real_touch_event_passes_structured_origin(self):
@@ -227,16 +246,39 @@ class TestRequestOrigins(unittest.TestCase):
         self.assertNotEqual(kwargs["user_message"], "__touch__")
 
     def test_real_reminder_passes_structured_origin(self):
+        from agetha.app_config import AppSettings
+        from agetha.commands import command_handlers
+        from agetha.core.capabilities import (
+            Capability,
+            CapabilityController,
+            CapabilityPolicy,
+        )
+
+        settings = AppSettings({
+            "COMPACT_MODE": "no",
+            "ENABLE_COMMAND_EXECUTION": "yes",
+        })
+        controller = CapabilityController(CapabilityPolicy.from_settings(settings))
+        authorization = controller.authorize(Capability.ADVANCED_OS_INTEGRATION)
         app = MagicMock()
+        app._capabilities = controller
         app._ai = object()
         app._ai_query.return_value = None
         ctx = DispatchCtx(None, "neutral", [], False)
         callbacks = []
         with patch(
             "agetha.commands.command_handlers.set_reminder",
-            side_effect=lambda _seconds, _text, callback: callbacks.append(callback),
+            side_effect=lambda _seconds, _text, callback, **_kwargs: callbacks.append(callback),
         ):
-            HANDLERS["set_reminder"](app, {"seconds": 1, "reminder_text": "tea"}, ctx)
+            HANDLERS["set_reminder"](
+                app,
+                {
+                    "seconds": 1,
+                    "reminder_text": "tea",
+                    command_handlers._CAPABILITY_AUTHORIZATION: authorization,
+                },
+                ctx,
+            )
         callbacks[0]("tea")
         self.assertEqual(app._ai_query.call_args.kwargs["origin"], "reminder")
 
@@ -271,6 +313,46 @@ class TestThreadingAndArbitration(unittest.TestCase):
         self.assertTrue(app._ai_busy)
         self.assertTrue(app._release_ai_operation(token))
         self.assertFalse(app._release_ai_operation(token))
+
+    def test_queued_stream_token_is_discarded_after_cancel(self):
+        app = self._app()
+        app._subtitle = MagicMock()
+        queued = []
+        app._schedule_ui = queued.append
+        token = app._reserve_ai_operation(
+            direct=True, user_message="hello", origin="user",
+        )
+
+        app._schedule_owned_ai_ui(
+            token,
+            lambda: app._subtitle.show_thinking("stale provider text"),
+        )
+        app._cancel_event.set()
+        queued.pop()()
+
+        app._subtitle.show_thinking.assert_not_called()
+
+    def test_queued_stream_token_is_discarded_after_request_preemption(self):
+        app = self._app()
+        app._subtitle = MagicMock()
+        queued = []
+        app._schedule_ui = queued.append
+        first = app._reserve_ai_operation(
+            direct=True, user_message="first", origin="user",
+        )
+        app._schedule_owned_ai_ui(
+            first,
+            lambda: app._subtitle.show_thinking("first request"),
+        )
+        self.assertTrue(app._release_ai_operation(first))
+        second = app._reserve_ai_operation(
+            direct=True, user_message="second", origin="user",
+        )
+
+        queued.pop()()
+
+        self.assertIsNot(first, second)
+        app._subtitle.show_thinking.assert_not_called()
 
     def test_noninterruptible_slot_queues_without_cancelling(self):
         app = self._app()
@@ -321,35 +403,34 @@ class TestThreadingAndArbitration(unittest.TestCase):
         callback.assert_called_once()
 
     def test_deferred_exclusive_reserves_before_queued_input_drains(self):
-        import main
-
         app = self._app()
         app._input_box = MagicMock()
         app._re_enable_input = MagicMock()
         app._pending_user_message = "queued"
-        scheduled = []
-        app.root.after.side_effect = (
-            lambda _delay, callback: scheduled.append(callback) or "job"
-        )
+        app.root.after.side_effect = None
+        app.root.after.return_value = "ui-poll"
+        app._ui_owner_thread_id = threading.get_ident()
+        app._ui_callback_queue = queue.SimpleQueue()
+        app._ui_queue_poll_job = None
         app._start_worker = MagicMock()
         app._defer_exclusive_ai_operation(MagicMock())
 
-        with patch.object(main.threading, "current_thread", return_value=object()), patch.object(
-            main.threading, "main_thread", return_value=object(),
-        ):
-            app._run_deferred_ai_tick_callbacks()
+        worker = threading.Thread(target=app._run_deferred_ai_tick_callbacks)
+        worker.start()
+        worker.join(1.0)
 
+        self.assertFalse(worker.is_alive())
         app._start_worker.assert_not_called()
         self.assertEqual(app._pending_user_message, "queued")
-        scheduled.pop(0)()
+        app.root.after.assert_not_called()
+        app._drain_ui_queue()
         self.assertTrue(app._ai_busy)
         self.assertTrue(app._ai_busy_noninterruptible)
         self.assertEqual(app._start_worker.call_args.kwargs["name"], "exclusive-ai")
         self.assertEqual(app._pending_user_message, "queued")
 
-    def test_screen_read_followup_uses_reserved_exclusive_slot(self):
+    def test_screen_read_compatibility_signal_uses_typed_dependency(self):
         app = MagicMock()
-        app._screen.capture_text.return_value = "screen text"
         ctx = DispatchCtx(
             user_message="read this",
             origin="user",
@@ -360,13 +441,13 @@ class TestThreadingAndArbitration(unittest.TestCase):
 
         HANDLERS["request_screen_read"](app, {}, ctx)
 
-        callback = app._defer_exclusive_ai_operation.call_args.args[0]
-        callback()
-        self.assertTrue(app._ai_query.call_args.kwargs["reserved_ai_slot"])
-        self.assertEqual(
-            app._ai_query.call_args.kwargs["request_profile"],
-            "fast_tool_result",
+        app._request_read_only_context_dependency.assert_called_once_with(
+            ContextRequest(ContextKind.SCREEN),
+            "read this",
+            origin="user",
         )
+        app._screen.capture_text.assert_not_called()
+        app._defer_exclusive_ai_operation.assert_not_called()
 
     def test_worker_join_is_bounded_and_does_not_join_current(self):
         app = self._app()
@@ -395,6 +476,25 @@ class TestThreadingAndArbitration(unittest.TestCase):
         app._drain_pending_user_message()
         kwargs = app._start_worker.call_args.kwargs["kwargs"]
         self.assertEqual(kwargs, {"user_message": "remember", "origin": "reminder"})
+
+    def test_queued_terminal_explain_preserves_its_authorized_context(self):
+        app = self._app()
+        app._ai_busy = True
+        self.assertIsNone(app._reserve_ai_operation(
+            direct=True,
+            user_message="Explain this failure",
+            origin="terminal_sentinel",
+            explicit_screen_context="SANITIZED SENTINEL CONTEXT",
+        ))
+        app._ai_busy = False
+        app._start_worker = MagicMock()
+        app._drain_pending_user_message()
+        kwargs = app._start_worker.call_args.kwargs["kwargs"]
+        self.assertEqual(kwargs, {
+            "user_message": "Explain this failure",
+            "origin": "terminal_sentinel",
+            "explicit_screen_context": "SANITIZED SENTINEL CONTEXT",
+        })
 
     def test_gif_schedule_failure_discards_decoded_result(self):
         import main
@@ -545,10 +645,18 @@ class TestWindowPickerLifecycle(unittest.TestCase):
 
 class TestCommandSafetyRegression(unittest.TestCase):
     def _app(self):
+        from agetha.app_config import AppSettings
+        from agetha.core.capabilities import CapabilityController, CapabilityPolicy
+
+        settings = AppSettings({
+            "COMPACT_MODE": "no",
+            "ENABLE_COMMAND_EXECUTION": "yes",
+        })
         app = MagicMock()
         app.root.after.side_effect = lambda _delay, callback: callback()
         app._ATTENTION_MOODS = set()
         app._try_short_mood_speak.return_value = False
+        app._capabilities = CapabilityController(CapabilityPolicy.from_settings(settings))
         return app
 
     def test_unknown_and_malformed_dispatch_fail_closed(self):
@@ -604,22 +712,17 @@ class TestCommandSafetyRegression(unittest.TestCase):
             "command": "write_file",
             "file_path": r"C:\notes\failed report.txt",
             "content": "done",
+            "mood": "happy",
+            "segments": [{"text": "Done.", "pause": 0.0}],
         }
-        ctx = DispatchCtx(
-            user_message="write it",
-            origin="user",
-            mood="happy",
-            segments=[{"text": "Done.", "pause": 0.0}],
-            shutdown_requested=False,
-        )
 
-        HANDLERS["write_file"](app, response, ctx)
+        dispatch(app, response, "write it", origin="user")
 
         app._show_op_error.assert_not_called()
         app._speak_and_continue.assert_called_once_with(
-            ctx.segments,
-            ctx.mood,
-            ctx.shutdown_requested,
+            response["segments"],
+            response["mood"],
+            False,
         )
 
     def test_parser_rejects_non_object_json(self):
@@ -632,6 +735,39 @@ class TestCommandSafetyRegression(unittest.TestCase):
         guard._root.after.side_effect = RuntimeError("closing")
         guard._settings = MagicMock(enable_command_confirmations=True)
         self.assertFalse(guard.check("delete_file", {"path": "x"}))
+
+    def test_worker_command_guard_uses_injected_ui_queue_not_tk(self):
+        guard = CommandGuard.__new__(CommandGuard)
+        guard._root = MagicMock()
+        guard._root.after.side_effect = AssertionError("worker touched Tk")
+        guard._settings = MagicMock(enable_command_confirmations=True)
+        guard._owner_thread_id = threading.get_ident()
+        callbacks = []
+        scheduled = threading.Event()
+
+        def _schedule(callback):
+            callbacks.append(callback)
+            scheduled.set()
+            return callback
+
+        guard._schedule_ui = _schedule
+        guard._show_dialog = MagicMock(return_value=True)
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(
+                guard.check("delete_file", {"path": "withheld"}),
+            ),
+        )
+        worker.start()
+        self.assertTrue(scheduled.wait(1.0))
+        guard._root.after.assert_not_called()
+
+        callbacks.pop()()
+        worker.join(1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [True])
+        guard._show_dialog.assert_called_once()
 
 
 if __name__ == "__main__":

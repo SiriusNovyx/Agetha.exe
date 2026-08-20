@@ -1,14 +1,21 @@
 # Polyglot Presence manual validation
 
 This is the release-facing desktop smoke checklist for the implemented
-Polyglot Presence scope: Natural Thai voice, exact Unicode typing, Observation
-Bus, Presence Etiquette, opt-in Terminal Sentinel, and the Senses Control
-Panel.
+Polyglot Presence scope: language-neutral multilingual mirroring, exact Unicode
+typing, Observation Bus, Presence Etiquette, opt-in Terminal Sentinel, and the
+Senses Control Panel. Language samples are test vectors, not Agetha's preferred
+language or a claim of equal model quality across languages.
 
-**Current execution status (2026-08-03): NOT PERFORMED.** This document was
-created during source/documentation work. No item below was manually exercised
-on a Windows, Xorg, or Wayland desktop in that work. Unit tests, compile checks,
-mocks, and code inspection do not count as manual execution.
+**Current execution status (2026-08-11): PARTIALLY PERFORMED ON WINDOWS.** Two
+Windows items were observed with Computer Use; 18 Windows items and all Xorg and
+Wayland checks remain unperformed. Unit tests, compile checks, mocks, and code
+inspection do not count as manual execution.
+
+The Windows Computer Use run launched the source with the process-scoped
+`AGETHA_TEST_MODE=1` environment variable. This retains native window framing
+only for automation targetability. With the variable absent, production keeps
+the existing borderless `overrideredirect(True)` behavior. The test variable is
+not written to `config.txt` or persisted by Agetha.
 
 When a human performs an item, replace only that item's status, record the
 platform/build and date, and add concise evidence without screenshots or logs
@@ -24,18 +31,22 @@ launcher intended for normal use. Windows ARM/Snapdragon should use the
 supported x64 Python-under-Prism path; record it separately from native OS
 architecture.
 
-1. [ ] **Natural Thai greeting — NOT PERFORMED.** Ask for a simple greeting and
-   confirm Agetha says `สวัสดี`, not the generic-default `สวัสดีครับ` or
-   `สวัสดีค่ะ`. This is a sampling check of prompt behavior, not proof that all
-   future model output is guaranteed.
+1. [x] **Current-language mirroring sample (Thai vector) — PASSED 2026-08-11.**
+   Computer Use submitted a disposable Thai greeting request. Agetha visibly replied
+   `สวัสดี กลับมาแล้วเหรอ`, using `สวัสดี` without adding an unrequested
+   `ครับ` or `ค่ะ`. This remains a sampling check of prompt
+   behavior, not proof that all future model output is guaranteed and not a
+   language preference. This observation predates the generalized prompt and
+   therefore does not by itself validate the new policy.
 
-2. [ ] **Exact formal Thai typing — NOT PERFORMED.** Ask Agetha to type
+2. [ ] **Exact requested Thai text — NOT PERFORMED.** Ask Agetha to type
    `ขอบคุณครับ` into a disposable target. Confirm the exact string is preserved;
-   the character-voice rule must not remove `ครับ` from user-provided data.
+   the language policy must not remove `ครับ` from user-provided data.
 
-3. [ ] **Thai in Notepad — NOT PERFORMED.** Type a sample containing base
-   letters, tone/combining marks, spaces, and Thai punctuation. Compare exact
-   code points or copy the result back for a byte/code-point comparison.
+3. [ ] **Balanced additional scripts in Notepad — NOT PERFORMED.** Type
+   disposable Thai combining marks, Chinese `你好`, Korean `안녕하세요`, Russian
+   `Привет`, and French `Bonjour`. Compare exact code points or copy the results
+   back for a byte/code-point comparison.
 
 4. [ ] **Japanese in Notepad — NOT PERFORMED.** Type `こんにちは` plus Japanese
    punctuation and confirm the exact requested string appears without keyboard
@@ -113,11 +124,14 @@ architecture.
     new event. Test Ignore Pattern with disposable output and confirm raw OCR
     text is not persisted.
 
-19. [ ] **Senses reports real state — NOT PERFORMED.** Open Dashboard → Senses
-    and refresh. Inspect Vision, Hearing, Memory, Network & AI, Actions, and
-    Presence. Confirm unavailable, disabled, not configured, degraded, and
-    unknown are not mislabeled as available; provider keys are absent and no
-    paid/network availability probe occurs merely because the panel opened.
+19. [x] **Senses reports real state — PASSED 2026-08-11.** Computer Use opened
+    Dashboard → Senses and inspected Vision, Hearing, Memory, Network & AI,
+    Actions, and Presence. The panel visibly distinguished available,
+    disabled, not configured, degraded, and unknown states; exposed no provider
+    key or private path; and retained `no network checks run`. Reopening the
+    existing panel refreshed it and visibly advanced the update timestamp. This
+    observation predates the Compact/Full profile phase and does not count as a
+    pass for the profile-aware Senses behavior in the separate checklist.
 
 20. [ ] **Shutdown during owned workers — NOT PERFORMED.** Separately request
     final close while Unicode typing, Senses refresh, and Terminal Sentinel
@@ -129,14 +143,14 @@ architecture.
 
 | Field | Value |
 |---|---|
-| Tester | Not recorded |
-| Date/time zone | Not performed |
-| Windows edition/build | Not performed |
-| Native OS architecture | Not performed |
-| Python/process architecture | Not performed |
-| Launcher | Not performed |
-| Config deviations | Not performed |
-| Items passed/failed/skipped | 0 / 0 / 20 unperformed |
+| Tester | Codex Computer Use |
+| Date/time zone | 2026-08-11, Asia/Bangkok |
+| Windows edition/build | Windows 11, 10.0.26100 |
+| Native OS architecture | ARM64 |
+| Python/process architecture | CPython 3.13.15, win-amd64 (x64 under Prism) |
+| Launcher | Source: `AGETHA_TEST_MODE=1`, `py -3 main.py` |
+| Config deviations | Test-mode environment only; no persisted config change |
+| Items passed/failed/skipped | 2 / 0 / 0; 18 unperformed |
 
 ## Linux Xorg notes
 
@@ -146,8 +160,9 @@ clipboard utilities, and `xdotool` availability before testing.
 - Xorg automatic entry is clipboard-and-paste, not Win32 native Unicode. Target
   identity/focus and paste activation use optional `xdotool`; clipboard access
   uses optional `xclip` or `xsel`. None is a mandatory Python dependency.
-- With the tools available, repeat exact Thai, Japanese, Arabic, mixed emoji,
-  focus-change, compare-and-restore clipboard, preview, and no-Enter checks.
+- With the tools available, repeat balanced English, Thai, Japanese, Chinese,
+  Korean, Arabic, Russian, French, mixed-script, and emoji exact-text checks,
+  plus focus-change, compare-and-restore clipboard, preview, and no-Enter checks.
 - If target discovery, clipboard access, or paste synthesis is unavailable,
   expect a truthful copy-only or unavailable result. Do not record automatic
   typing as passed from clipboard contents alone.
@@ -205,6 +220,6 @@ Do not change this summary to “passed” based solely on automated validation.
 
 | Platform | Performed | Passed | Failed | Skipped/unavailable | Unperformed |
 |---|---:|---:|---:|---:|---:|
-| Windows checklist | 0 | 0 | 0 | 0 | 20 |
+| Windows checklist | Yes | 2 | 0 | 0 | 18 |
 | Xorg notes | No | 0 | 0 | 0 | All |
 | Wayland notes | No | 0 | 0 | 0 | All |

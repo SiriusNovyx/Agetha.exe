@@ -6,6 +6,7 @@ Removes the native DWM title bar so only the drawn Win95 header is visible.
 
 from __future__ import annotations
 
+import os
 import sys
 import tkinter as tk
 from typing import TYPE_CHECKING
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from tkinter import Misc
 
 IS_WINDOWS = sys.platform == "win32"
+_UI_TEST_MODE_ENV = "AGETHA_TEST_MODE"
 _GWL_STYLE = -16
 _WS_CAPTION = 0x00C00000
 _WS_THICKFRAME = 0x00040000
@@ -25,6 +27,13 @@ _SWP_FRAMECHANGED = 0x0020
 _SWP_NOMOVE = 0x0002
 _SWP_NOSIZE = 0x0001
 _SWP_NOZORDER = 0x0004
+
+
+def ui_test_mode_enabled(environment=None) -> bool:
+    """Return whether explicit UI automation mode is enabled for this process."""
+    env = os.environ if environment is None else environment
+    raw = str(env.get(_UI_TEST_MODE_ENV, "") or "").strip().lower()
+    return raw in {"1", "yes", "true", "on"}
 
 
 def _resolve_hwnd(win: tk.Misc) -> int:
@@ -41,7 +50,7 @@ def _resolve_hwnd(win: tk.Misc) -> int:
 
 def strip_native_caption(win: tk.Misc) -> None:
     """Strip Win32 caption frame after overrideredirect (Win10/11 DWM quirk)."""
-    if not IS_WINDOWS:
+    if not IS_WINDOWS or ui_test_mode_enabled():
         return
     hwnd = _resolve_hwnd(win)
     if not hwnd:
@@ -76,7 +85,7 @@ def apply_borderless_win95(
         except Exception:
             pass
         try:
-            win.overrideredirect(True)
+            win.overrideredirect(not ui_test_mode_enabled())
         except Exception:
             pass
     if parent is not None:
@@ -96,12 +105,13 @@ def refresh_borderless(win: tk.Misc) -> None:
     if not IS_WINDOWS:
         return
     try:
-        win.overrideredirect(True)
+        win.overrideredirect(not ui_test_mode_enabled())
     except Exception:
         pass
     try:
         win.update_idletasks()
-        strip_native_caption(win)
+        if not ui_test_mode_enabled():
+            strip_native_caption(win)
         win.lift()
     except Exception as exc:
         logger.warning(f"w95_window: refresh_borderless failed: {exc}")
@@ -111,7 +121,7 @@ def show_borderless(win: tk.Misc) -> None:
     """Finalize and show a borderless window."""
     try:
         win.update_idletasks()
-        if IS_WINDOWS:
+        if IS_WINDOWS and not ui_test_mode_enabled():
             strip_native_caption(win)
         win.deiconify()
         if IS_WINDOWS:

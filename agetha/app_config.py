@@ -10,6 +10,7 @@ values in config.txt are ignored.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -29,6 +30,7 @@ else:
 
 CONFIG_PATH = BASE_DIR / "config.txt"
 ENV_PATH = BASE_DIR / ".env"
+COMPACT_MODE_FAIL_CLOSED_MARKER = ".agetha_compact_mode_required"
 
 _CONFIG_WRITE_LOCK = threading.RLock()
 
@@ -90,6 +92,64 @@ def _write_atomic_config(path: Path, content: str) -> None:
         )
         raise AtomicWriteError(state, f"atomic write failed during {state}") from exc
 
+
+def compact_mode_fail_closed_path(config_path: Path | None = None) -> Path:
+    """Return the owned marker that makes a failed downgrade survive restart."""
+    target = Path(config_path or CONFIG_PATH)
+    return target.parent / COMPACT_MODE_FAIL_CLOSED_MARKER
+
+
+def _compact_mode_fail_closed_paths(
+    config_path: Path | None = None,
+) -> tuple[Path, ...]:
+    """Return install-local then per-user fallback marker paths for this config."""
+    target = Path(config_path or CONFIG_PATH)
+    primary = compact_mode_fail_closed_path(target)
+    paths = [primary]
+    if target == Path(CONFIG_PATH):
+        state_value = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
+        state_root = Path(state_value) if state_value else Path.home() / ".local" / "state"
+        identity = os.path.normcase(os.path.abspath(str(target))).encode("utf-8")
+        scope = hashlib.sha256(identity).hexdigest()[:16]
+        fallback = state_root / "Agetha" / "safety" / f"compact-required-{scope}"
+        if fallback != primary:
+            paths.append(fallback)
+    return tuple(paths)
+
+
+def compact_mode_fail_closed_required(config_path: Path | None = None) -> bool:
+    """Treat any marker entry, including a symlink, as a safe Compact request."""
+    return any(os.path.lexists(path) for path in _compact_mode_fail_closed_paths(config_path))
+
+
+def arm_compact_mode_fail_closed(config_path: Path | None = None) -> bool:
+    """Durably require Compact startup before attempting the config transaction."""
+    last_error: Exception | None = None
+    for marker in _compact_mode_fail_closed_paths(config_path):
+        try:
+            with _CONFIG_WRITE_LOCK:
+                _write_atomic_config(marker, "compact-required\n")
+            return True
+        except Exception as exc:
+            last_error = exc
+    _log_config(f"Could not arm Compact Mode restart protection: {last_error}")
+    return False
+
+
+def clear_compact_mode_fail_closed(config_path: Path | None = None) -> bool:
+    """Clear restart protection only after an explicit durable profile write."""
+    cleared = True
+    for marker in _compact_mode_fail_closed_paths(config_path):
+        try:
+            with _CONFIG_WRITE_LOCK:
+                if os.path.lexists(marker):
+                    marker.unlink()
+                    _fsync_parent_directory(marker)
+        except Exception as exc:
+            cleared = False
+            _log_config(f"Could not clear Compact Mode restart protection: {exc}")
+    return cleared
+
 DEFAULT_CONFIG = """# =============================================================================
 # Agetha Mod — config.txt
 # =============================================================================
@@ -104,6 +164,12 @@ DEFAULT_CONFIG = """# ==========================================================
 #
 # After editing, restart Agetha (or re-run Medic_Checker.bat).
 # =============================================================================
+
+
+# ── Capability profile ──────────────────────────────────────────────────────
+# yes = classic/upstream-compatible Compact presentation and safe core features.
+# no = Full profile; advanced features still obey every individual feature gate.
+COMPACT_MODE = yes
 
 
 # ── AI Backend ───────────────────────────────────────────────────────────────
@@ -143,7 +209,7 @@ FASTER_MODE = no
 # Copy .env.example → .env and set GROQ_API_KEY_1=… (up to _10 for rotation).
 # Do not put GROQ_API_KEY* lines in this file — they are ignored.
 
-# GROQ_MODEL — model name from Groq console (default: llama-3.3-70b-versatile).
+# GROQ_MODEL — model name from Groq console (default: openai/gpt-oss-120b).
 GROQ_MODEL = openai/gpt-oss-120b
 
 
@@ -203,6 +269,25 @@ FORCE_CLOSE_AUTO_ALLOW = yes
 # PROTECTED_PROCESSES — extra comma-separated names Agetha must not kill
 # (explorer.exe, python.exe, etc. are always protected). Example: myapp.exe,obs64.exe
 PROTECTED_PROCESSES =
+
+
+# ── Universal Unicode typing ──────────────────────────────────────────────────
+# Exact user-provided text is preserved. The command never presses Enter/Tab.
+
+# ENABLE_UNICODE_TYPING — no = reject type_text before any target/clipboard work.
+ENABLE_UNICODE_TYPING = yes
+
+# UNICODE_TYPING_MODE — auto|unicode|paste|preview|paced
+UNICODE_TYPING_MODE = auto
+
+# UNICODE_TYPING_DELAY_MS — paced chunk delay (0–500 ms).
+UNICODE_TYPING_DELAY_MS = 20
+
+# UNICODE_TYPING_PREVIEW_THRESHOLD — preview at or above this character count.
+UNICODE_TYPING_PREVIEW_THRESHOLD = 300
+
+# Restore the prior clipboard only if it still contains Agetha's temporary text.
+UNICODE_TYPING_RESTORE_CLIPBOARD = yes
 
 
 # ── Context & Memory ─────────────────────────────────────────────────────────
@@ -292,6 +377,52 @@ ENABLE_TASKS = yes
 
 # TASKS_MAX_ENTRIES — max stored tasks (10–1000). Oldest completed pruned first.
 TASKS_MAX_ENTRIES = 100
+
+
+# Presence decisions are local rules; they never require an AI/provider request.
+ENABLE_PRESENCE_ETIQUETTE = yes
+PRESENCE_FULLSCREEN_SILENT = yes
+PRESENCE_DISMISS_COOLDOWN_SEC = 900
+PRESENCE_RAPID_TYPING_COOLDOWN_SEC = 30
+# Optional local quiet-hours window in 24-hour HH:MM form. Empty = disabled.
+QUIET_HOURS_START =
+QUIET_HOURS_END =
+
+# Narrow opt-in developer error observer. The switch remains off by default;
+# this conservative exact-process preset covers common terminal/developer apps.
+ENABLE_TERMINAL_SENTINEL = no
+TERMINAL_SENTINEL_APPS = WindowsTerminal.exe, powershell.exe, pwsh.exe, cmd.exe, Code.exe, VSCodium.exe, devenv.exe, pycharm64.exe, idea64.exe, webstorm64.exe, rider64.exe, clion64.exe, goland64.exe, rustrover64.exe, studio64.exe, eclipse.exe, sublime_text.exe, notepad++.exe, wezterm-gui.exe, alacritty.exe, kitty.exe, mintty.exe, Tabby.exe, ConEmu.exe, ConEmu64.exe
+TERMINAL_SENTINEL_TITLE_PATTERNS =
+TERMINAL_SENTINEL_COOLDOWN_SEC = 120
+
+# Real capability/status panel; opening it performs no paid provider request.
+ENABLE_SENSES_PANEL = yes
+
+# Bounded, centrally owned read-only tool continuation. Tool results never gain
+# user authority, and a new direct user request cancels the prior session.
+ENABLE_AGENT_CONTINUATION = yes
+AGENT_MAX_STEPS = 6
+AGENT_MAX_DURATION_SEC = 120
+AGENT_MAX_TOOL_RESULT_CHARS = 8000
+
+# Local application awareness. Provider context remains minimized even when
+# local inspection is configured more broadly.
+ENABLE_PROCESS_AWARENESS = yes
+PROCESS_CONTEXT_MODE = visible_apps
+PROCESS_MAX_VISIBLE_APPS = 20
+PROCESS_CONTEXT_EXCLUDED_APPS =
+
+# Deterministic bounded desktop automation. This is intentionally opt-in and
+# may only be started by an explicit direct-user request.
+ENABLE_COMPUTER_USE = no
+COMPUTER_USE_MAX_STEPS = 30
+COMPUTER_USE_TIMEOUT_SEC = 120
+COMPUTER_USE_PLANNER_PROVIDER = inherit
+COMPUTER_USE_PLANNER_MODEL =
+COMPUTER_USE_PLANNER_CONFIDENCE_MIN = 0.65
+COMPUTER_USE_RECOVERY_AFTER_FAILURES = 2
+COMPUTER_USE_MAX_RECOVERY_CALLS = 2
+COMPUTER_USE_ALLOWED_APPS =
 
 
 # ── Emotion engine (v5.0.0) ──────────────────────────────────────────────────
@@ -606,11 +737,12 @@ FAST_MODE_OVERRIDES: dict[str, str] = {
 }
 
 _BOOL_KEYS = frozenset({
-    "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
+    "COMPACT_MODE", "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
     "ENABLE_VOICE", "USE_LOCAL_STT", "ENABLE_FILE_DRAG_DROP",
     "ENABLE_STREAMING", "ENABLE_AMBIENT_POLLS",
     "ENABLE_DATETIME_CONTEXT", "DATETIME_INCLUDE_SECONDS", "DATETIME_INCLUDE_TIMEZONE",
     "ENABLE_COMMAND_EXECUTION", "ENABLE_WINDOW_CONTROL", "ENABLE_COMMAND_CONFIRMATIONS",
+    "ENABLE_UNICODE_TYPING", "UNICODE_TYPING_RESTORE_CLIPBOARD",
     "FORCE_CLOSE_AUTO_ALLOW", "ENABLE_ATTENTION_SNAP", "ENABLE_SCREEN_READER",
     "OCR_FOCUSED_WINDOW_ONLY", "OCR_CHANGE_DETECTION",
     "OCR_REDACT_SENSITIVE_TEXT", "INCLUDE_WINDOW_TITLE_IN_CONTEXT", "WINDOW_TOPMOST",
@@ -622,6 +754,10 @@ _BOOL_KEYS = frozenset({
     "ENABLE_GLITCH_EFFECTS", "GLITCH_MOOD_AUTO", "GLITCH_FULLSCREEN",
     "ENABLE_COMPANION_STATS_CONTEXT",
     "ENABLE_CIRCADIAN_RHYTHM", "ENABLE_DREAMS", "ENABLE_TASKS",
+    "ENABLE_PRESENCE_ETIQUETTE", "PRESENCE_FULLSCREEN_SILENT",
+    "ENABLE_TERMINAL_SENTINEL", "ENABLE_SENSES_PANEL",
+    "ENABLE_AGENT_CONTINUATION", "ENABLE_PROCESS_AWARENESS",
+    "ENABLE_COMPUTER_USE",
     "ENABLE_EMOTION_ENGINE", "ENABLE_AUTOSTART_CONTROL", "ENABLE_THEME_CONTROL",
     "ENABLE_STATUS_PROVIDERS", "ENABLE_TRAY", "TRAY_BACKGROUND_CLOSE",
     "ENABLE_CRT_CLOSE_ANIMATION", "REDUCED_MOTION", "ENABLE_MOOD_GLOW",
@@ -652,6 +788,13 @@ _INT_KEYS = frozenset({
     "UNLIMITED_OCR_TIMEOUT_SECONDS", "DEEP_OCR_MAX_OUTPUT_CHARS",
     "OCR_PATTERN_CONFIRM_SCANS", "OCR_LOW_CONFIDENCE_CONFIRM_SCANS",
     "OCR_PATTERN_CLEAR_SCANS",
+    "UNICODE_TYPING_DELAY_MS", "UNICODE_TYPING_PREVIEW_THRESHOLD",
+    "PRESENCE_DISMISS_COOLDOWN_SEC", "PRESENCE_RAPID_TYPING_COOLDOWN_SEC",
+    "TERMINAL_SENTINEL_COOLDOWN_SEC",
+    "AGENT_MAX_STEPS", "AGENT_MAX_DURATION_SEC", "AGENT_MAX_TOOL_RESULT_CHARS",
+    "PROCESS_MAX_VISIBLE_APPS", "COMPUTER_USE_MAX_STEPS",
+    "COMPUTER_USE_TIMEOUT_SEC", "COMPUTER_USE_RECOVERY_AFTER_FAILURES",
+    "COMPUTER_USE_MAX_RECOVERY_CALLS",
 })
 
 _FLOAT_KEYS = frozenset({
@@ -662,10 +805,14 @@ _FLOAT_KEYS = frozenset({
     "OCR_MIN_WORD_CONFIDENCE", "OCR_MIN_PATTERN_CONFIDENCE",
     "TTS_VOLUME",
     "EMOTION_DECAY_PER_HOUR",
+    "COMPUTER_USE_PLANNER_CONFIDENCE_MIN",
 })
 
 _VOICE_OUTPUT_MODES = frozenset({"bleeps_only", "tts_only", "both"})
 _VOICE_TTS_ENGINES = frozenset({"pyttsx3", "edge_tts", "kokoro"})
+_UNICODE_TYPING_MODES = frozenset({"auto", "unicode", "paste", "preview", "paced"})
+_PROCESS_CONTEXT_MODES = frozenset({"off", "foreground_only", "visible_apps", "all_processes"})
+_COMPUTER_USE_PLANNER_PROVIDERS = frozenset({"inherit", "ollama", "groq", "openrouter"})
 _GLITCH_STYLES = frozenset({
     "scanlines", "static", "rgb_split", "flicker", "bsod", "matrix", "tear",
 })
@@ -779,6 +926,8 @@ def validate_config_value(
         return True
     if normalized == "OCR_PREPROCESSING":
         return raw.strip().lower() in {"basic", "auto"}
+    if normalized == "UNICODE_TYPING_MODE":
+        return raw.strip().lower() in _UNICODE_TYPING_MODES
     # Strict persisted profiles may contain only settings with an explicit
     # typed or enum validator. General config parsing remains permissive.
     return not enforce_range
@@ -843,9 +992,10 @@ def _load_env_overrides(config: dict[str, str]) -> None:
             k, v = k.strip().upper(), v.strip()
             if k == "GROQ_API_KEY_1":
                 k = "GROQ_API_KEY"
-            if k == "FASTER_MODE" or k in FAST_MODE_OVERRIDES:
-                # Fast Mode is a disk-backed transaction. Environment copies
-                # of managed values would create a split-brain runtime state.
+            if k in {"FASTER_MODE", "COMPACT_MODE"} or k in FAST_MODE_OVERRIDES:
+                # Fast/Compact modes are disk-backed transactions. Environment
+                # copies of managed or consent-bearing values would create a
+                # split-brain runtime state or bypass the Full Mode ceremony.
                 continue
             if v:
                 config[k] = v
@@ -924,6 +1074,12 @@ def parse_config_file(path: Path | None = None) -> dict[str, str]:
         # Profile diagnostics/recovery are handled by its public reconciliation
         # API. A broken optional state file must never prevent config loading.
         pass
+    if compact_mode_fail_closed_required(path):
+        merged["COMPACT_MODE"] = "yes"
+        result.warnings.append(
+            "Compact Mode restart protection is active because a prior profile "
+            "write did not complete."
+        )
     _last_load = result
 
     for w in result.warnings:
@@ -1035,6 +1191,11 @@ class AppSettings:
     def raw(self) -> dict[str, str]:
         return self._raw
 
+    # ── Capability profile ─────────────────────────────────────────────────
+    @property
+    def compact_mode(self) -> bool:
+        return self.bool("COMPACT_MODE", True)
+
     # ── AI ──────────────────────────────────────────────────────────────────
     @property
     def ai_temperature(self) -> float:
@@ -1131,6 +1292,27 @@ class AppSettings:
     @property
     def enable_command_confirmations(self) -> bool:
         return self.bool("ENABLE_COMMAND_CONFIRMATIONS", True)
+
+    @property
+    def enable_unicode_typing(self) -> bool:
+        return self.bool("ENABLE_UNICODE_TYPING", True)
+
+    @property
+    def unicode_typing_mode(self) -> str:
+        value = self.get("UNICODE_TYPING_MODE", "auto").strip().lower()
+        return value if value in _UNICODE_TYPING_MODES else "auto"
+
+    @property
+    def unicode_typing_delay_ms(self) -> int:
+        return self.int("UNICODE_TYPING_DELAY_MS", 20, 0, 500)
+
+    @property
+    def unicode_typing_preview_threshold(self) -> int:
+        return self.int("UNICODE_TYPING_PREVIEW_THRESHOLD", 300, 40, 50_000)
+
+    @property
+    def unicode_typing_restore_clipboard(self) -> bool:
+        return self.bool("UNICODE_TYPING_RESTORE_CLIPBOARD", True)
 
     @property
     def force_close_auto_allow(self) -> bool:
@@ -1243,6 +1425,120 @@ class AppSettings:
     @property
     def tasks_max_entries(self) -> int:
         return self.int("TASKS_MAX_ENTRIES", 100, 10, 1000)
+
+    @property
+    def enable_presence_etiquette(self) -> bool:
+        return self.bool("ENABLE_PRESENCE_ETIQUETTE", True)
+
+    @property
+    def presence_fullscreen_silent(self) -> bool:
+        return self.bool("PRESENCE_FULLSCREEN_SILENT", True)
+
+    @property
+    def presence_dismiss_cooldown_sec(self) -> int:
+        return self.int("PRESENCE_DISMISS_COOLDOWN_SEC", 900, 10, 86_400)
+
+    @property
+    def presence_rapid_typing_cooldown_sec(self) -> int:
+        return self.int("PRESENCE_RAPID_TYPING_COOLDOWN_SEC", 30, 1, 3_600)
+
+    @property
+    def quiet_hours_start(self) -> str:
+        return self.get("QUIET_HOURS_START", "").strip()[:5]
+
+    @property
+    def quiet_hours_end(self) -> str:
+        return self.get("QUIET_HOURS_END", "").strip()[:5]
+
+    @property
+    def enable_terminal_sentinel(self) -> bool:
+        return self.bool("ENABLE_TERMINAL_SENTINEL", False)
+
+    @property
+    def terminal_sentinel_apps(self) -> str:
+        return self.get("TERMINAL_SENTINEL_APPS", "")[:2000]
+
+    @property
+    def terminal_sentinel_title_patterns(self) -> str:
+        return self.get("TERMINAL_SENTINEL_TITLE_PATTERNS", "")[:4000]
+
+    @property
+    def terminal_sentinel_cooldown_sec(self) -> int:
+        return self.int("TERMINAL_SENTINEL_COOLDOWN_SEC", 120, 10, 86_400)
+
+    @property
+    def enable_senses_panel(self) -> bool:
+        return self.bool("ENABLE_SENSES_PANEL", True)
+
+    @property
+    def enable_agent_continuation(self) -> bool:
+        return self.bool("ENABLE_AGENT_CONTINUATION", True)
+
+    @property
+    def agent_max_steps(self) -> int:
+        return self.int("AGENT_MAX_STEPS", 6, 1, 20)
+
+    @property
+    def agent_max_duration_sec(self) -> int:
+        return self.int("AGENT_MAX_DURATION_SEC", 120, 10, 900)
+
+    @property
+    def agent_max_tool_result_chars(self) -> int:
+        return self.int("AGENT_MAX_TOOL_RESULT_CHARS", 8000, 256, 50_000)
+
+    @property
+    def enable_process_awareness(self) -> bool:
+        return self.bool("ENABLE_PROCESS_AWARENESS", True)
+
+    @property
+    def process_context_mode(self) -> str:
+        value = self.get("PROCESS_CONTEXT_MODE", "visible_apps").strip().lower()
+        return value if value in _PROCESS_CONTEXT_MODES else "visible_apps"
+
+    @property
+    def process_max_visible_apps(self) -> int:
+        return self.int("PROCESS_MAX_VISIBLE_APPS", 20, 1, 100)
+
+    @property
+    def process_context_excluded_apps(self) -> str:
+        return self.get("PROCESS_CONTEXT_EXCLUDED_APPS", "")[:4000]
+
+    @property
+    def enable_computer_use(self) -> bool:
+        return self.bool("ENABLE_COMPUTER_USE", False)
+
+    @property
+    def computer_use_max_steps(self) -> int:
+        return self.int("COMPUTER_USE_MAX_STEPS", 30, 1, 100)
+
+    @property
+    def computer_use_timeout_sec(self) -> int:
+        return self.int("COMPUTER_USE_TIMEOUT_SEC", 120, 10, 1800)
+
+    @property
+    def computer_use_planner_provider(self) -> str:
+        value = self.get("COMPUTER_USE_PLANNER_PROVIDER", "inherit").strip().lower()
+        return value if value in _COMPUTER_USE_PLANNER_PROVIDERS else "inherit"
+
+    @property
+    def computer_use_planner_model(self) -> str:
+        return self.get("COMPUTER_USE_PLANNER_MODEL", "").strip()[:300]
+
+    @property
+    def computer_use_planner_confidence_min(self) -> float:
+        return self.float("COMPUTER_USE_PLANNER_CONFIDENCE_MIN", 0.65, 0.0, 1.0)
+
+    @property
+    def computer_use_recovery_after_failures(self) -> int:
+        return self.int("COMPUTER_USE_RECOVERY_AFTER_FAILURES", 2, 1, 10)
+
+    @property
+    def computer_use_max_recovery_calls(self) -> int:
+        return self.int("COMPUTER_USE_MAX_RECOVERY_CALLS", 2, 0, 10)
+
+    @property
+    def computer_use_allowed_apps(self) -> str:
+        return self.get("COMPUTER_USE_ALLOWED_APPS", "")[:4000]
 
     # ── v5.0.0 — Emotion engine ───────────────────────────────────────────────
     @property

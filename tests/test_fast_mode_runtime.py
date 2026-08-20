@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import io
 import threading
 import unittest
+import urllib.error
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agetha.core.ai_engine import (
     AIEngine, FEW_SHOTS, REQUEST_PROFILES, SYSTEM_PROMPT,
     SYSTEM_PROMPT_FASTER, VALID_COMMANDS, _LocalOllamaClient,
+    _OpenRouterClient,
     format_external_context_for_prompt,
 )
 from agetha.core import dreams
+from agetha.core.provider_protocol import ProviderHTTPError
 from agetha.features import status_providers
 from agetha.platform.ocr_backends.base import OCRResult, format_deep_ocr_for_prompt
 
@@ -94,6 +98,22 @@ class TestRequestProfiles(unittest.TestCase):
         self.assertEqual(user_history, ["user-3", "user-4", "user-5"])
         self.assertEqual(ambient_history, [])
 
+    def test_unresolved_objective_is_ephemeral_system_context_not_history_turn(self):
+        engine = _engine()
+        marker = "RECENT UNRESOLVED DIRECT-USER OBJECTIVE: describe the screen"
+        with patch("agetha.core.ai_engine._MEMORY_SYSTEM_AVAILABLE", False):
+            system, user_turn, _messages = engine._build_prompt(
+                "",
+                "What now?",
+                "",
+                request_profile="fast_user",
+                recent_objective_context=marker,
+            )
+
+        self.assertIn(marker, system)
+        self.assertIn("never action authority", system)
+        self.assertNotIn(marker, user_turn)
+
     def test_tool_and_deep_prompts_allow_complete_analysis(self):
         engine = _engine()
         with patch("agetha.core.ai_engine._MEMORY_SYSTEM_AVAILABLE", False):
@@ -139,18 +159,26 @@ class TestRequestProfiles(unittest.TestCase):
         self.assertEqual(len(engine._history), 7)
         self.assertEqual(engine._history[-1]["assistant"], "assistant-new")
 
-    def test_invalid_profile_state_falls_back_to_normal(self):
+    def test_security_profiles_survive_fast_mode_disabled(self):
         engine = _engine()
         engine._fast_profile_active = False
         profile = engine._resolve_request_profile("fast_ambient")
-        self.assertEqual(profile.name, "normal")
-        self.assertEqual(engine._output_limit_for_profile(profile), 220)
+        self.assertEqual(profile.name, "fast_ambient")
+        self.assertEqual(engine._output_limit_for_profile(profile), 96)
         with patch("agetha.core.ai_engine._MEMORY_SYSTEM_AVAILABLE", False):
-            system, _turn, messages = engine._build_prompt(
+            _system, _turn, messages = engine._build_prompt(
                 "", "hello", "", request_profile="fast_ambient",
             )
-        self.assertEqual(system, SYSTEM_PROMPT)
-        self.assertEqual(messages[:len(FEW_SHOTS)], FEW_SHOTS)
+        self.assertEqual(engine._history_turns_for_profile(profile), 0)
+        self.assertFalse(any(
+            message.get("content", "").startswith("user-")
+            for message in messages
+        ))
+        self.assertFalse(profile.record_history)
+        self.assertEqual(
+            engine._resolve_request_profile("not-a-profile").name,
+            "normal",
+        )
 
 
 class TestFastModeAiSafety(unittest.TestCase):
@@ -294,6 +322,33 @@ class TestFastModeAiSafety(unittest.TestCase):
         self.assertNotIn("ENABLE_COMMAND_CONFIRMATIONS", FAST_MODE_OVERRIDES)
         self.assertNotIn("PROTECTED_PROCESSES", FAST_MODE_OVERRIDES)
 
+    def test_internal_and_tool_profiles_cannot_persist_provider_memory(self):
+        engine = _engine()
+        engine._save_memory = MagicMock()
+        raw = '{"command":"speak","summary_memory":"untrusted persistence"}'
+
+        for name in ("fast_ambient", "fast_command", "fast_tool_result", "tool_continuation"):
+            with self.subTest(profile=name):
+                engine._persist_profile_memory(
+                    REQUEST_PROFILES[name],
+                    "[internal event: tool_result]",
+                    raw,
+                    {"command": "speak"},
+                )
+
+        engine._save_memory.assert_not_called()
+
+    def test_exact_typing_response_cannot_persist_provider_memory(self):
+        engine = _engine()
+        engine._save_memory = MagicMock()
+        engine._persist_profile_memory(
+            REQUEST_PROFILES["normal"],
+            "type the supplied text",
+            '{"command":"type_text","summary_memory":"private"}',
+            {"command": "type_text"},
+        )
+        engine._save_memory.assert_not_called()
+
 
 class _ResponseClient:
     def __init__(self, *, streaming=False, raw=None):
@@ -342,16 +397,300 @@ class TestProviderBudgets(unittest.TestCase):
         self.assertEqual(engine._client.calls[-1]["model"], "test/model")
         engine.query(doc_content="tool data", request_profile="fast_tool_result")
         self.assertEqual(engine._client.calls[-1]["max_tokens"], 600)
-        self.assertEqual(engine._record.call_count, 2)
-        retained_turn = engine._record.call_args_list[-1].args[0]
-        self.assertIn("source payload omitted", retained_turn)
-        self.assertNotIn("tool data", retained_turn)
+        self.assertEqual(engine._record.call_count, 1)
+        self.assertNotIn(
+            "tool data",
+            " ".join(str(call) for call in engine._record.call_args_list),
+        )
 
     def test_streaming_ambient_cap(self):
         engine = _query_engine(streaming=True)
         engine.query_streaming(screen_context="event", request_profile="fast_ambient")
         self.assertEqual(engine._client.calls[-1]["max_tokens"], 96)
         engine._record.assert_not_called()
+
+    def test_groq_nonstreaming_request_uses_gpt_oss_options(self):
+        engine = _query_engine()
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+
+        engine.query(user_message="hello", request_profile="fast_user")
+
+        request = engine._client.calls[-1]
+        self.assertEqual(request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(request["reasoning_effort"], "low")
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+
+    def test_groq_streaming_request_uses_gpt_oss_options(self):
+        engine = _query_engine(streaming=True)
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+
+        engine.query_streaming(
+            user_message="analyze this",
+            request_profile="deep_analysis",
+        )
+
+        request = engine._client.calls[-1]
+        self.assertEqual(request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(request["reasoning_effort"], "high")
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+
+    def test_openrouter_and_ollama_requests_remain_provider_neutral(self):
+        openrouter = _query_engine()
+        openrouter.query(user_message="hello", request_profile="fast_user")
+
+        ollama = _query_engine()
+        ollama._use_local_ai = True
+        ollama._use_openrouter = False
+        ollama._config = {
+            "LOCAL_AI_MODEL": "local-model",
+            "LOCAL_AI_TIMEOUT": "30",
+        }
+        ollama.query(user_message="hello", request_profile="fast_user")
+
+        for request in (openrouter._client.calls[-1], ollama._client.calls[-1]):
+            self.assertNotIn("reasoning_effort", request)
+            self.assertNotIn("response_format", request)
+
+    def test_inherited_groq_structured_request_uses_json_mode(self):
+        engine = _query_engine()
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+        engine._config = {}
+
+        engine.request_structured(
+            route="inherit",
+            system_prompt="Return JSON.",
+            payload={"question": "status"},
+        )
+
+        request = engine._client.calls[-1]
+        self.assertEqual(request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(request["reasoning_effort"], "medium")
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+
+    def test_groq_key_rotation_never_cycles_to_a_retired_model(self):
+        engine = AIEngine.__new__(AIEngine)
+        engine._groq_keys = ["first", "second"]
+        engine._current_groq_key_index = 0
+        engine._groq_model = "custom/current-model"
+        engine._init_client = MagicMock(return_value=True)
+
+        self.assertTrue(engine._rotate_key())
+
+        self.assertEqual(engine._current_groq_key_index, 1)
+        self.assertEqual(engine._groq_model, "custom/current-model")
+
+    def test_nonstreaming_transient_failures_retry_same_route_before_rotation(self):
+        valid = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"command":"speak","segments":[{"text":"Recovered","pause":0}]}'
+            ))],
+            usage=None,
+        )
+        failures = (
+            TimeoutError("timed out"),
+            ConnectionError("connection lost"),
+            ProviderHTTPError(503, "service unavailable"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                engine = _query_engine()
+                engine._use_openrouter = False
+                engine._enable_groq = True
+                engine._groq_model = "openai/gpt-oss-120b"
+                engine._client.chat.completions.create = MagicMock(
+                    side_effect=[failure, valid]
+                )
+                engine._rotate_key = MagicMock(return_value=True)
+
+                result = engine.query(
+                    user_message="hello",
+                    request_profile="fast_user",
+                    request_origin="user",
+                )
+
+                self.assertEqual(result["segments"][0]["text"], "Recovered")
+                self.assertEqual(engine._client.chat.completions.create.call_count, 2)
+                engine._rotate_key.assert_not_called()
+                self.assertFalse(engine._show_error_gif)
+
+    def test_streaming_transient_failures_retry_same_route(self):
+        failures = (
+            TimeoutError("timed out"),
+            ConnectionError("connection lost"),
+            ProviderHTTPError(503, "service unavailable"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                valid_stream = iter([SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(
+                        content='{"command":"speak","segments":[{"text":"Recovered","pause":0}]}'
+                    ))],
+                    usage=None,
+                )])
+                engine = _query_engine(streaming=True)
+                engine._use_openrouter = False
+                engine._enable_groq = True
+                engine._groq_model = "openai/gpt-oss-120b"
+                engine._client.chat.completions.create = MagicMock(
+                    side_effect=[failure, valid_stream]
+                )
+                engine._rotate_key = MagicMock(return_value=True)
+
+                result = engine.query_streaming(
+                    user_message="hello",
+                    request_profile="fast_user",
+                    request_origin="user",
+                )
+
+                self.assertEqual(result["segments"][0]["text"], "Recovered")
+                self.assertEqual(engine._client.chat.completions.create.call_count, 2)
+                engine._rotate_key.assert_not_called()
+                self.assertFalse(engine._show_error_gif)
+
+    def test_openrouter_transient_failures_retry_with_bounded_policy(self):
+        valid = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"command":"speak","segments":[{"text":"Recovered","pause":0}]}'
+            ))],
+            usage=None,
+        )
+        engine = _query_engine()
+        engine._client.chat.completions.create = MagicMock(
+            side_effect=[ProviderHTTPError(503, "service unavailable"), valid]
+        )
+
+        result = engine.query(
+            user_message="hello",
+            request_profile="fast_user",
+            request_origin="user",
+        )
+
+        self.assertEqual(result["segments"][0]["text"], "Recovered")
+        self.assertEqual(engine._client.chat.completions.create.call_count, 2)
+
+    def test_nonstreaming_tenth_groq_key_exhaustion_reaches_fallback(self):
+        engine = _query_engine()
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+        engine._groq_keys = [f"key-{index}" for index in range(10)]
+        engine._current_groq_key_index = 0
+        engine._client.chat.completions.create = MagicMock(
+            side_effect=ProviderHTTPError(503, "service unavailable")
+        )
+
+        def rotate(_authorization=None):
+            if engine._current_groq_key_index >= len(engine._groq_keys) - 1:
+                return False
+            engine._current_groq_key_index += 1
+            return True
+
+        fallback = {
+            "command": "speak",
+            "mood": "neutral",
+            "segments": [{"text": "Fallback", "pause": 0.0}],
+            "shutdown": False,
+        }
+        engine._rotate_key = MagicMock(side_effect=rotate)
+        engine._groq_exhausted_or_failover = MagicMock(return_value=fallback)
+
+        result = engine.query(
+            user_message="hello",
+            request_profile="fast_user",
+            request_origin="user",
+        )
+
+        self.assertEqual(result, fallback)
+        self.assertEqual(engine._client.chat.completions.create.call_count, 30)
+        engine._groq_exhausted_or_failover.assert_called_once()
+
+    def test_streaming_tenth_groq_key_exhaustion_reaches_fallback(self):
+        engine = _query_engine(streaming=True)
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+        engine._groq_keys = [f"key-{index}" for index in range(10)]
+        engine._current_groq_key_index = 0
+        engine._client.chat.completions.create = MagicMock(
+            side_effect=ProviderHTTPError(503, "service unavailable")
+        )
+
+        def rotate(_authorization=None):
+            if engine._current_groq_key_index >= len(engine._groq_keys) - 1:
+                return False
+            engine._current_groq_key_index += 1
+            return True
+
+        fallback = {
+            "command": "speak",
+            "mood": "neutral",
+            "segments": [{"text": "Fallback", "pause": 0.0}],
+            "shutdown": False,
+        }
+        engine._rotate_key = MagicMock(side_effect=rotate)
+        engine._groq_exhausted_or_failover = MagicMock(return_value=fallback)
+
+        result = engine.query_streaming(
+            user_message="hello",
+            request_profile="fast_user",
+            request_origin="user",
+        )
+
+        self.assertEqual(result, fallback)
+        self.assertEqual(engine._client.chat.completions.create.call_count, 30)
+        engine._groq_exhausted_or_failover.assert_called_once()
+
+    def test_permanent_groq_model_failure_does_not_rotate_keys(self):
+        engine = _query_engine()
+        engine._use_openrouter = False
+        engine._enable_groq = True
+        engine._groq_model = "openai/gpt-oss-120b"
+        engine._client.chat.completions.create = MagicMock(
+            side_effect=ProviderHTTPError(400, "model has been decommissioned")
+        )
+        engine._rotate_key = MagicMock(return_value=False)
+        engine._groq_exhausted_or_failover = MagicMock(return_value={
+            "command": "idle",
+            "mood": "neutral",
+            "segments": [],
+            "shutdown": False,
+        })
+
+        result = engine.query(user_message="hello", request_profile="fast_user")
+
+        self.assertEqual(result["command"], "idle")
+        engine._rotate_key.assert_not_called()
+
+    def test_openrouter_http_error_preserves_status_code(self):
+        body = io.BytesIO(b'{"error":{"message":"model not found"}}')
+        failure = urllib.error.HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            404,
+            "Not Found",
+            {},
+            body,
+        )
+        client = _OpenRouterClient("secret", "missing/model")
+
+        raised = None
+        with patch("urllib.request.urlopen", side_effect=failure):
+            try:
+                client.chat_completions_create(
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+            except Exception as exc:
+                raised = exc
+            else:
+                self.fail("OpenRouter HTTP failures must be raised")
+
+        self.assertIsInstance(raised, ProviderHTTPError)
+        self.assertEqual(raised.status_code, 404)
 
     def test_ollama_receives_generation_options(self):
         class _Reply:
@@ -454,6 +793,8 @@ class TestAmbientDecision(unittest.TestCase):
 class TestAmbientTickIntegration(unittest.TestCase):
     def _app(self, *, text="same", status="unchanged", fast=True, pending=False):
         import main
+        from agetha.core.capabilities import CapabilityController, CapabilityPolicy
+        from agetha.app_config import AppSettings
 
         app = main.CompanionApp.__new__(main.CompanionApp)
         app._closing = False
@@ -467,6 +808,14 @@ class TestAmbientTickIntegration(unittest.TestCase):
         app._last_direct_interaction_time = 0.0
         app._last_screen_text = "same"
         app._ai = MagicMock()
+        app._capabilities = CapabilityController(
+            CapabilityPolicy.from_settings(AppSettings({
+                "COMPACT_MODE": "no",
+                "ENABLE_AMBIENT_POLLS": "yes",
+                "ENABLE_PROCESS_AWARENESS": "no",
+            }))
+        )
+        app._process_awareness = None
         app._ai._faster_mode = True
         app._ai.query.return_value = {
             "command": "idle", "mood": "neutral", "segments": [], "shutdown": False,
@@ -494,6 +843,8 @@ class TestAmbientTickIntegration(unittest.TestCase):
             ocr_focused_window_only=True,
             enable_screen_reader=True,
             enable_streaming=False,
+            enable_computer_use=False,
+            computer_use_allowed_apps=(),
         )
         return main, app, settings
 
@@ -520,6 +871,32 @@ class TestAmbientTickIntegration(unittest.TestCase):
                     app._ai.query.call_args.kwargs["request_profile"], "fast_ambient",
                 )
 
+    def test_presentation_suppression_does_not_prevent_ambient_classification(self):
+        main, app, settings = self._app(text="build failed", status="ocr_complete")
+        app._presence_decision = MagicMock(return_value=SimpleNamespace(
+            allow_popup=False,
+            allow_voice=False,
+            queue_nonurgent=True,
+            reason="fullscreen",
+        ))
+        app._ai.query.return_value = {
+            "command": "speak",
+            "ambient_relevance": "important",
+            "mood": "surprised",
+            "segments": [{"text": "The build failed.", "pause": 0.0}],
+            "shutdown": False,
+        }
+
+        with patch.object(main, "_SETTINGS", settings), patch.object(
+            main, "get_settings", return_value=settings,
+        ):
+            app._ai_tick()
+
+        app._ai.query.assert_called_once()
+        app._dispatch_response.assert_called_once()
+        response = app._dispatch_response.call_args.args[0]
+        self.assertEqual(response["ambient_relevance"], "important")
+
     def test_normal_mode_unchanged_behavior_is_preserved(self):
         main, app, settings = self._app(fast=False)
         with patch.object(main, "_SETTINGS", settings), patch.object(
@@ -527,6 +904,101 @@ class TestAmbientTickIntegration(unittest.TestCase):
         ):
             app._ai_tick()
         app._ai.query.assert_called_once()
+
+    def test_direct_topic_change_clears_unresolved_objective_in_real_tick(self):
+        from agetha.core.context_dependencies import (
+            ContextKind,
+            UnresolvedContextObjectiveStore,
+        )
+
+        main, app, settings = self._app(text="", status="ocr_empty")
+        store = UnresolvedContextObjectiveStore()
+        self.assertTrue(
+            store.remember("Describe my screen", ContextKind.SCREEN, origin="user")
+        )
+        app._unresolved_context_objectives = store
+        app._continuation = None
+        app._input_box = MagicMock()
+        app._wake_from_presence_rest = MagicMock()
+        app._ai.query.return_value = {
+            "command": "speak",
+            "mood": "neutral",
+            "segments": [{"text": "Here is a joke.", "pause": 0.0}],
+            "shutdown": False,
+        }
+
+        with patch.object(main, "_SETTINGS", settings), patch.object(
+            main, "get_settings", return_value=settings,
+        ), patch("agetha.core.companion_stats.update_stats"), patch(
+            "agetha.core.companion_stats.classify_user_tone", return_value="",
+        ), patch("agetha.core.emotion_engine.note"):
+            app._ai_tick("Tell me a joke", origin="user")
+
+        self.assertIsNone(store.current())
+
+    def test_direct_screen_dependency_keeps_target_across_own_window_preflight(self):
+        import main
+        from agetha.core.context_dependencies import UnresolvedContextObjectiveStore
+        from agetha.core.continuation import ContinuationEngine
+
+        _main, app, settings = self._app(text="", status="skipped_own_window")
+        target = {
+            "left": 10,
+            "top": 20,
+            "width": 640,
+            "height": 480,
+            "title": "Editor",
+            "hwnd": 77,
+            "process_name": "editor.exe",
+            "process_id": 321,
+        }
+        target_available = [True]
+        capture_targets = []
+
+        def preserve_target():
+            return dict(target) if target_available[0] else None
+
+        def capture_text(*_args, capture_target=None, **_kwargs):
+            capture_targets.append(capture_target)
+            if capture_target is None:
+                target_available[0] = False
+                app._screen.last_monitor_status = "skipped_own_window"
+                return ""
+            app._screen.last_monitor_status = "ocr_complete"
+            return "Build failed: missing symbol"
+
+        app._screen.automatic_capture_supported = True
+        app._screen.preserve_external_target.side_effect = preserve_target
+        app._screen.capture_text.side_effect = capture_text
+        app._screen.redact_for_external_context.side_effect = lambda value: value
+        app._continuation = ContinuationEngine(id_factory=lambda: "session:screen")
+        app._continuation_ui_epoch = 0
+        app._completed_context_history_sessions = set()
+        app._unresolved_context_objectives = UnresolvedContextObjectiveStore()
+        app._input_box = MagicMock()
+        app._subtitle = MagicMock()
+        app._wake_from_presence_rest = MagicMock()
+        app._speak_and_continue = MagicMock()
+        app._observe_capture_target = MagicMock()
+        app._start_worker = lambda target_fn, *, name, args: target_fn(*args)
+        app._ai.query.side_effect = [
+            {"command": "request_screen_read", "segments": [], "shutdown": False},
+            {
+                "command": "speak",
+                "segments": [{"text": "The build is missing a symbol.", "pause": 0.0}],
+                "shutdown": False,
+            },
+        ]
+
+        with patch.object(main, "_SETTINGS", settings), patch.object(
+            main, "get_settings", return_value=settings,
+        ), patch("agetha.core.companion_stats.update_stats"), patch(
+            "agetha.core.companion_stats.classify_user_tone", return_value="",
+        ), patch("agetha.core.emotion_engine.note"):
+            app._ai_tick("What am I looking at?", origin="user")
+
+        self.assertEqual(capture_targets, [None, target])
+        app._ai.record_context_continuation_turn.assert_called_once()
 
 
 if __name__ == "__main__":

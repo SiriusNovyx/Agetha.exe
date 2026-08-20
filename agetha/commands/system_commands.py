@@ -204,16 +204,14 @@ def search_files(pattern: str, directory: str, limit: int = 50) -> list[str]:
 
 
 def type_text(text: str) -> str:
-    if not text:
-        return "[no text]"
-    try:
-        import pyautogui
-        pyautogui.write(text, interval=0.02)
-        return f"[typed {len(text)} chars]"
-    except ImportError:
-        return "[pyautogui not installed]"
-    except Exception as exc:
-        return f"[type_text error: {exc}]"
+    """Compatibility shim: direct text entry is intentionally refused.
+
+    The registered command handler owns feature gates, Command Guard, target
+    capture, preview, cancellation, and clipboard policy.  A standalone helper
+    cannot reproduce that authority safely, so callers must use normal dispatch.
+    """
+    _ = text
+    return "[type_text refused: use guarded command dispatch]"
 
 
 def lock_screen() -> str:
@@ -325,11 +323,23 @@ def restart_system(delay: int = 60) -> str:
     return "[restart not supported]"
 
 
-def set_reminder(seconds: int, reminder_text: str, callback) -> str:
+def set_reminder(
+    seconds: int,
+    reminder_text: str,
+    callback,
+    *,
+    cancel_check=None,
+) -> str:
     seconds = max(1, int(seconds))
     text = (reminder_text or "Reminder").strip()
 
     def _fire():
+        try:
+            if cancel_check is not None and cancel_check():
+                return
+        except Exception as exc:
+            logger.warning("Reminder authorization check failed closed: %s", type(exc).__name__)
+            return
         try:
             callback(text)
         except Exception as exc:

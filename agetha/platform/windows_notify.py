@@ -40,6 +40,14 @@ def set_process_aumid(aumid: str = AGETHA_AUMID) -> bool:
 
 def _launcher_paths() -> tuple[str, str, str]:
     """Return (target, arguments, working_directory) for the Start Menu shortcut."""
+    # In a frozen build sys.executable *is Agetha*.  Passing ``main.py`` to it
+    # would recursively start the application and assumes a source tree that is
+    # not part of the distribution.  A frozen shortcut must target the current
+    # executable directly, independent of the caller's working directory.
+    if getattr(sys, "frozen", False):
+        executable = Path(sys.executable).resolve()
+        return str(executable), "", str(executable.parent)
+
     root = BASE_DIR.resolve()
     bat = root / "Medic_Checker.bat"
     if bat.is_file():

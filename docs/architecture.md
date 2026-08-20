@@ -16,11 +16,20 @@ flowchart TD
     Engine --> Prompt["time, memory, emotion, rhythm, dreams, tasks, status"]
     Engine --> Provider["Groq / OpenRouter / local Ollama"]
     Provider --> Parse["validated response dictionary"]
+    Parse --> Continue["core.continuation / bounded read-only turns"]
+    Continue --> ReadTools["core.read_only_tools"]
     Parse --> Dispatch["commands.command_handlers.dispatch"]
     Dispatch --> Guard["commands.command_guard.CommandGuard"]
     Guard --> OS["system_commands / platform adapters"]
     Prompt --> State["memory/ runtime state"]
     Main --> Config["app_config.AppSettings"]
+    Config --> Capability["core.capabilities / Compact or Full"]
+    Main --> Consent["core.capability_consent / deliberate Full entry"]
+    Main --> Demo["platform.full_mode_consent / fixed Notepad warning"]
+    Capability --> Dispatch
+    Capability --> Platform
+    Capability --> Features
+    Capability --> Computer
     Engine --> Config
     Platform --> Config
     Features --> Config
@@ -29,6 +38,11 @@ flowchart TD
     Bus --> Presence["core.presence_etiquette / interruption policy"]
     Platform --> Bus
     Presence --> UI
+    Platform --> Process["platform.process_awareness"]
+    Process --> Bus
+    Main --> Computer["computer_use / opt-in session"]
+    Computer --> Guard
+    Computer --> Platform
 ```
 
 The root [main.py](../main.py) is the composition layer. It owns the Tk root,
@@ -42,11 +56,12 @@ and coordinates application lifecycle. Reusable logic belongs in the relevant
 |---|---|---|
 | Composition | `main.py` | Tk application ownership, visual state machine, worker orchestration, AI-turn lifecycle, centralized shutdown |
 | Configuration | `agetha/app_config.py` | Built-in defaults, tolerant parsing, typed/clamped settings, `.env` secret overrides, atomic config patches |
-| Core | `agetha/core/` | AI providers and prompt construction, date/time context, memory, emotions, relationship history, rhythm, dreams, stats, audit log, typed observations, and local presence decisions |
+| Core | `agetha/core/` | AI providers and prompt construction, central Compact/Full capability policy and consent state, bounded continuation, read-only tool outcomes, date/time context, memory, emotions, relationship history, rhythm, dreams, stats, audit log, typed observations, and local presence decisions |
 | Commands | `agetha/commands/` | Response dispatch, confirmation and risk policy, filesystem/process/system operations |
 | Features | `agetha/features/` | Optional TTS, web retrieval, tasks, status observations, tray integration, and opt-in Terminal Sentinel policy |
-| Platform | `agetha/platform/` | Screen capture/OCR, exact Unicode entry, voice input, window control, Windows integrations, notifications, autostart |
-| UI | `agetha/ui/` | Dashboard and Senses capability view, scaling, Win95 chrome, typing/Sentinel previews, popup/effect controllers, mood glow and motion |
+| Platform | `agetha/platform/` | Screen capture/OCR, process/application awareness, exact Unicode entry, fixed Full-consent Notepad bootstrap, source/frozen self identity, voice input, window control, Windows integrations, notifications, autostart |
+| Computer Use | `agetha/computer_use/` | Opt-in immutable observations/actions, one-action planner routing, deterministic policy/execution/verification, target locking, and bounded session ownership |
+| UI | `agetha/ui/` | Dashboard and Senses capability view, scaling, Win95 chrome, typing/Sentinel/Computer Use status surfaces, popup/effect controllers, mood glow and motion |
 | Runtime data | `memory/`, `.env`, `conversation.txt` | Private/generated state; never a source-code dependency to copy into docs or tests |
 | Validation | `tests/`, `Medic_Checker.ps1`, `medic_helper.py` | Automated behavior tests and end-user environment diagnostics |
 
@@ -58,8 +73,11 @@ to:
 - the Tk root, primary widgets, GIF players, subtitle renderer, and popups;
 - `AIEngine`, `ScreenReader`, voice input, bleep/TTS coordination, and tray state;
 - the bounded `ObservationBus`, optional `PresenceEtiquette`, Terminal Sentinel,
-  the active Unicode-typing cancellation event, the Senses panel, and Sentinel
-  popups;
+  `ProcessAwareness`, `ContinuationEngine`, the optional `ComputerUseManager`,
+  active Unicode/Computer Use cancellation, the Senses panel, and owned status
+  or Sentinel popups;
+- `CapabilityController`, the pure consent state machine, consent UI/effect
+  ownership, and the mode-transition generation used to reject stale Full work;
 - `MoodGlowController`, `MoodMotionController`, and `CRTCloseController`;
 - all application-level `after()` job IDs, stop events, worker references, and
   geometry ownership flags;
@@ -110,6 +128,12 @@ settings are live-readable; settings marked with `*` in the dashboard require
 restart. Consult typed properties rather than parsing strings independently in
 a feature module.
 
+`COMPACT_MODE=yes` is the default for a missing/fresh key. It is typed and
+persisted through the same structural atomic patch, but is deliberately absent
+from Fast Mode's managed overrides. A stored `no` means the user previously
+completed the consent flow and is respected on restart; it is not a claim that
+local configuration is tamper-proof.
+
 `core.fast_mode_profile` coordinates the reversible Fast Mode transaction. The
 approved 13-key map is canonical in `app_config`; activation writes a restricted,
 schema-versioned snapshot before forcing values in `config.txt`, and restoration
@@ -128,6 +152,46 @@ path after the lock is held. Config and snapshot replacements use exclusive
 same-directory temporary files plus flush/fsync/replace. See
 [Fast Mode security and recovery](fast_mode_security.md) for the threat model,
 audit events, ambiguous-write semantics, and operator commands.
+
+## Compact/Full capability architecture
+
+[`capabilities.py`](../agetha/core/capabilities.py) is the provider-neutral outer
+policy boundary. `CapabilityPolicy` combines `COMPACT_MODE` with individual
+feature switches. `CapabilityController` owns the active policy, transition
+flag, and generation-bound authorizations. Compact allows chat, basic memory,
+emotion/personality, configured WebRAG, and configured read-only continuation;
+it denies Terminal Sentinel, Process Awareness, Computer Use and its planners,
+OS typing/control, background sensing, and advanced OS integration. Full only
+makes those capabilities eligible—their existing feature gates and safety
+checks continue to decide the effective result.
+
+Command dispatch classifies model commands at this central boundary before OS
+preflight or Command Guard. This does not replace Command Guard: a Full-eligible
+command must still pass its normal feature flag, authority, confirmation,
+protected-target, target-lock, cancellation, and shutdown checks. A provider
+cannot change the policy. Effect authorizations include the mode generation and
+are rechecked at the immediate effect boundary.
+
+[`capability_consent.py`](../agetha/core/capability_consent.py) contains the pure
+`COMPACT -> FIRST_CONFIRMATION -> CONSENT_DEMO -> FINAL_CONFIRMATION ->
+FULL/COMPACT` state machine. The external presentation is isolated in
+[`full_mode_consent.py`](../agetha/platform/full_mode_consent.py): it may launch
+only fixed Notepad and type only its compiled warning after strict process/HWND
+revalidation. It accepts no arbitrary text and has no provider, planner,
+Computer Use, web, OCR, clipboard, shell, or Python-helper route. Full remains
+inactive until final confirmation.
+
+The optional warning shake and all consent dialogs are Tk-owner-thread work,
+with bounded/cancellable `after()` jobs and a non-motion treatment under reduced
+motion. Failure to launch or validate Notepad types nothing and uses an in-app
+fallback before the same final decision.
+
+Returning from Full starts by publishing a transitioning Compact policy and
+invalidating the Full generation. This blocks new effects before Computer Use,
+planner/recovery, Sentinel, Process Awareness, advanced observation, workers,
+timers, and UI are stopped. Stale callbacks are discarded; Compact persistence
+and presentation complete only behind the already active deny boundary. See
+[Compact and Full profiles](compact_full_mode.md).
 
 ## AI engine and prompt composition
 
@@ -160,10 +224,13 @@ The prompt is composed from compact, bounded sections when enabled:
 - web results only for explicit gated web operations;
 - current user message, few-shot examples, and bounded conversation history.
 
-The system prompt and few shots also define Agetha's Thai character voice as
-casual, concise, and neutral by default. This is model guidance rather than a
-post-processing filter. The parser therefore preserves exact values in
-`type_text` and does not strip `ครับ`, `ค่ะ`, whitespace, combining marks, or
+The system prompt and few shots define one language-neutral multilingual policy:
+reply primarily in the user's current language, preserve mixed-language input,
+and approximate the current conversational register without inventing
+translation, transliteration, gendered speech, honorifics, cultural particles,
+formality, or slang. This is presentation guidance rather than a
+post-processing or authority filter. The parser therefore preserves exact
+values in `type_text` and does not strip words, whitespace, combining marks, or
 other user-provided data from commands, quotations, documents, or code.
 
 The parser extracts or repairs the expected JSON object, normalizes mood and
@@ -171,6 +238,14 @@ segments, validates commands against `VALID_COMMANDS`, copies command-specific
 fields into the result, applies feature gates, and records permitted memory.
 Parsed model output is still untrusted: execution policy belongs to the command
 layer.
+
+The `tool_continuation` profile is stricter than an ordinary follow-up: it has
+no personality, memories, dreams, emotions, recap, unrelated history, or
+automatic screen context, and it does not persist memory/history. Structured
+Computer Planner and primary-recovery requests use the same provider stack and
+application-owned provider slot with a small JSON-only prompt. They receive one
+scoped observation and payload-reference names, never exact typed payloads or
+the normal character prompt.
 
 ## Command execution and safety
 
@@ -286,6 +361,41 @@ Explain button returns bounded redacted context for a request with origin
 responses are restricted to `idle`, `speak`, or `popup`, so the model cannot
 turn an explanation into an OS command.
 
+## Bounded continuation, process awareness, and Computer Use
+
+[`continuation.py`](../agetha/core/continuation.py) owns one generation-checked
+direct-user session. It emits non-recursive decisions for optional status
+speech, one allowlisted read-only tool, a `tool_result` continuation request,
+or a final response. Tool observations are bounded, sensitivity-labeled, and
+never become user authority. Paths, process names, and page URLs are scoped to
+resources authorized by the original goal or a bounded search result. See
+[Continuation Engine](continuation_engine.md) for the complete allowlist and
+trust model.
+
+[`process_awareness.py`](../agetha/platform/process_awareness.py) separates the
+foreground application, visible interactive windows, and the local background
+inventory. Stable identity combines PID, executable basename, and creation time
+when available. Provider context is minimized according to `off`,
+`foreground_only`, `visible_apps`, or `all_processes`; even the last mode does
+not transmit a full process list without an explicit user request. Sensitive
+applications and titles are coarsened rather than exposed. Visible lifecycle
+facts reuse the Observation Bus and grant no authority. The owner is not started
+or polled while Compact denies `PROCESS_AWARENESS`, even when its individual
+configuration flag is on.
+
+[`agetha/computer_use/`](../agetha/computer_use/) is the opt-in Computer Use
+Lite subsystem, disabled by default and denied by the Compact profile. One
+explicit direct-user Full-mode session repeats
+atomic observe → isolated one-action plan → deterministic policy → target
+revalidation → deterministic execute → observe/verify. Before every effect the
+runtime validates PID, basename, creation time, HWND, bounds, foreground state
+where required, and the session allowlist. STOP/Escape invalidate the session
+generation immediately, so late provider results cannot reach input callbacks.
+Exact user text remains behind a local payload reference and reaches only the
+existing guarded Unicode typing boundary. The accessibility abstraction is
+present but unavailable by default; OCR controls are the current MVP. See
+[Computer Use Lite](computer_use.md).
+
 ## UI architecture
 
 The primary Win95 companion surface remains in `CompanionApp`; focused reusable
@@ -294,17 +404,26 @@ effects live under `agetha/ui/`:
 - `display_scale` selects a bounded scale from Tk DPI, display size, and an
   optional user override. Dimensions and fonts are derived from that scale.
 - `dashboard` creates a separate settings/monitoring window and is kept outside
-  the startup-critical path.
+  the startup-critical path. Its pure presentation model always includes the
+  Compact switch, hides Full-only settings/System Monitor/Senses in Compact, and
+  exposes only real applicable advanced surfaces in Full. UI visibility is not
+  the enforcement boundary.
 - `senses_panel` presents one refreshable snapshot across Vision, Hearing,
   Memory, Network & AI, Actions, and Presence. Collection reads typed settings,
   installed-module/capability information, and already-known runtime state; it
   does not probe paid providers, reveal keys, mutate configuration, or persist
   a capability history. Refresh computation runs through the app worker and
   generation checks prevent stale results from replacing a newer snapshot.
+  When visible, it includes the effective profile/reason; a Compact-disabled
+  capability is reported without probing, enumerating, capturing, calling a
+  provider, or starting the disabled owner.
 - `typing_preview` shows privacy-safe target/method/count/reversibility data and
   a bounded redacted content preview before higher-risk Unicode entry.
 - `terminal_sentinel_popup` owns the no-activation Explain/Dismiss/Ignore
   surface and never requests foreground focus itself.
+- `computer_use_status` shows sanitized goal/target/step/result metadata in a
+  non-activating Win95 panel. STOP only cancels the session owner; this surface
+  does not observe, plan, or perform input.
 - `w95_window` owns borderless title-bar behavior and Windows caption removal.
 - `MoodGlowController` owns the optional GIF border color and its single pulse
   job.
@@ -337,6 +456,9 @@ dependency is absent:
 - `terminal_sentinel` is inactive unless explicitly enabled and allowlisted; it
   consumes existing confirmed OCR events and never captures or calls a provider
   on its own.
+- `computer_use` is inactive unless explicitly enabled and started by a direct
+  user request; unavailable target-lock or platform-input prerequisites fail
+  closed.
 
 No optional package is allowed to become a mandatory import on the basic launch
 path.
@@ -357,7 +479,7 @@ cross-feature coupling:
 | `emotional_history` | `memory/emotional_history.jsonl` | Sanitized weighted relationship events |
 | `dreams` | `memory/dreams.jsonl` | Generated dream records and wake recall |
 | `tasks` | `memory/tasks.json` | User task records |
-| `audit_log` | `memory/audit_log.jsonl` | Bounded diagnostic/action audit events |
+| `audit_log` | `memory/audit_log.jsonl` | Bounded diagnostic/action audit events, including payload-free Computer Use effect metadata |
 | `voice_input` | `memory/settings.json` | Selected microphone settings |
 | `win_integration` | `memory/theme_backup.json` | Data required to roll back theme changes |
 | `dashboard` | `memory/notepad.txt` | User notepad content injected only when applicable |
@@ -369,20 +491,45 @@ module locks. Corrupt or missing files should fall back to safe empty/default
 state. Do not put API keys, full OCR captures, or arbitrary command output into
 these stores.
 
+## Source and frozen path ownership
+
+`app_config.BASE_DIR` is the project/package directory in source mode and the
+directory containing `sys.executable` in a `sys.frozen` process. Configuration,
+`.env`, `memory/`, logs, and sibling assets derive from that owned base rather
+than the process current working directory. Mutable state is never intentionally
+placed under a temporary `_MEIPASS` extraction directory.
+
+Frozen `sys.executable` is the application, not a Python interpreter. Shortcut
+creation handles that distinction, and the Full-consent bootstrap directly
+launches fixed Notepad rather than invoking a Python helper through
+`sys.executable`. `platform.self_identity` uses owned PID/HWND identity first,
+then exact source/frozen names (`main.py`, `main.exe`, or `Agetha.exe`) so input
+paths refuse Agetha without broadly treating unrelated `python.exe` processes as
+self.
+
+The existing `main.spec` is a PyInstaller-style mechanism but currently names a
+console output `main` and declares no data files. It does not alone prove that
+assets were staged, an executable was built, or a smoke test passed. The current
+Windows ARM64 support statement remains x64/AMD64 execution under Prism, not a
+native ARM64 executable guarantee.
+
 ## Startup and shutdown boundaries
 
-Startup is intentionally staged: validate/create config, establish Windows
-notification identity where supported, construct the visible shell, then load
-heavy resources in the background. There is no separate always-on-top startup
-window.
+Startup is intentionally staged: validate/create config, derive the Compact or
+previously consented Full policy, establish Windows notification identity where
+supported, construct the visible shell, then load only profile-eligible heavy
+resources in the background. A fresh/missing setting is Compact and does not
+start Full-only services. There is no separate always-on-top startup window.
 
 All close paths converge on `CompanionApp._request_close()` and then
 `_graceful_shutdown()` (directly or through `CRTCloseController`). The shutdown
-guard makes cleanup idempotent. It cancels controller jobs and application
-timers, signals the active Unicode entry, closes the Senses panel and every
-Sentinel popup, stops Terminal Sentinel, Presence Etiquette, and Observation
-Bus, then stops voice/TTS/bleeps/screen/tray activity and other workers before
-destroying the root.
+guard makes cleanup idempotent. It invalidates the mode/consent generation,
+cancels controller jobs and application timers, signals active continuation,
+Computer Use, and Unicode work, closes the
+Computer Use status/Senses/Sentinel surfaces, stops Process Awareness, Terminal
+Sentinel, Presence Etiquette, and Observation Bus, then stops
+voice/TTS/bleeps/screen/tray activity and other workers before destroying the
+root.
 
 See [Runtime flows](runtime_flows.md) for step-by-step sequences and
 [Development](development.md) for change checklists.

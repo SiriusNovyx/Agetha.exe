@@ -11,6 +11,7 @@ from ctypes import wintypes
 from difflib import SequenceMatcher
 from typing import Callable
 
+from agetha.platform.self_identity import is_self_process_identity
 from agetha.utils import IS_WINDOWS, logger
 
 if IS_WINDOWS:
@@ -33,15 +34,14 @@ if IS_WINDOWS:
         ]
 
 PickerFn = Callable[[list[tuple[int, str]]], int | None]
+EffectRunner = Callable[[Callable[[], object]], tuple[bool, object | None]]
 
 _SELF_WINDOW_ALIASES = frozenset({
     "agetha", "agetha.exe", "agetha mod", "self", "me", "myself", "herself",
     "this", "my window", "i", "virus",
 })
 
-_SELF_PROCESS_ALIASES = _SELF_WINDOW_ALIASES | frozenset({
-    "python", "python.exe", "pythonw", "pythonw.exe", "main.py",
-})
+_SELF_PROCESS_ALIASES = _SELF_WINDOW_ALIASES
 
 
 def is_self_window_target(name: str) -> bool:
@@ -51,9 +51,9 @@ def is_self_window_target(name: str) -> bool:
         return False
     if n in _SELF_WINDOW_ALIASES:
         return True
-    if n.startswith("agetha"):
+    if n.startswith("agetha —"):
         return True
-    return "agetha.exe" in n
+    return is_self_process_identity(process_name=n)
 
 
 def is_self_process_target(name: str) -> bool:
@@ -63,10 +63,7 @@ def is_self_process_target(name: str) -> bool:
         return False
     if n in _SELF_PROCESS_ALIASES:
         return True
-    base = os.path.basename(n.replace("\\", "/"))
-    if base in _SELF_PROCESS_ALIASES:
-        return True
-    return is_self_window_target(n)
+    return is_self_process_identity(process_name=n)
 
 
 _FRAME_MS = 16
@@ -162,6 +159,8 @@ def find_windows(partial_name: str, *, exclude_hwnd: int | None = None) -> list[
     def _enum_cb(hwnd: int, _lparam: int) -> bool:
         if exclude_hwnd and hwnd == exclude_hwnd:
             return True
+        if is_self_process_identity(process_id=_window_pid(hwnd)):
+            return True
         if not _user32.IsWindowVisible(hwnd):
             return True
         title = _window_title(hwnd)
@@ -218,11 +217,35 @@ def _pick_hwnd(
     return ranked[0][0]
 
 
-def _prepare_window(hwnd: int) -> tuple[bool, str]:
+def _run_effect(
+    effect_runner: EffectRunner | None,
+    effect: Callable[[], object],
+) -> tuple[bool, object | None]:
+    if effect_runner is None:
+        return True, effect()
+    try:
+        result = effect_runner(effect)
+    except Exception as exc:
+        logger.warning("Window effect authorization failed closed: %s", type(exc).__name__)
+        return False, None
+    if not isinstance(result, tuple) or len(result) != 2:
+        return False, None
+    return bool(result[0]), result[1]
+
+
+def _prepare_window(
+    hwnd: int,
+    effect_runner: EffectRunner | None = None,
+) -> tuple[bool, str]:
     if not _user32.IsWindow(hwnd):
         return False, "Window handle is no longer valid."
     if _user32.IsIconic(hwnd):
-        _user32.ShowWindow(hwnd, _SW_RESTORE)
+        performed, _result = _run_effect(
+            effect_runner,
+            lambda: _user32.ShowWindow(hwnd, _SW_RESTORE),
+        )
+        if not performed:
+            return False, "Window operation cancelled."
     return True, ""
 
 
@@ -257,11 +280,13 @@ def _animate_rect(
     w1: int,
     h1: int,
     duration_ms: int,
-) -> bool:
+    effect_runner: EffectRunner | None = None,
+) -> tuple[bool, bool]:
     """Step position/size with ease-out cubic; fixed frame interval, clear stop at t=1."""
     dx, dy, dw, dh = x1 - x0, y1 - y0, w1 - w0, h1 - h0
     if dx == 0 and dy == 0 and dw == 0 and dh == 0:
-        return True
+        performed, _result = _run_effect(effect_runner, lambda: True)
+        return performed, performed
     duration_s = max(duration_ms, 1) / 1000.0
     start = time.perf_counter()
     flags = _SWP_NOZORDER | _SWP_NOACTIVATE
@@ -276,15 +301,24 @@ def _animate_rect(
         if resize:
             cw = max(1, int(w0 + dw * e))
             ch = max(1, int(h0 + dh * e))
-            ok = bool(_user32.SetWindowPos(hwnd, 0, cx, cy, cw, ch, flags))
+            effect = lambda: bool(
+                _user32.SetWindowPos(hwnd, 0, cx, cy, cw, ch, flags)
+            )
         else:
-            ok = bool(_user32.SetWindowPos(hwnd, 0, cx, cy, 0, 0, flags | _SWP_NOSIZE))
+            effect = lambda: bool(
+                _user32.SetWindowPos(
+                    hwnd, 0, cx, cy, 0, 0, flags | _SWP_NOSIZE,
+                )
+            )
+        performed, ok = _run_effect(effect_runner, effect)
+        if not performed:
+            return False, False
         if not ok:
-            return False
+            return True, False
         if t >= 1.0:
             break
         time.sleep(_FRAME_MS / 1000.0)
-    return True
+    return True, True
 
 
 def move_window(
@@ -294,10 +328,14 @@ def move_window(
     *,
     smooth: bool | None = None,
     duration_ms: int | None = None,
+    effect_runner: EffectRunner | None = None,
 ) -> tuple[bool, str]:
     if not IS_WINDOWS:
         return False, "Not supported on this platform."
-    ok, msg = _prepare_window(hwnd)
+    performed, _result = _run_effect(effect_runner, lambda: True)
+    if not performed:
+        return False, "Window operation cancelled."
+    ok, msg = _prepare_window(hwnd, effect_runner)
     if not ok:
         return False, msg
 
@@ -312,12 +350,23 @@ def move_window(
     if use_smooth and dur > 0 and rect:
         x0, y0, w0, h0 = rect
         if abs(x - x0) + abs(y - y0) >= 4:
-            if _animate_rect(hwnd, x0, y0, w0, h0, x, y, w0, h0, dur):
+            performed, animated = _animate_rect(
+                hwnd, x0, y0, w0, h0, x, y, w0, h0, dur, effect_runner,
+            )
+            if not performed:
+                return False, "Window operation cancelled."
+            if animated:
                 return True, "moved"
             return False, _last_error("SetWindowPos failed during animation")
 
     flags = _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE
-    if not _user32.SetWindowPos(hwnd, 0, x, y, 0, 0, flags):
+    performed, moved = _run_effect(
+        effect_runner,
+        lambda: bool(_user32.SetWindowPos(hwnd, 0, x, y, 0, 0, flags)),
+    )
+    if not performed:
+        return False, "Window operation cancelled."
+    if not moved:
         return False, _last_error("SetWindowPos failed")
     return True, "moved"
 
@@ -331,10 +380,14 @@ def resize_window(
     *,
     smooth: bool | None = None,
     duration_ms: int | None = None,
+    effect_runner: EffectRunner | None = None,
 ) -> tuple[bool, str]:
     if not IS_WINDOWS:
         return False, "Not supported on this platform."
-    ok, msg = _prepare_window(hwnd)
+    performed, _result = _run_effect(effect_runner, lambda: True)
+    if not performed:
+        return False, "Window operation cancelled."
+    ok, msg = _prepare_window(hwnd, effect_runner)
     if not ok:
         return False, msg
 
@@ -350,11 +403,22 @@ def resize_window(
         x0, y0, w0, h0 = rect
         delta = abs(x - x0) + abs(y - y0) + abs(width - w0) + abs(height - h0)
         if delta >= 4:
-            if _animate_rect(hwnd, x0, y0, w0, h0, x, y, width, height, dur):
+            performed, animated = _animate_rect(
+                hwnd, x0, y0, w0, h0, x, y, width, height, dur, effect_runner,
+            )
+            if not performed:
+                return False, "Window operation cancelled."
+            if animated:
                 return True, "resized"
             return False, _last_error("SetWindowPos failed during animation")
 
-    if not _user32.MoveWindow(hwnd, x, y, width, height, True):
+    performed, resized = _run_effect(
+        effect_runner,
+        lambda: bool(_user32.MoveWindow(hwnd, x, y, width, height, True)),
+    )
+    if not performed:
+        return False, "Window operation cancelled."
+    if not resized:
         return False, _last_error("MoveWindow failed")
     return True, "resized"
 
@@ -364,6 +428,8 @@ def close_window(hwnd: int) -> tuple[bool, str]:
         return False, "Not supported on this platform."
     if not _user32.IsWindow(hwnd):
         return False, "Window handle is no longer valid."
+    if is_self_process_identity(process_id=_window_pid(hwnd)):
+        return False, "Refused to close Agetha's own window."
     _user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0)
     return True, "close sent"
 
@@ -374,6 +440,8 @@ def kill_process_by_hwnd(hwnd: int) -> tuple[bool, str]:
     pid = _window_pid(hwnd)
     if not pid:
         return False, "Could not resolve process ID for window."
+    if is_self_process_identity(process_id=pid):
+        return False, "Refused to terminate Agetha's own process."
     result = subprocess.run(
         ["taskkill", "/PID", str(pid), "/F"],
         capture_output=True,
@@ -390,6 +458,8 @@ def kill_process_by_name(target: str) -> tuple[bool, str]:
     if not target.strip():
         return False, "No process name provided."
     name = os.path.basename(resolve_target_name(target).strip())
+    if is_self_process_target(name):
+        return False, "Refused to terminate Agetha's own process."
     if IS_WINDOWS:
         if not name.lower().endswith(".exe"):
             name = f"{name}.exe"
@@ -444,6 +514,10 @@ def resolve_target_hwnd(
 
                 def _enum_pid(candidate: int, _lparam: int) -> bool:
                     nonlocal hwnd
+                    if exclude_hwnd and candidate == exclude_hwnd:
+                        return True
+                    if is_self_process_identity(process_id=pid):
+                        return True
                     if _window_pid(candidate) == pid and _user32.IsWindowVisible(candidate):
                         title = _window_title(candidate)
                         if title:
