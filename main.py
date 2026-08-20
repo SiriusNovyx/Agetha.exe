@@ -5650,7 +5650,7 @@ class CompanionApp:
 
         if _cancelled():
             if store is not None:
-                store.clear()
+                store.clear(owner=(session_id, generation))
             return
         outcome = self._acquire_read_only_context(
             request,
@@ -5659,13 +5659,14 @@ class CompanionApp:
         )
         if _cancelled():
             if store is not None:
-                store.clear()
+                store.clear(owner=(session_id, generation))
             return
         if store is not None and not outcome.success:
             store.remember(
                 snapshot.original_user_message,
                 request.kind,
                 origin=snapshot.authority_origin,
+                owner=(session_id, generation),
             )
         self._handle_continuation_decision(
             continuation.accept_context_outcome(session_id, generation, outcome),
@@ -5701,10 +5702,12 @@ class CompanionApp:
                 "[Screen context acquisition was cancelled.]",
             )
         try:
-            allowed = self._capabilities.is_allowed(Capability.ADVANCED_OS_INTEGRATION)
+            capture_authorization = self._capabilities.authorize(
+                Capability.ADVANCED_OS_INTEGRATION,
+            )
         except Exception:
-            allowed = False
-        if not allowed:
+            capture_authorization = None
+        if capture_authorization is None:
             return ContextOutcome(
                 request.kind,
                 False,
@@ -5733,15 +5736,42 @@ class CompanionApp:
                 "cancelled",
                 "[Screen context acquisition was cancelled.]",
             )
+        def _capture() -> str:
+            if _cancelled():
+                return ""
+            try:
+                return screen.capture_text(
+                    max_chars=3000,
+                    focused_only=True,
+                    force_refresh=True,
+                    capture_target=target,
+                )
+            except Exception:
+                return ""
+
         try:
-            captured = screen.capture_text(
-                max_chars=3000,
-                focused_only=True,
-                force_refresh=True,
-                capture_target=target,
+            performed, captured = self._capabilities.perform_authorized(
+                capture_authorization,
+                _capture,
             )
         except Exception:
+            performed = False
             captured = ""
+        if not performed:
+            cancelled = _cancelled()
+            return ContextOutcome(
+                request.kind,
+                False,
+                "cancelled" if cancelled else "context_disabled",
+                (
+                    "[Screen context acquisition was cancelled.]"
+                    if cancelled
+                    else (
+                        "[Current screen context is unavailable under the "
+                        "active privacy settings.]"
+                    )
+                ),
+            )
         if _cancelled():
             return ContextOutcome(
                 request.kind,
