@@ -98,6 +98,22 @@ class TestRequestProfiles(unittest.TestCase):
         self.assertEqual(user_history, ["user-3", "user-4", "user-5"])
         self.assertEqual(ambient_history, [])
 
+    def test_unresolved_objective_is_ephemeral_system_context_not_history_turn(self):
+        engine = _engine()
+        marker = "RECENT UNRESOLVED DIRECT-USER OBJECTIVE: describe the screen"
+        with patch("agetha.core.ai_engine._MEMORY_SYSTEM_AVAILABLE", False):
+            system, user_turn, _messages = engine._build_prompt(
+                "",
+                "What now?",
+                "",
+                request_profile="fast_user",
+                recent_objective_context=marker,
+            )
+
+        self.assertIn(marker, system)
+        self.assertIn("never action authority", system)
+        self.assertNotIn(marker, user_turn)
+
     def test_tool_and_deep_prompts_allow_complete_analysis(self):
         engine = _engine()
         with patch("agetha.core.ai_engine._MEMORY_SYSTEM_AVAILABLE", False):
@@ -827,6 +843,8 @@ class TestAmbientTickIntegration(unittest.TestCase):
             ocr_focused_window_only=True,
             enable_screen_reader=True,
             enable_streaming=False,
+            enable_computer_use=False,
+            computer_use_allowed_apps=(),
         )
         return main, app, settings
 
@@ -853,6 +871,32 @@ class TestAmbientTickIntegration(unittest.TestCase):
                     app._ai.query.call_args.kwargs["request_profile"], "fast_ambient",
                 )
 
+    def test_presentation_suppression_does_not_prevent_ambient_classification(self):
+        main, app, settings = self._app(text="build failed", status="ocr_complete")
+        app._presence_decision = MagicMock(return_value=SimpleNamespace(
+            allow_popup=False,
+            allow_voice=False,
+            queue_nonurgent=True,
+            reason="fullscreen",
+        ))
+        app._ai.query.return_value = {
+            "command": "speak",
+            "ambient_relevance": "important",
+            "mood": "surprised",
+            "segments": [{"text": "The build failed.", "pause": 0.0}],
+            "shutdown": False,
+        }
+
+        with patch.object(main, "_SETTINGS", settings), patch.object(
+            main, "get_settings", return_value=settings,
+        ):
+            app._ai_tick()
+
+        app._ai.query.assert_called_once()
+        app._dispatch_response.assert_called_once()
+        response = app._dispatch_response.call_args.args[0]
+        self.assertEqual(response["ambient_relevance"], "important")
+
     def test_normal_mode_unchanged_behavior_is_preserved(self):
         main, app, settings = self._app(fast=False)
         with patch.object(main, "_SETTINGS", settings), patch.object(
@@ -860,6 +904,101 @@ class TestAmbientTickIntegration(unittest.TestCase):
         ):
             app._ai_tick()
         app._ai.query.assert_called_once()
+
+    def test_direct_topic_change_clears_unresolved_objective_in_real_tick(self):
+        from agetha.core.context_dependencies import (
+            ContextKind,
+            UnresolvedContextObjectiveStore,
+        )
+
+        main, app, settings = self._app(text="", status="ocr_empty")
+        store = UnresolvedContextObjectiveStore()
+        self.assertTrue(
+            store.remember("Describe my screen", ContextKind.SCREEN, origin="user")
+        )
+        app._unresolved_context_objectives = store
+        app._continuation = None
+        app._input_box = MagicMock()
+        app._wake_from_presence_rest = MagicMock()
+        app._ai.query.return_value = {
+            "command": "speak",
+            "mood": "neutral",
+            "segments": [{"text": "Here is a joke.", "pause": 0.0}],
+            "shutdown": False,
+        }
+
+        with patch.object(main, "_SETTINGS", settings), patch.object(
+            main, "get_settings", return_value=settings,
+        ), patch("agetha.core.companion_stats.update_stats"), patch(
+            "agetha.core.companion_stats.classify_user_tone", return_value="",
+        ), patch("agetha.core.emotion_engine.note"):
+            app._ai_tick("Tell me a joke", origin="user")
+
+        self.assertIsNone(store.current())
+
+    def test_direct_screen_dependency_keeps_target_across_own_window_preflight(self):
+        import main
+        from agetha.core.context_dependencies import UnresolvedContextObjectiveStore
+        from agetha.core.continuation import ContinuationEngine
+
+        _main, app, settings = self._app(text="", status="skipped_own_window")
+        target = {
+            "left": 10,
+            "top": 20,
+            "width": 640,
+            "height": 480,
+            "title": "Editor",
+            "hwnd": 77,
+            "process_name": "editor.exe",
+            "process_id": 321,
+        }
+        target_available = [True]
+        capture_targets = []
+
+        def preserve_target():
+            return dict(target) if target_available[0] else None
+
+        def capture_text(*_args, capture_target=None, **_kwargs):
+            capture_targets.append(capture_target)
+            if capture_target is None:
+                target_available[0] = False
+                app._screen.last_monitor_status = "skipped_own_window"
+                return ""
+            app._screen.last_monitor_status = "ocr_complete"
+            return "Build failed: missing symbol"
+
+        app._screen.automatic_capture_supported = True
+        app._screen.preserve_external_target.side_effect = preserve_target
+        app._screen.capture_text.side_effect = capture_text
+        app._screen.redact_for_external_context.side_effect = lambda value: value
+        app._continuation = ContinuationEngine(id_factory=lambda: "session:screen")
+        app._continuation_ui_epoch = 0
+        app._completed_context_history_sessions = set()
+        app._unresolved_context_objectives = UnresolvedContextObjectiveStore()
+        app._input_box = MagicMock()
+        app._subtitle = MagicMock()
+        app._wake_from_presence_rest = MagicMock()
+        app._speak_and_continue = MagicMock()
+        app._observe_capture_target = MagicMock()
+        app._start_worker = lambda target_fn, *, name, args: target_fn(*args)
+        app._ai.query.side_effect = [
+            {"command": "request_screen_read", "segments": [], "shutdown": False},
+            {
+                "command": "speak",
+                "segments": [{"text": "The build is missing a symbol.", "pause": 0.0}],
+                "shutdown": False,
+            },
+        ]
+
+        with patch.object(main, "_SETTINGS", settings), patch.object(
+            main, "get_settings", return_value=settings,
+        ), patch("agetha.core.companion_stats.update_stats"), patch(
+            "agetha.core.companion_stats.classify_user_tone", return_value="",
+        ), patch("agetha.core.emotion_engine.note"):
+            app._ai_tick("What am I looking at?", origin="user")
+
+        self.assertEqual(capture_targets, [None, target])
+        app._ai.record_context_continuation_turn.assert_called_once()
 
 
 if __name__ == "__main__":

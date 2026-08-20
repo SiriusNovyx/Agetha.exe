@@ -16,6 +16,7 @@ from agetha.commands.command_handlers import DispatchCtx, HANDLERS, dispatch
 from agetha.core.ai_engine import AIEngine
 from agetha.core.external_context import prepare_external_context
 from agetha.core.file_drop import prepare_file_drop
+from agetha.core.context_dependencies import ContextKind, ContextRequest
 from agetha.core.request_context import (
     render_request_message,
     request_profile_for_origin,
@@ -428,9 +429,8 @@ class TestThreadingAndArbitration(unittest.TestCase):
         self.assertEqual(app._start_worker.call_args.kwargs["name"], "exclusive-ai")
         self.assertEqual(app._pending_user_message, "queued")
 
-    def test_screen_read_followup_uses_reserved_exclusive_slot(self):
+    def test_screen_read_compatibility_signal_uses_typed_dependency(self):
         app = MagicMock()
-        app._screen.capture_text.return_value = "screen text"
         ctx = DispatchCtx(
             user_message="read this",
             origin="user",
@@ -441,13 +441,13 @@ class TestThreadingAndArbitration(unittest.TestCase):
 
         HANDLERS["request_screen_read"](app, {}, ctx)
 
-        callback = app._defer_exclusive_ai_operation.call_args.args[0]
-        callback()
-        self.assertTrue(app._ai_query.call_args.kwargs["reserved_ai_slot"])
-        self.assertEqual(
-            app._ai_query.call_args.kwargs["request_profile"],
-            "fast_tool_result",
+        app._request_read_only_context_dependency.assert_called_once_with(
+            ContextRequest(ContextKind.SCREEN),
+            "read this",
+            origin="user",
         )
+        app._screen.capture_text.assert_not_called()
+        app._defer_exclusive_ai_operation.assert_not_called()
 
     def test_worker_join_is_bounded_and_does_not_join_current(self):
         app = self._app()

@@ -850,6 +850,62 @@ class TestConfigurationPrivacy(unittest.TestCase):
 
 
 class TestStaleResults(unittest.TestCase):
+    def test_48_targeted_capture_revalidates_without_requiring_foreground(self):
+        reader = _ocr_reader(OCRResult("fresh target text", [], "tesseract"))
+        target = {
+            "left": 25,
+            "top": 35,
+            "width": 640,
+            "height": 480,
+            "title": "Document",
+            "hwnd": 77,
+            "process_name": "reader.exe",
+            "process_id": 321,
+        }
+        reader._focused_target_is_current = MagicMock(return_value=False)
+        reader._capture_target_is_current = MagicMock(return_value=True)
+
+        result = reader.capture_text(
+            force_refresh=True,
+            capture_target=target,
+        )
+
+        self.assertEqual(result, "fresh target text")
+        reader._capture_frame.assert_called_once_with(
+            focused_only=True,
+            automatic=True,
+            capture_target=target,
+        )
+        reader._capture_target_is_current.assert_called_once_with(
+            reader._capture_frame.return_value,
+            target,
+        )
+        reader._focused_target_is_current.assert_not_called()
+
+    def test_48_targeted_capture_discards_target_changed_during_ocr(self):
+        reader = _ocr_reader(OCRResult("stale text", [], "tesseract"))
+        target = {
+            "left": 25,
+            "top": 35,
+            "width": 640,
+            "height": 480,
+            "title": "Document",
+            "hwnd": 77,
+            "process_name": "reader.exe",
+            "process_id": 321,
+        }
+        reader._capture_target_is_current = MagicMock(return_value=False)
+
+        result = reader.capture_text(
+            force_refresh=True,
+            capture_target=target,
+        )
+
+        self.assertEqual(result, "")
+        self.assertEqual(reader.last_monitor_status, "discarded_stale_target")
+        self.assertIsNone(reader.last_capture_metadata)
+        self.assertEqual(reader._capture_frame.call_count, 1)
+
     def test_48a_force_refresh_bypasses_unchanged_ocr_cache(self):
         word = OCRWord("Fresh", 10, 20, 30, 12, 90)
         reader = _ocr_reader(OCRResult("fresh", [word], "tesseract"))

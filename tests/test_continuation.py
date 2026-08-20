@@ -13,6 +13,11 @@ from agetha.core.continuation import (
     DecisionKind,
     ToolOutcome,
 )
+from agetha.core.context_dependencies import (
+    ContextKind,
+    ContextOutcome,
+    ContextRequest,
+)
 
 
 class FakeClock:
@@ -402,6 +407,129 @@ class TestWorkflow(ContinuationTestCase):
         self.assertEqual(final.snapshot.step, 2)
         self.assertEqual(final.snapshot.state, ContinuationState.COMPLETED)
         self.assertIsNone(engine.active_snapshot())
+
+
+class TestContextDependencies(ContinuationTestCase):
+    def test_context_request_is_typed_and_preserves_original_goal(self) -> None:
+        engine = self.engine()
+        started = engine.start(
+            "Describe what I am looking at",
+            authority_origin="user",
+        )
+        sid, generation = self.ids(started)
+
+        decision = engine.accept_context_request(
+            sid,
+            generation,
+            ContextRequest(ContextKind.SCREEN),
+            request_origin="user",
+        )
+
+        self.assertEqual(decision.kind, DecisionKind.RUN_CONTEXT)
+        self.assertEqual(
+            decision.snapshot.original_user_message,
+            "Describe what I am looking at",
+        )
+        self.assertEqual(decision.context_request.kind, ContextKind.SCREEN)
+        self.assertEqual(decision.snapshot.step, 1)
+
+    def test_failed_context_outcome_calls_provider_with_safe_status(self) -> None:
+        engine = self.engine()
+        started = engine.start("What is on screen?", authority_origin="user")
+        sid, generation = self.ids(started)
+        request = ContextRequest(ContextKind.SCREEN)
+        engine.accept_context_request(
+            sid, generation, request, request_origin="user",
+        )
+
+        follow = engine.accept_context_outcome(
+            sid,
+            generation,
+            ContextOutcome(
+                ContextKind.SCREEN,
+                False,
+                "target_unavailable",
+                "[Screen context unavailable.]",
+            ),
+        )
+
+        self.assertEqual(follow.kind, DecisionKind.CALL_PROVIDER)
+        self.assertEqual(follow.outcome.status, "target_unavailable")
+        self.assertEqual(len(follow.snapshot.context_history), 1)
+        self.assertIn("Screen context unavailable", follow.provider_context)
+
+    def test_repeated_context_dependency_stops_without_second_run(self) -> None:
+        engine = self.engine()
+        started = engine.start(
+            "Describe the current screen",
+            authority_origin="user",
+        )
+        sid, generation = self.ids(started)
+        request = ContextRequest(ContextKind.SCREEN)
+        first = engine.accept_context_request(
+            sid, generation, request, request_origin="user",
+        )
+        self.assertEqual(first.kind, DecisionKind.RUN_CONTEXT)
+        follow = engine.accept_context_outcome(
+            sid,
+            generation,
+            ContextOutcome(
+                ContextKind.SCREEN,
+                False,
+                "target_unavailable",
+                "[Screen context unavailable.]",
+            ),
+        )
+        self.assertEqual(follow.kind, DecisionKind.CALL_PROVIDER)
+
+        repeated = engine.accept_context_request(
+            sid,
+            generation,
+            request,
+            request_origin="tool_result",
+        )
+
+        self.assertEqual(repeated.kind, DecisionKind.STOPPED)
+        self.assertEqual(repeated.reason, "repeated_context_dependency")
+        self.assertIsNone(engine.active_snapshot())
+
+    def test_wrong_origin_cannot_start_or_borrow_context(self) -> None:
+        engine = self.engine()
+        started = engine.start("Describe it", authority_origin="user")
+        sid, generation = self.ids(started)
+
+        denied = engine.accept_context_request(
+            sid,
+            generation,
+            ContextRequest(ContextKind.SCREEN),
+            request_origin="ambient",
+        )
+
+        self.assertEqual(denied.kind, DecisionKind.IGNORED)
+        self.assertEqual(denied.reason, "unexpected_model_response_origin")
+        self.assertEqual(engine.active_snapshot().step, 0)
+
+    def test_context_outcome_must_match_pending_kind(self) -> None:
+        engine = self.engine()
+        started = engine.start("Describe it", authority_origin="user")
+        sid, generation = self.ids(started)
+        engine.accept_context_request(
+            sid,
+            generation,
+            ContextRequest(ContextKind.SCREEN),
+            request_origin="user",
+        )
+
+        malformed = object.__new__(ContextOutcome)
+        object.__setattr__(malformed, "kind", "unknown")
+        object.__setattr__(malformed, "success", False)
+        object.__setattr__(malformed, "status", "bad")
+        object.__setattr__(malformed, "provider_context", "")
+        object.__setattr__(malformed, "sensitivity", "private")
+        stopped = engine.accept_context_outcome(sid, generation, malformed)
+
+        self.assertEqual(stopped.kind, DecisionKind.BLOCKED)
+        self.assertEqual(stopped.reason, "context_outcome_mismatch")
 
 
 if __name__ == "__main__":

@@ -387,6 +387,7 @@ class TestDispatchPresenceBoundaries(unittest.TestCase):
             app,
             {
                 "command": "speak",
+                "ambient_relevance": "interesting",
                 "mood": "happy",
                 "segments": [{"text": "Tiny hello", "pause": 0.0}],
             },

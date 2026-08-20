@@ -21,8 +21,10 @@ from typing import Callable, TYPE_CHECKING
 
 from agetha.commands.command_guard import CommandGuard
 from agetha.core.request_context import (
+    AmbientRelevance,
     REQUEST_ORIGINS,
     RequestOrigin,
+    normalize_ambient_relevance,
     normalize_request_origin,
 )
 from agetha.core.capabilities import (
@@ -32,6 +34,7 @@ from agetha.core.capabilities import (
     DecisionReason,
     capability_for_command,
 )
+from agetha.core.context_dependencies import ContextKind, ContextRequest
 from agetha.commands.system_commands import (
     copy_to_clipboard, get_clipboard, lock_screen, open_folder, open_url,
     restart_system, screenshot_path, search_files, set_reminder, set_volume,
@@ -246,6 +249,20 @@ def _bind_capability_effect_boundaries(
     ):
         return
 
+    _bind_typing_effect_runner(
+        dependencies,
+        lambda effect: controller.perform_authorized(authorization, effect),
+    )
+
+
+def _bind_typing_effect_runner(
+    dependencies: object,
+    effect_runner: Callable[
+        [Callable[[], object]], tuple[bool, object | None]
+    ],
+) -> None:
+    """Gate only short platform primitives, never Guard or preview dialogs."""
+
     denied_values = {
         "get_focused_target": None,
         "send_native_unicode": NativeSendResult(False, 0, 0),
@@ -260,10 +277,12 @@ def _bind_capability_effect_boundaries(
             continue
 
         def _bound(*args, _callback=callback, _denied=denied, **kwargs):
-            performed, value = controller.perform_authorized(
-                authorization,
-                lambda: _callback(*args, **kwargs),
-            )
+            try:
+                performed, value = effect_runner(
+                    lambda: _callback(*args, **kwargs),
+                )
+            except Exception:
+                performed, value = False, None
             return value if performed else _denied
 
         setattr(dependencies, name, _bound)
@@ -552,6 +571,9 @@ def guarded_type_for_computer_use(
     cancel_event: threading.Event,
     *,
     validate_locked_target: Callable[[bool], bool] | None = None,
+    effect_runner: Callable[
+        [Callable[[], object]], tuple[bool, object | None]
+    ] | None = None,
 ) -> bool:
     """Synchronously reuse Unicode preflight, Guard, preview, and target checks."""
     def _target_is_valid(require_foreground: bool) -> bool:
@@ -640,6 +662,8 @@ def guarded_type_for_computer_use(
             and original_activate(target)
             and _target_is_valid(True)
         )
+    if effect_runner is not None:
+        _bind_typing_effect_runner(dependencies, effect_runner)
     try:
         result = type_unicode_text(
             text,
@@ -773,6 +797,24 @@ def dispatch(
         response["shutdown"] = False
         response.pop("popup", None)
 
+    ambient_relevance = normalize_ambient_relevance(
+        response.get("ambient_relevance"),
+    )
+    if resolved_origin == "ambient":
+        # Presentation metadata never upgrades ambient authority. Ambient model
+        # output is passive even if a provider returns a protected command.
+        if command not in {"idle", "speak"} or ambient_relevance is AmbientRelevance.MUNDANE:
+            command = "idle"
+            response = {
+                "command": "idle",
+                "mood": response.get("mood", "neutral"),
+                "segments": [],
+                "shutdown": False,
+                "ambient_relevance": ambient_relevance.value,
+            }
+            ctx.segments = []
+            ctx.shutdown_requested = False
+
     settings = get_settings()
     capability_decision = _capability_decision(app, command, settings)
     if not capability_decision.allowed:
@@ -808,7 +850,15 @@ def dispatch(
         presence_method = getattr(type(app), "_presence_decision", None)
         if callable(presence_method):
             try:
-                response_presence = presence_method(app)
+                urgency = (
+                    "important"
+                    if ambient_relevance is AmbientRelevance.IMPORTANT
+                    else "nonurgent"
+                )
+                try:
+                    response_presence = presence_method(app, urgency=urgency)
+                except TypeError:
+                    response_presence = presence_method(app)
             except (AttributeError, TypeError, ValueError) as exc:
                 logger.warning(
                     "Presence decision failed closed for response UI: %s",
@@ -2519,24 +2569,13 @@ def handle_fetch_webpage(app, response, ctx):
 
 @register("request_screen_read")
 def handle_request_screen_read(app, response, ctx):
-    if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    if not app._screen:
-        return True
-    screen_text = app._screen.capture_text()
-    app._last_screen_text = screen_text
-
-    def _requery():
-        follow = app._ai_query(
+    requester = getattr(app, "_request_read_only_context_dependency", None)
+    if callable(requester):
+        requester(
+            ContextRequest(ContextKind.SCREEN),
             ctx.user_message or "",
-            screen_context=screen_text,
-            reserved_ai_slot=True,
-            request_profile="fast_tool_result",
+            origin=ctx.origin,
         )
-        if follow:
-            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-
-    app._defer_exclusive_ai_operation(_requery)
     return True
 
 

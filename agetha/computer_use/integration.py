@@ -258,7 +258,10 @@ def _gate_effect_dependencies(
         keypress=effect(dependencies.keypress),
         hotkey=effect(dependencies.hotkey),
         focus_window=focus,
-        guarded_type=effect(dependencies.guarded_type),
+        # Guard and preview may synchronously wait for user input. They must not
+        # run while the capability controller holds its transition lock; the
+        # typing adapter gates only the eventual platform primitives.
+        guarded_type=dependencies.guarded_type,
         is_shutdown=is_shutdown,
     )
 

@@ -91,6 +91,80 @@ class _Clock:
 
 
 class ComputerUseIntegrationTests(unittest.TestCase):
+    def test_computer_use_typing_gates_primitives_not_guard_dialog(self) -> None:
+        cancelled = threading.Event()
+        captured = TypingTarget(
+            "win:100:42",
+            process_name="notepad.exe",
+            window_handle=100,
+        )
+        native_calls: list[str] = []
+        effect_calls: list[str] = []
+        dependencies = UnicodeTypingDependencies(
+            platform_name="windows",
+            session_type="desktop",
+            get_focused_target=lambda: captured,
+            send_native_unicode=lambda value: (
+                native_calls.append(value)
+                or NativeSendResult(True, len(value), len(value))
+            ),
+            read_clipboard=lambda: ClipboardSnapshot(True, "before"),
+            write_clipboard=lambda _value: True,
+            send_paste_shortcut=lambda: True,
+            activate_target=lambda _target: True,
+        )
+
+        def guard_check(*_args, **_kwargs) -> bool:
+            self.assertEqual(effect_calls, [])
+            return True
+
+        def effect_runner(effect):
+            effect_calls.append("primitive")
+            return True, effect()
+
+        app = SimpleNamespace(
+            _guard=SimpleNamespace(check=guard_check),
+            _capabilities=_full_capability_controller(),
+            _closing=False,
+            _cancel_event=threading.Event(),
+            _screen=SimpleNamespace(_own_hwnd=None),
+        )
+        locked = running_application_to_window_identity(_app())
+        settings = SimpleNamespace(
+            unicode_typing_mode="auto",
+            unicode_typing_restore_clipboard=True,
+            unicode_typing_preview_threshold=300,
+            unicode_typing_delay_ms=0,
+        )
+
+        def _prepare(_app_value, response, _settings) -> bool:
+            response["_typing_target"] = captured
+            response["_typing_preview"] = TypingPreview(
+                "notepad.exe", "withheld", 5, 1, "native-unicode", False, False, (),
+            )
+            response["_typing_dependencies"] = dependencies
+            return True
+
+        with patch(
+            "agetha.commands.command_handlers.get_settings",
+            return_value=settings,
+        ), patch(
+            "agetha.commands.command_handlers._prepare_unicode_typing",
+            side_effect=_prepare,
+        ):
+            result = guarded_type_for_computer_use(
+                app,
+                "hello",
+                locked,
+                cancelled,
+                validate_locked_target=lambda _foreground: True,
+                effect_runner=effect_runner,
+            )
+
+        self.assertTrue(result)
+        self.assertTrue(effect_calls)
+        self.assertEqual(native_calls, ["hello"])
+
     def test_target_change_during_typing_guard_has_no_input_or_clipboard_effect(self) -> None:
         cancelled = threading.Event()
         target_valid = {"value": True}
@@ -406,6 +480,62 @@ class ComputerUseIntegrationTests(unittest.TestCase):
         self.assertEqual(transition_was_blocked, [True])
         self.assertFalse(transition_threads[0].is_alive())
         self.assertTrue(transition_finished.is_set())
+
+    def test_typing_dialog_does_not_hold_capability_effect_lock(self) -> None:
+        capability_lock = threading.Lock()
+        dialog_entered = threading.Event()
+        close_dialog = threading.Event()
+        transition_finished = threading.Event()
+
+        def effect_runner(effect):
+            with capability_lock:
+                return True, effect()
+
+        def guarded_type(_text, _target, _cancel):
+            dialog_entered.set()
+            close_dialog.wait(2.0)
+            return True
+
+        dependencies = ExecutorDependencies(
+            validate_target=lambda value, foreground: LiveTargetState(
+                value, True, foreground, True,
+            ),
+            move_pointer=lambda _x, _y: True,
+            click=lambda _x, _y: True,
+            double_click=lambda _x, _y: True,
+            scroll=lambda _amount, _x, _y: True,
+            keypress=lambda _key: True,
+            hotkey=lambda _keys: True,
+            focus_window=lambda _target: True,
+            guarded_type=guarded_type,
+        )
+        gated = _gate_effect_dependencies(
+            dependencies,
+            feature_gate=lambda: True,
+            is_shutdown=lambda: False,
+            effect_runner=effect_runner,
+        )
+
+        typing_thread = threading.Thread(
+            target=lambda: gated.guarded_type("hello", object(), threading.Event()),
+        )
+        typing_thread.start()
+        self.assertTrue(dialog_entered.wait(1.0))
+
+        def transition() -> None:
+            with capability_lock:
+                transition_finished.set()
+
+        transition_thread = threading.Thread(target=transition)
+        transition_thread.start()
+        transition_completed_while_dialog_open = transition_finished.wait(0.2)
+        close_dialog.set()
+        typing_thread.join(2.0)
+        transition_thread.join(2.0)
+
+        self.assertTrue(transition_completed_while_dialog_open)
+        self.assertFalse(typing_thread.is_alive())
+        self.assertFalse(transition_thread.is_alive())
 
     def test_stale_queued_status_cannot_touch_a_new_session_ui(self) -> None:
         import main

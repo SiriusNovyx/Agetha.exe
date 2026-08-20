@@ -18,6 +18,8 @@ from enum import Enum
 from typing import Callable, Iterable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
+from .context_dependencies import ContextOutcome, ContextRequest
+
 
 class ContinuationState(str, Enum):
     """Externally visible state of one continuation session."""
@@ -25,6 +27,7 @@ class ContinuationState(str, Enum):
     AWAITING_MODEL = "awaiting_model"
     AWAITING_STATUS = "awaiting_status"
     AWAITING_TOOL = "awaiting_tool"
+    AWAITING_CONTEXT = "awaiting_context"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     STOPPED = "stopped"
@@ -36,6 +39,7 @@ class DecisionKind(str, Enum):
     STARTED = "started"
     STATUS = "status"
     RUN_TOOL = "run_tool"
+    RUN_CONTEXT = "run_context"
     CALL_PROVIDER = "call_provider"
     FINAL = "final"
     STOPPED = "stopped"
@@ -124,6 +128,7 @@ class ContinuationSnapshot:
     state: ContinuationState
     cancelled: bool
     history: tuple[ToolOutcome, ...]
+    context_history: tuple[ContextOutcome, ...]
     authorized_resources: tuple[AuthorizedResource, ...]
     discovered_resources: tuple[AuthorizedResource, ...]
     sensitive_context_seen: bool
@@ -139,8 +144,9 @@ class ContinuationDecision:
     snapshot: ContinuationSnapshot | None = None
     messages: tuple[MessageSegment, ...] = ()
     tool_request: ToolRequest | None = None
+    context_request: ContextRequest | None = None
     provider_context: str = ""
-    outcome: ToolOutcome | None = None
+    outcome: ToolOutcome | ContextOutcome | None = None
 
     @property
     def session_id(self) -> str:
@@ -241,10 +247,13 @@ class _Session:
     state: ContinuationState
     cancel_event: threading.Event
     history: list[ToolOutcome] = field(default_factory=list)
+    context_history: list[ContextOutcome] = field(default_factory=list)
     authorized_resources: set[AuthorizedResource] = field(default_factory=set)
     discovered_resources: set[AuthorizedResource] = field(default_factory=set)
     seen_fingerprints: set[str] = field(default_factory=set)
+    seen_context_fingerprints: set[str] = field(default_factory=set)
     pending_tool: ToolRequest | None = None
+    pending_context: ContextRequest | None = None
     expected_model_origin: str = "user"
     sensitive_context_seen: bool = False
     allow_sensitive_outbound: bool = False
@@ -371,6 +380,99 @@ class ContinuationEngine:
             response,
             request_origin="tool_result",
         )
+
+    def accept_context_request(
+        self,
+        session_id: str,
+        generation: int,
+        request: ContextRequest,
+        *,
+        request_origin: str,
+    ) -> ContinuationDecision:
+        """Accept one typed read-only dependency from the expected model turn."""
+
+        with self._lock:
+            session, rejected = self._validate_locked(session_id, generation)
+            if rejected is not None:
+                return rejected
+            assert session is not None
+            if session.state is not ContinuationState.AWAITING_MODEL:
+                return self._ignored_locked(session, "unexpected_model_response_state")
+            origin = str(request_origin or "").strip().casefold()
+            if origin != session.expected_model_origin:
+                return self._ignored_locked(session, "unexpected_model_response_origin")
+            if session.authority_origin != "user" or not isinstance(request, ContextRequest):
+                return self._stop_locked(
+                    session,
+                    "direct_user_context_authority_required",
+                    blocked=True,
+                )
+            if session.step >= session.max_steps:
+                return self._stop_locked(session, "max_steps_reached")
+            if request.fingerprint in session.seen_context_fingerprints:
+                return self._stop_locked(session, "repeated_context_dependency")
+
+            session.step += 1
+            session.seen_context_fingerprints.add(request.fingerprint)
+            session.pending_context = request
+            session.pending_tool = None
+            session.state = ContinuationState.AWAITING_CONTEXT
+            return ContinuationDecision(
+                DecisionKind.RUN_CONTEXT,
+                "run_read_only_context",
+                snapshot=self._snapshot_locked(session),
+                context_request=request,
+            )
+
+    def accept_context_outcome(
+        self,
+        session_id: str,
+        generation: int,
+        outcome: ContextOutcome,
+    ) -> ContinuationDecision:
+        """Record one bounded dependency result and continue the same goal."""
+
+        with self._lock:
+            session, rejected = self._validate_locked(session_id, generation)
+            if rejected is not None:
+                return rejected
+            assert session is not None
+            if session.state is not ContinuationState.AWAITING_CONTEXT:
+                return self._ignored_locked(session, "unexpected_context_outcome_state")
+            pending = session.pending_context
+            if (
+                pending is None
+                or not isinstance(outcome, ContextOutcome)
+                or outcome.kind != pending.kind
+            ):
+                return self._stop_locked(
+                    session,
+                    "context_outcome_mismatch",
+                    blocked=True,
+                )
+
+            safe_outcome = ContextOutcome(
+                outcome.kind,
+                outcome.success,
+                _truncate(outcome.status, 120),
+                _truncate(outcome.provider_context, self._max_tool_result_chars),
+                sensitivity=outcome.sensitivity,
+            )
+            session.context_history.append(safe_outcome)
+            if len(session.context_history) > self._max_history:
+                session.context_history = session.context_history[-self._max_history:]
+            if safe_outcome.sensitivity in _SENSITIVE_CONTEXT:
+                session.sensitive_context_seen = True
+            session.pending_context = None
+            session.expected_model_origin = "tool_result"
+            session.state = ContinuationState.AWAITING_MODEL
+            return ContinuationDecision(
+                DecisionKind.CALL_PROVIDER,
+                "continue_with_context_outcome",
+                snapshot=self._snapshot_locked(session),
+                provider_context=safe_outcome.provider_context,
+                outcome=safe_outcome,
+            )
 
     def accept_model_response(
         self,
@@ -726,7 +828,7 @@ class ContinuationEngine:
         reason: str,
         *,
         blocked: bool = False,
-        outcome: ToolOutcome | None = None,
+        outcome: ToolOutcome | ContextOutcome | None = None,
     ) -> ContinuationDecision:
         session.cancel_event.set()
         session.state = ContinuationState.STOPPED
@@ -764,6 +866,7 @@ class ContinuationEngine:
             state=session.state,
             cancelled=session.cancel_event.is_set(),
             history=tuple(session.history),
+            context_history=tuple(session.context_history),
             authorized_resources=tuple(sorted(session.authorized_resources)),
             discovered_resources=tuple(sorted(session.discovered_resources)),
             sensitive_context_seen=session.sensitive_context_seen,

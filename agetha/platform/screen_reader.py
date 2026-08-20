@@ -1609,6 +1609,28 @@ class ScreenReader:
         current = self._foreground_info()
         return current is not None and current.get("hwnd") == frame.hwnd
 
+    def _capture_target_is_current(
+        self,
+        frame: CapturedFrame,
+        capture_target: dict,
+    ) -> bool:
+        """Revalidate an exact passive target without requiring foreground."""
+
+        refreshed = self._resolve_capture_target(capture_target)
+        if refreshed is None or frame.hwnd is None:
+            return False
+        width, height = frame.image.size
+        return bool(
+            refreshed.get("hwnd") == frame.hwnd
+            and refreshed.get("process_id") == frame.process_id
+            and str(refreshed.get("process_name", "")).casefold()
+            == str(frame.process_name or "").casefold()
+            and int(refreshed.get("left", 0)) == frame.left
+            and int(refreshed.get("top", 0)) == frame.top
+            and int(refreshed.get("width", 0)) == width
+            and int(refreshed.get("height", 0)) == height
+        )
+
     def _selected_psm(self, frame: CapturedFrame) -> int:
         configured = getattr(self, "_ocr_psm", "auto")
         if configured != "auto":
@@ -1630,11 +1652,14 @@ class ScreenReader:
         focused_only: bool = True,
         *,
         force_refresh: bool = False,
+        capture_target: dict | None = None,
     ) -> str:
         """Capture and OCR one stable frame, then atomically publish its state.
 
-        ``force_refresh`` bypasses only the unchanged-frame OCR cache.  Normal
-        monitoring keeps its existing cached behavior when the flag is omitted.
+        ``force_refresh`` bypasses only the unchanged-frame OCR cache.  A
+        ``capture_target`` is an already preserved external window and is
+        revalidated before and after OCR without requiring it to steal focus.
+        Normal monitoring keeps its existing behavior when both are omitted.
         """
         scan_lock = getattr(self, "_standard_scan_lock", None)
         if scan_lock is None:
@@ -1657,7 +1682,9 @@ class ScreenReader:
                 modern_capture = hasattr(self, "_capture_lock")
                 if modern_capture:
                     frame = self._capture_frame(
-                        focused_only=bool(focused_only), automatic=True,
+                        focused_only=bool(focused_only),
+                        automatic=True,
+                        capture_target=capture_target,
                     )
                 else:
                     if not self._ensure_backend():
@@ -1718,10 +1745,20 @@ class ScreenReader:
                 if modern_capture and self._stopped:
                     self.last_monitor_status = "discarded_during_shutdown"
                     return ""
-                if modern_capture and not self._focused_target_is_current(frame):
-                    self.last_monitor_status = "discarded_stale_window"
-                    logger.debug("Discarded OCR result because the focused window changed")
-                    return ""
+                if modern_capture:
+                    if capture_target is not None:
+                        if not self._capture_target_is_current(frame, capture_target):
+                            self._clear_stale_capture_state("discarded_stale_target")
+                            logger.debug(
+                                "Discarded OCR result because the capture target changed"
+                            )
+                            return ""
+                    elif not self._focused_target_is_current(frame):
+                        self.last_monitor_status = "discarded_stale_window"
+                        logger.debug(
+                            "Discarded OCR result because the focused window changed"
+                        )
+                        return ""
 
                 matches = _scan_patterns(
                     result,
