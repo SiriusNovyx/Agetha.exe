@@ -8,8 +8,12 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from agetha.app_config import AppSettings
+from agetha.core.capabilities import CapabilityProfile
 from agetha.ui.senses_panel import (
     CapabilityStatus,
+    ComputerUsePanelSnapshot,
+    ContinuationPanelSnapshot,
+    ProcessPanelSnapshot,
     SensesRefreshController,
     SensesRuntime,
     collect_senses_state,
@@ -24,6 +28,7 @@ def _modules(*available: str):
 
 def _settings(**values: str) -> AppSettings:
     defaults = {
+        "COMPACT_MODE": "no",
         "ENABLE_SCREEN_READER": "yes",
         "OCR_FOCUSED_WINDOW_ONLY": "yes",
         "DEEP_OCR_BACKEND": "none",
@@ -41,6 +46,14 @@ def _settings(**values: str) -> AppSettings:
         "ENABLE_PRESENCE_ETIQUETTE": "yes",
         "ENABLE_TERMINAL_SENTINEL": "no",
         "ENABLE_WEB_RAG": "no",
+        "ENABLE_AGENT_CONTINUATION": "yes",
+        "AGENT_MAX_STEPS": "6",
+        "ENABLE_PROCESS_AWARENESS": "yes",
+        "PROCESS_CONTEXT_MODE": "visible_apps",
+        "ENABLE_COMPUTER_USE": "no",
+        "COMPUTER_USE_MAX_STEPS": "30",
+        "COMPUTER_USE_PLANNER_PROVIDER": "inherit",
+        "COMPUTER_USE_PLANNER_MODEL": "",
         "FASTER_MODE": "no",
         "DRY_RUN_MODE": "no",
     }
@@ -49,6 +62,108 @@ def _settings(**values: str) -> AppSettings:
 
 
 class TestSensesCollector(unittest.TestCase):
+    def test_compact_profile_reports_effective_advanced_capabilities_disabled(self) -> None:
+        report = collect_senses_state(
+            _settings(
+                COMPACT_MODE="yes",
+                ENABLE_AMBIENT_POLLS="yes",
+                ENABLE_COMMAND_EXECUTION="yes",
+                ENABLE_PROCESS_AWARENESS="yes",
+                ENABLE_TERMINAL_SENTINEL="yes",
+                ENABLE_COMPUTER_USE="yes",
+            ),
+            runtime=SensesRuntime(
+                process_snapshot=ProcessPanelSnapshot(
+                    state="available", foreground_app="notepad.exe",
+                ),
+                computer_use_snapshot=ComputerUsePanelSnapshot(
+                    active=True, state="running", target_app="notepad.exe",
+                ),
+            ),
+            platform_name="win32",
+            module_available=_modules("mss", "pytesseract", "PIL"),
+            memory_accessible=True,
+        )
+
+        self.assertEqual(report.profile, CapabilityProfile.COMPACT)
+        self.assertEqual(report.get("capability_profile").detail, "COMPACT")
+        for key in (
+            "automatic_capture",
+            "process_awareness",
+            "terminal_sentinel",
+            "computer_use",
+            "computer_use_active",
+            "computer_planner_provider",
+        ):
+            item = report.get(key)
+            self.assertEqual(item.status, CapabilityStatus.DISABLED, key)
+            self.assertEqual(item.detail, "Disabled — Compact Mode", key)
+
+    def test_compact_collection_does_not_read_advanced_runtime_services(self) -> None:
+        calls = {
+            "process_snapshot": 0,
+            "computer_snapshot": 0,
+            "provider_status": 0,
+            "sentinel_state": 0,
+        }
+
+        class ProcessAwareness:
+            @property
+            def last_snapshot(self):
+                calls["process_snapshot"] += 1
+                return SimpleNamespace(status="available")
+
+        class ComputerUse:
+            def snapshot(self):
+                calls["computer_snapshot"] += 1
+                return SimpleNamespace(state="running")
+
+        class AIEngine:
+            def get_token_status(self):
+                calls["provider_status"] += 1
+                raise AssertionError("Compact Senses must not query a provider object")
+
+        class TerminalSentinel:
+            @property
+            def enabled(self):
+                calls["sentinel_state"] += 1
+                raise AssertionError("Compact Senses must not inspect disabled services")
+
+        screen = SimpleNamespace(
+            capture=lambda: (_ for _ in ()).throw(
+                AssertionError("Senses must not capture the screen")
+            ),
+        )
+        report = collect_senses_state(
+            _settings(
+                COMPACT_MODE="yes",
+                ENABLE_PROCESS_AWARENESS="yes",
+                ENABLE_COMPUTER_USE="yes",
+                ENABLE_TERMINAL_SENTINEL="yes",
+            ),
+            runtime=SimpleNamespace(
+                _screen=screen,
+                _process_awareness=ProcessAwareness(),
+                _computer_use=ComputerUse(),
+                _ai=AIEngine(),
+                _terminal_sentinel=TerminalSentinel(),
+            ),
+            platform_name="win32",
+            module_available=_modules(),
+            memory_accessible=True,
+        )
+
+        self.assertEqual(report.profile, CapabilityProfile.COMPACT)
+        self.assertEqual(
+            calls,
+            {
+                "process_snapshot": 0,
+                "computer_snapshot": 0,
+                "provider_status": 0,
+                "sentinel_state": 0,
+            },
+        )
+
     def test_windows_runtime_capability_report(self) -> None:
         reader = SimpleNamespace(
             _automatic_capture_available=True,
@@ -211,6 +326,158 @@ class TestSensesCollector(unittest.TestCase):
         self.assertEqual(report.get("capture_mode").status, CapabilityStatus.UNKNOWN)
         self.assertEqual(report.get("companion_state").status, CapabilityStatus.UNKNOWN)
         self.assertEqual(report.get("provider_availability").status, CapabilityStatus.UNKNOWN)
+
+    def test_agent_process_and_computer_use_rows_use_only_minimized_snapshots(self) -> None:
+        runtime = SensesRuntime(
+            continuation_snapshot=ContinuationPanelSnapshot(
+                active=True, state="awaiting_tool", step=2, max_steps=6,
+            ),
+            process_snapshot=ProcessPanelSnapshot(
+                state="available",
+                foreground_app=r"C:\Users\private-person\Apps\notepad.exe",
+                visible_app_count=3,
+            ),
+            computer_use_snapshot=ComputerUsePanelSnapshot(
+                active=True,
+                state="running",
+                target_app=r"C:\Users\private-person\Apps\notepad.exe",
+                step=4,
+                max_steps=30,
+                recovery_calls=1,
+                last_result=(
+                    "password=super-secret raw OCR: Bank balance; "
+                    r"payload=สวัสดี C:\Users\private-person\private.txt"
+                ),
+                accessibility_available=False,
+                ocr_available=True,
+            ),
+        )
+        report = collect_senses_state(
+            _settings(
+                ENABLE_COMPUTER_USE="yes",
+                COMPUTER_USE_PLANNER_PROVIDER="groq",
+                COMPUTER_USE_PLANNER_MODEL="planner-small",
+            ),
+            runtime=runtime,
+            platform_name="win32",
+            memory_accessible=True,
+        )
+
+        self.assertEqual(report.get("continuation_engine").status, CapabilityStatus.AVAILABLE)
+        self.assertIn("step 2 / 6", report.get("continuation_engine").detail)
+        self.assertEqual(report.get("process_awareness").status, CapabilityStatus.AVAILABLE)
+        self.assertIn("3 visible", report.get("process_awareness").detail)
+        self.assertEqual(report.get("process_foreground").detail, "notepad.exe")
+        self.assertEqual(report.get("computer_use_active").status, CapabilityStatus.AVAILABLE)
+        self.assertEqual(report.get("computer_use_target").detail, "notepad.exe")
+        self.assertEqual(report.get("computer_use_step").detail, "4 / 30")
+        self.assertEqual(report.get("computer_use_recovery_calls").detail, "1")
+        self.assertEqual(report.get("computer_planner_provider").detail, "Groq")
+        self.assertEqual(report.get("computer_planner_model").detail, "planner-small")
+        self.assertEqual(report.get("computer_recovery_model").detail, "Primary provider and model")
+        self.assertEqual(
+            report.get("computer_use_accessibility").status,
+            CapabilityStatus.UNAVAILABLE,
+        )
+        self.assertEqual(report.get("computer_use_ocr").status, CapabilityStatus.AVAILABLE)
+
+        rendered = str(report.as_dict())
+        for private_value in (
+            "private-person", "super-secret", "Bank balance", "สวัสดี", "private.txt",
+        ):
+            self.assertNotIn(private_value, rendered)
+
+    def test_disabled_new_features_report_no_active_target_or_provider(self) -> None:
+        report = collect_senses_state(
+            _settings(
+                ENABLE_AGENT_CONTINUATION="no",
+                ENABLE_PROCESS_AWARENESS="no",
+                ENABLE_COMPUTER_USE="no",
+            ),
+            runtime=SensesRuntime(),
+            platform_name="win32",
+            memory_accessible=True,
+        )
+        self.assertEqual(report.get("continuation_engine").status, CapabilityStatus.DISABLED)
+        self.assertEqual(report.get("process_awareness").status, CapabilityStatus.DISABLED)
+        self.assertEqual(report.get("process_context_mode").status, CapabilityStatus.DISABLED)
+        self.assertEqual(report.get("computer_use").status, CapabilityStatus.DISABLED)
+        self.assertEqual(report.get("computer_use_active").status, CapabilityStatus.DISABLED)
+        self.assertEqual(report.get("computer_use_target").status, CapabilityStatus.DISABLED)
+        self.assertEqual(report.get("computer_planner_provider").status, CapabilityStatus.DISABLED)
+
+    def test_from_app_reads_snapshots_without_capture_scan_or_planning(self) -> None:
+        calls = {"continuation": 0, "computer": 0}
+
+        class Continuation:
+            def active_snapshot(self):
+                calls["continuation"] += 1
+                return SimpleNamespace(
+                    state="awaiting_model",
+                    step=1,
+                    max_steps=6,
+                    original_user_message="do not expose this goal",
+                )
+
+            def last_snapshot(self):
+                raise AssertionError("active state should be sufficient")
+
+        class ProcessAwareness:
+            last_status = "available"
+            last_snapshot = SimpleNamespace(
+                status="available",
+                foreground=SimpleNamespace(
+                    identity=SimpleNamespace(
+                        name=r"C:\Users\private-person\Apps\code.exe",
+                    ),
+                    window_title="Private project — token=secret-value",
+                    sensitive=False,
+                ),
+                visible_apps=(object(), object()),
+            )
+
+            def snapshot(self):
+                raise AssertionError("Senses must not trigger a process scan")
+
+        class ComputerUse:
+            _observer = SimpleNamespace(accessibility_available=False)
+
+            def snapshot(self):
+                calls["computer"] += 1
+                return SimpleNamespace(
+                    state="running",
+                    target_process=r"C:\Users\private-person\Apps\notepad.exe",
+                    step=3,
+                    max_steps=30,
+                    recovery_calls=0,
+                    last_result="starting",
+                    goal="do not expose this goal",
+                    payload="do not expose this payload",
+                )
+
+            def run(self):
+                raise AssertionError("Senses must not run Computer Use")
+
+        screen = SimpleNamespace(
+            _available=True,
+            capture=lambda: (_ for _ in ()).throw(
+                AssertionError("Senses must not capture the screen")
+            ),
+        )
+        view = SensesRuntime.from_app(SimpleNamespace(
+            _screen=screen,
+            _continuation=Continuation(),
+            _process_awareness=ProcessAwareness(),
+            _computer_use=ComputerUse(),
+        ))
+
+        self.assertEqual(calls, {"continuation": 1, "computer": 1})
+        self.assertEqual(view.process_snapshot.foreground_app, "code.exe")
+        self.assertEqual(view.computer_use_snapshot.target_app, "notepad.exe")
+        rendered = repr(view)
+        self.assertNotIn("private-person", rendered)
+        self.assertNotIn("do not expose", rendered)
+        self.assertNotIn("secret-value", rendered)
 
 
 class TestSensesRefreshController(unittest.TestCase):

@@ -101,6 +101,10 @@ Rules:
   settings dynamically.
 - Dashboard changes use `patch_config_keys()` and atomic replacement. It never
   edits API keys.
+- `COMPACT_MODE` defaults to `yes`, is not a Fast Mode managed key, and may be
+  persisted as `no` only after the final Full Mode confirmation. Missing means
+  Compact; an existing `no` is respected across restart without replaying the
+  demonstration.
 
 ### Configuration groups
 
@@ -110,8 +114,12 @@ dashboard.
 
 | Group | Keys |
 |---|---|
+| Capability profile | `COMPACT_MODE` |
 | Provider and generation | `USE_LOCAL_AI`, `ENABLE_GROQ`, `ENABLE_OPENROUTER`, `OPENROUTER_MODEL`, `FASTER_MODE`, `GROQ_MODEL`, `LOCAL_AI_MODEL`, `LOCAL_AI_TIMEOUT`, `AI_TEMPERATURE`, `AI_MAX_TOKENS`, `AI_TOP_P`, `ENABLE_STREAMING`, `ENABLE_AMBIENT_POLLS` |
 | Datetime context | `ENABLE_DATETIME_CONTEXT`, `DATETIME_INCLUDE_SECONDS`, `DATETIME_INCLUDE_TIMEZONE` |
+| Agent continuation | `ENABLE_AGENT_CONTINUATION`, `AGENT_MAX_STEPS`, `AGENT_MAX_DURATION_SEC`, `AGENT_MAX_TOOL_RESULT_CHARS` |
+| Process awareness | `ENABLE_PROCESS_AWARENESS`, `PROCESS_CONTEXT_MODE`, `PROCESS_MAX_VISIBLE_APPS`, `PROCESS_CONTEXT_EXCLUDED_APPS` |
+| Computer Use Lite | `ENABLE_COMPUTER_USE`, `COMPUTER_USE_MAX_STEPS`, `COMPUTER_USE_TIMEOUT_SEC`, `COMPUTER_USE_PLANNER_PROVIDER`, `COMPUTER_USE_PLANNER_MODEL`, `COMPUTER_USE_PLANNER_CONFIDENCE_MIN`, `COMPUTER_USE_RECOVERY_AFTER_FAILURES`, `COMPUTER_USE_MAX_RECOVERY_CALLS`, `COMPUTER_USE_ALLOWED_APPS` |
 | Command safety | `ENABLE_COMMAND_EXECUTION`, `ENABLE_WINDOW_CONTROL`, `ENABLE_COMMAND_CONFIRMATIONS`, `FORCE_CLOSE_AUTO_ALLOW`, `PROTECTED_PROCESSES`, `DRY_RUN_MODE` |
 | Unicode typing | `ENABLE_UNICODE_TYPING`, `UNICODE_TYPING_MODE`, `UNICODE_TYPING_DELAY_MS`, `UNICODE_TYPING_PREVIEW_THRESHOLD`, `UNICODE_TYPING_RESTORE_CLIPBOARD` |
 | Prompt/memory bounds | `MEMORY_CHARS`, `HISTORY_LIMIT`, `FILE_READ_CHARS`, `EPISODIC_PROMPT_LIMIT`, `EPISODIC_ENTRY_MAX_CHARS`, `EPISODIC_MAX_ENTRIES`, `ENABLE_LONGTERM_MEMORY`, `LONGTERM_MEMORY_MAX_RESULTS`, `LONGTERM_MEMORY_MAX_CHARS` |
@@ -159,7 +167,8 @@ runtime source of truth.
 ### Safe
 
 `add_task`, `change_animation_speed`, `change_mood`, `complete_task`,
-`get_clipboard`, `glitch_overlay`, `idle`, `list_tasks`, `monitor_process`,
+`get_active_app`, `get_clipboard`, `glitch_overlay`, `idle`, `list_running_apps`,
+`list_tasks`, `monitor_process`,
 `move_window`, `open_browser`, `open_folder`, `open_url`, `play_emotion_sound`,
 `play_virus_trivia`, `read_document`, `read_notepad`, `recycle_bin_status`,
 `request_path`, `request_screen_read`, `search_memory`, `set_reminder`,
@@ -168,7 +177,7 @@ runtime source of truth.
 
 ### Caution
 
-`analyze_screen_deep`, `clear_emotions`, `clear_memory`, `copy_to_clipboard`,
+`analyze_screen_deep`, `clear_emotions`, `clear_memory`, `computer_use`, `copy_to_clipboard`,
 `fetch_webpage`, `list_dir`, `list_directory`, `open_app`, `open_file`,
 `open_settings`, `play_sound`, `read_file`, `search_files`, `search_web`,
 `set_clipboard`, `set_volume`, `set_wallpaper`, `show_dialog`,
@@ -214,12 +223,45 @@ A command is incomplete until all relevant steps agree:
 Do not make mood, affection, infection level, or emotional history influence
 command authorization.
 
+### Compact/Full capability and consent change contract
+
+Read [Compact and Full profiles](compact_full_mode.md) before changing profile
+behavior. Preserve these boundaries:
+
+1. `core.capabilities` is the central deterministic outer policy; do not scatter
+   UI-only `if compact_mode` checks or let model output select a profile.
+2. Compact permits core chat/memory/emotion plus configured WebRAG and read-only
+   continuation, but denies Sentinel, Process Awareness, Computer Use and its
+   planners, OS typing/control, background sensing, and advanced OS integration.
+3. Full makes advanced capabilities eligible only when each ordinary feature
+   gate and safety boundary also allows them.
+4. Dashboard visibility is a presentation model. Enforce decisions before
+   service startup, capture/polling, provider planning, command preflight, and
+   every effect boundary.
+5. Compact-to-Full follows the pure generation-bound sequence first warning →
+   consent demo/fallback → final confirmation. Full is inactive until final Yes.
+6. The demo API accepts no app or text. It may launch only fixed Notepad and type
+   only its compiled warning after strict PID/name/creation-time/HWND/bounds/
+   foreground/liveness/generation validation. It has no provider, Computer Use,
+   planner/recovery, OCR, web, clipboard, shell, or Python-helper route.
+7. All consent UI and shake callbacks stay on Tk, are bounded/owned/cancellable,
+   and use a non-motion cue under reduced motion.
+8. Full-to-Compact publishes the deny boundary and invalidates generations
+   before waiting for Computer Use/planner cancellation or stopping advanced
+   services. No later keyboard, mouse, or app-control effect is allowed.
+9. Persist profile changes with the existing structural atomic config patch;
+   preserve comments/unknown lines and never add `COMPACT_MODE` to Fast Mode.
+10. Senses/dashboard state must be truthful and passive; reading it must not
+    enumerate, capture, probe a provider, or start an advanced feature.
+
 ### Unicode typing safety contract
 
 `type_text` remains Caution. Preserve the entire input string; never trim,
-normalize, translate, transliterate, change punctuation/case, remove Thai polite
-particles, split uncertain Unicode clusters, or append Enter/Return/Tab. Keep
-all reusable platform behavior in `platform/unicode_typing.py`.
+normalize, translate, transliterate, change punctuation/case, remove words or
+language-specific particles, split uncertain Unicode clusters, or append
+Enter/Return/Tab. Keep all reusable platform behavior in
+`platform/unicode_typing.py`. Compact additionally denies this OS effect at the
+central capability boundary.
 
 The dispatch path must continue to:
 
@@ -242,6 +284,59 @@ still equals Agetha's temporary value. Xorg optional utilities must remain
 optional. Wayland restrictions produce an honest copy-only/manual-paste result,
 not a security bypass.
 
+### Continuation and process-awareness change contract
+
+Read [Continuation Engine](continuation_engine.md) before changing a
+multi-message turn. Preserve one explicit session owner, direct-user-only
+activation, session/generation checks, application-owned provider reservation,
+non-recursive transitions, bounded clocks/steps/history/results, and the exact
+read-only allowlist. A `ToolOutcome` is untrusted observation data; it cannot
+dispatch a state-changing command, write normal memory/history, or activate
+Computer Use.
+
+New read-only adapters must apply their existing feature gate, bound and redact
+provider context, accept injected dependencies for tests, and declare
+sensitivity. Resource-bearing commands must match the original session's exact
+authorized paths/process names/URLs or a bounded discovered URL. Network fetch
+adapters must reject non-public destinations and validate every redirect.
+
+Process-awareness changes must keep foreground, visible applications, and
+background inventory distinct. Never use PID alone for an effect lock; compare
+executable basename and creation time when available. The provider view remains
+minimized even in local `all_processes` mode, and sensitive titles/paths must not
+enter prompts or observations. Process observations are facts only and cannot
+call a provider or authorize actions. The owner must stay inactive while
+Compact denies `PROCESS_AWARENESS`, irrespective of the individual flag.
+
+### Computer Use Lite change contract
+
+Read [Computer Use Lite](computer_use.md) before editing the package. Preserve:
+
+1. Compact denial plus `ENABLE_COMPUTER_USE=no` as the individual default, with
+   direct `user` origin as the only activation authority; the consent demo is
+   never a Computer Use origin;
+2. one immutable observation and exactly one planner action per call;
+3. no personality/memory/history/raw screenshot/full process inventory/exact
+   payload in planner or recovery context;
+4. deterministic Policy → existing gates/Command Guard → sole Executor order;
+5. PID + basename + creation time + HWND + validity + bounds + authorization
+   checks before every effect;
+6. temporary control IDs as the primary abstraction and coordinates only as a
+   validated in-bounds fallback;
+7. local payload references resolved only by guarded Unicode typing, with no
+   synthetic Enter/Return/Tab and no payload logging;
+8. immediate STOP/Escape generation invalidation and late-result discard;
+9. bounded cheap-planner/reobserve/primary-recovery routing with no model swarm
+   or infinite loop; and
+10. conservative handoff for credentials, banking/payment, CAPTCHA,
+    password-manager, elevated/secure-desktop, and security-software contexts.
+
+Observer, Policy, Executor, Verifier, process locking, cancellation, and step
+limits remain deterministic components, not AI agents. The accessibility
+abstraction must report unavailable until a real dependency-free implementation
+exists. Do not add a full-vision model or new input/UI-automation dependency
+without a separately authorized phase.
+
 ## Adding prompt context
 
 Add context through `AIEngine._build_prompt()` and preserve these constraints:
@@ -262,13 +357,21 @@ compact result.
 
 ### Character voice versus exact data
 
-Natural Thai is a system-prompt and few-shot contract: Agetha defaults to
-concise, neutral phrasing such as `สวัสดี` and does not automatically add
-`ครับ` or `ค่ะ`. Do not implement a global regex or post-provider filter. Exact
-user-provided text, quotations, formal translations, documents, code, file and
-clipboard content, and command payloads such as `ขอบคุณครับ` must remain
-unchanged. Prompt tests can prove that the contract is present; they cannot
-claim that prompt wording guarantees every future model response.
+Language behavior is one general system-prompt/few-shot contract: Agetha replies
+primarily in the user's current language, preserves mixed-language conversation,
+and approximates the user's register without unnecessarily adding translation,
+transliteration, gendered speech, honorifics, cultural particles, formality, or
+slang. This presentation choice never changes command, provider, continuation,
+process, or safety authority.
+
+Do not implement a language-specific subsystem, global regex, or post-provider
+word/suffix filter. Exact user-provided text, quotations, requested translations,
+documents, code, file and clipboard content, and command payloads must remain
+unchanged. Use a balanced deterministic vector set—English, Thai, Japanese,
+Chinese, Korean, Arabic, Russian, another Latin-script language, mixed scripts,
+and emoji—without presenting one as Agetha's preference. Prompt tests can prove
+the policy is present; they cannot claim equal model quality across languages or
+guarantee every future response.
 
 ## Tk, workers, and timers
 
@@ -292,13 +395,18 @@ an exact stable final position.
 Polyglot Presence ownership is specific:
 
 - `CompanionApp` owns `ObservationBus`, optional `PresenceEtiquette`, Terminal
-  Sentinel, the active Unicode cancellation event, the Senses panel, and
-  Sentinel popups.
+  Sentinel, `ContinuationEngine`, `ProcessAwareness`, optional
+  `ComputerUseManager`, active Unicode/Computer Use cancellation, the Senses
+  panel, and owned status/Sentinel popups.
+- It also owns the capability controller, consent flow generation, consent
+  dialogs/demo cancellation, and every bounded shake/fallback callback. Public
+  consent UI methods remain Tk-owner-thread-only.
 - Unicode entry and Senses collection use application workers; previews,
   status application, and popups are scheduled onto Tk.
 - Observation and Presence queues are in memory and shut down idempotently.
-- Final shutdown signals Unicode entry, closes child panels/popups, then calls
-  Sentinel `stop()`, Presence `shutdown()`, and bus `shutdown()` before root
+- Final shutdown invalidates capability/consent, Continuation, and Computer Use
+  generations, signals consent/Unicode entry, closes child panels/popups, then
+  shuts down Process Awareness, Sentinel, Presence, and the bus before root
   destruction.
 
 ## UI, moods, and assets
@@ -408,6 +516,43 @@ Also run Medic manually on the target Windows machine and inspect both
 `Medic_Checker.ps1`, `medic_helper.py`, the candidate rules, wording, and tests in
 sync. Do not require the administrator launcher for normal operation.
 
+### Frozen executable audit and validation
+
+The repository already contains PyInstaller-style `main.spec`,
+`ci_compile_check.spec`, and `medic_helper.spec`; use that mechanism when a local
+build is explicitly in scope. Do not introduce another packager or dependency
+solely for Compact/Full support.
+
+Important current caveat: `main.spec` names a console executable `main`, has an
+empty `datas` list, and does not by itself stage the ignored/external `assets/`
+directory. There is no canonical release/installer command encoded by a spec
+file alone. Finding the spec, `build/`, `dist/`, or an old binary does not prove a
+current build or manual smoke test passed.
+
+When touching source/frozen behavior:
+
+- keep source paths independent of the process current working directory;
+- under `sys.frozen`, keep mutable config, `.env`, `memory/`, and logs at the
+  existing writable directory beside `sys.executable`, never `_MEIPASS`;
+- keep required sibling assets aligned with that `BASE_DIR` strategy unless the
+  existing spec is intentionally updated and validated;
+- never invoke a Python helper with `sys.executable` in frozen mode, because it
+  is the Agetha executable;
+- keep the Full-consent helper as a direct fixed `notepad.exe` launch, not a
+  general executable launcher;
+- recognize owned PID/HWND first and exact `main.py`, `main.exe`, and
+  `Agetha.exe` aliases second for self-target refusal; do not broadly exclude
+  unrelated `python.exe` processes; and
+- preserve Windows ARM64 as the x64/AMD64-under-Prism path. Do not claim a native
+  ARM64 executable without a separately built and observed artifact.
+
+If existing build dependencies are available, direct output to a disposable
+local location, stage required external assets without modifying tracked build
+outputs, and do not publish or stage the binary. Report separately: frozen
+compatibility audit, build attempted/result, source smoke, `.exe` smoke, and
+unperformed manual items. The Full Notepad/keyboard demonstration requires an
+explicitly safe GUI environment and is never implied by a build.
+
 ## Fast Mode recovery tooling
 
 Read [Fast Mode security and recovery](fast_mode_security.md) before changing
@@ -468,6 +613,26 @@ With the project venv:
 | Opt-in Terminal Sentinel | `python -m unittest tests.test_terminal_sentinel -v` |
 | Senses capability model/UI lifecycle | `python -m unittest tests.test_senses_panel -v` |
 | Polyglot Presence integration | `python -m unittest tests.test_polyglot_presence_integration -v` |
+| Language-neutral multilingual policy | `python -m unittest tests.test_language_policy -v` |
+| Compact/Full capability matrix and dispatch boundary | `python -m unittest tests.test_capabilities -v` |
+| Compact provider deferral and ambient generation boundary | `python -m unittest tests.test_compact_provider_gate -v` |
+| Compact/Full application lifecycle and downgrade | `python -m unittest tests.test_capability_main_integration -v` |
+| Compact/Full Dashboard presentation model | `python -m unittest tests.test_dashboard_profiles -v` |
+| Pure Full-consent state machine | `python -m unittest tests.test_full_mode_consent_state -v` |
+| Fixed Notepad consent bootstrap | `python -m unittest tests.test_full_mode_consent_demo -v` |
+| Win95 consent UI/shake lifecycle | `python -m unittest tests.test_full_mode_consent_ui -v` |
+| Frozen paths/launcher/self identity | `python -m unittest tests.test_frozen_runtime -v` |
+| Continuation state machine | `python -m unittest tests.test_continuation -v` |
+| Continuation read-only adapters/SSRF | `python -m unittest tests.test_read_only_tools -v` |
+| Process/application awareness | `python -m unittest tests.test_process_awareness -v` |
+| Computer Use action models | `python -m unittest tests.test_computer_use_models -v` |
+| Computer Use local activation/payload parsing | `python -m unittest tests.test_computer_use_activation -v` |
+| Computer Use observer/policy | `python -m unittest tests.test_computer_use_observer_policy -v` |
+| Computer Use executor/verifier | `python -m unittest tests.test_computer_use_executor_verifier -v` |
+| Computer Use planner/session | `python -m unittest tests.test_computer_use_planner_session -v` |
+| Computer Use platform runtime bridge | `python -m unittest tests.test_computer_use_runtime -v` |
+| Computer Use session Escape hotkey | `python -m unittest tests.test_computer_use_escape_hotkey -v` |
+| Computer Use app composition/target bootstrap | `python -m unittest tests.test_computer_use_integration -v` |
 
 Medic's compile/import checks are useful environment diagnostics, but they do not
 replace the test suite.
@@ -535,6 +700,12 @@ Record which steps were actually performed and the platform used.
 
 The feature-specific twenty-item Windows checklist and Xorg/Wayland notes are
 in [Polyglot Presence manual validation](testing/polyglot_presence_manual.md).
+The separate twenty-five-item Continuation/Process/Computer Use checklist is in
+[Computer Use manual validation](testing/computer_use_manual.md). Every new item
+starts as **NOT PERFORMED** and must remain so until directly observed.
+The 34-item source/Compact/Full/frozen checklist is in
+[Compact/Full Mode manual validation](testing/compact_full_mode_manual.md); all
+34 entries also begin **NOT PERFORMED**.
 Automated tests, compile checks, and mocked platform adapters do not count as a
 performed manual item; leave each entry marked unperformed until a human runs
 it on the named desktop and records the result.
@@ -543,6 +714,8 @@ it on the named desktop and records the result.
 
 | Area | Current limitation or caveat |
 |---|---|
+| Compact/Full profiles | Compact is the default master gate. Full enables eligibility, not every feature, and does not weaken safety. The Notepad demonstration is Windows-only presentation; failure uses an in-app fallback and final consent remains required. |
+| Frozen executable | Existing specs provide a PyInstaller-style mechanism, but `main.spec` currently names `main.exe`, declares no data files, and is not evidence of a current build or smoke test. External assets must be staged beside the executable under the current path strategy. |
 | Platform scope | Windows and existing Linux desktop paths are supported. macOS is retired. Hosted CI cannot validate Windows ARM/Prism or every Linux compositor/desktop utility. |
 | Window alpha/chrome | Windows alpha support can vary by graphics stack; close falls back to immediate cleanup if the effect is unavailable. |
 | Tesseract | Python package alone is insufficient; the native executable and requested language data must exist. |
@@ -551,10 +724,12 @@ it on the named desktop and records the result.
 | Unicode typing | Windows native behavior still depends on target-app support for `KEYEVENTF_UNICODE`. Xorg entry needs optional `xdotool` plus `xclip` or `xsel`; missing tools fall back honestly. Wayland permits clipboard copy through `wl-copy` when installed but blocks global automatic typing by design. Secure/elevated desktops are refused rather than bypassed. |
 | Terminal Sentinel | It sees only confirmed Tesseract events from explicitly allowlisted windows. OCR can misread terminal output; notifications are advisory, never an automatic fix. Empty allowlists watch nothing. |
 | Senses panel | Capability status is a local snapshot, not a live health guarantee. Provider availability remains unknown unless runtime already knows it; opening the panel deliberately performs no paid/network probe. |
+| Process awareness | Windows has the strongest native foreground/window identity. Xorg uses existing optional tools and may be degraded; generic Wayland can be process-only. Provider context stays minimized even when local inspection is broader. |
+| Computer Use Lite | Disabled by default and Windows-first. The accessibility provider is an honest unavailable abstraction, so OCR is the MVP. Xorg is degraded and must stop when strict locking/input prerequisites are absent; autonomous Computer Use is unavailable on Wayland. Full visual/vision planning is future work. |
 | Dashboard | Multiple dashboards may open. Its tracked callback list is cleared on close but can grow during a long session; keep new pollers sparse. |
 | Fast Mode snapshot permissions | POSIX permission bits are forced to user read/write. On Windows, the file inherits the current user's directory ACL because portable `chmod` cannot create a new Windows ACL. Reparse-point targets are refused. |
 | Fast Mode same-user threat | Lock/path hardening resists practical substitution and races but is not a privilege boundary against a fully compromised process running as the same user. |
-| Web fetch | Bounded but currently does not reject private/loopback HTTP targets at the transport layer; retain its disabled default and Caution confirmation. |
+| Web fetch | Continuation fetches use the public-only DNS-validating, address-pinned, redirect-revalidating adapter with one cancellation-aware deadline. The separate legacy WebRAG helper retains its disabled default and Caution confirmation. |
 | Glitch overlay | Short-lived callbacks rely on Toplevel destruction; use explicit tracked IDs for any new persistent loop. |
 | Dependencies | Voice/DnD packages are installed by current `requirements.txt` even though the features are config-optional; avoid describing package installation and feature enablement as the same thing. |
 | Versions | Package, config, Medic, and historical README labels are not one automatic release field. Change versions only as part of an intentional fork release. |

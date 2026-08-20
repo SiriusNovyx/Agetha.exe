@@ -4,7 +4,7 @@ Start here when changing the repository. These documents summarize the
 project-owned source tree so routine work does not require rereading
 `main.py`, `ai_engine.py`, or every supporting module.
 
-Last code-map audit: 2026-08-03.
+Last code-map audit: 2026-08-13.
 
 ## Supported platform
 
@@ -25,6 +25,11 @@ validation target because hosted Windows runners are x64.
 | Change OCR or screen context | [Architecture — screen monitoring](architecture.md#screen-monitoring-and-ocr) | `screen_reader.py`, `screen_monitoring.py`, `ocr_backends/` |
 | Change Unicode text entry | [Runtime flows — Unicode typing](runtime_flows.md#unicode-type_text-flow) | `unicode_typing.py`, `command_handlers.py`, `command_guard.py`, `typing_preview.py` |
 | Change observations or interruption policy | [Architecture — local observation and presence](architecture.md#local-observation-and-presence) | `observation_bus.py`, `presence_etiquette.py`, `main.py` |
+| Change bounded multi-message turns | [Continuation Engine](continuation_engine.md) | `continuation.py`, `read_only_tools.py`, request profiles, `main.py` |
+| Change process/application awareness | [Continuation Engine — process-aware continuation](continuation_engine.md#process-aware-continuation) | `process_awareness.py`, Observation Bus integration |
+| Change Computer Use Lite | [Computer Use Lite](computer_use.md) | `agetha/computer_use/`, guarded Unicode typing, status UI, `main.py` |
+| Change Compact/Full policy or consent | [Compact and Full profiles](compact_full_mode.md) | `capabilities.py`, `capability_consent.py`, `full_mode_consent.py`, dashboard/Senses, `main.py` |
+| Audit source/frozen behavior | [Compact and Full profiles — source and frozen behavior](compact_full_mode.md#source-and-frozen-application-behavior) | `app_config.py`, `self_identity.py`, `windows_notify.py`, existing `*.spec` files |
 | Change Terminal Sentinel | [Runtime flows — Terminal Sentinel](runtime_flows.md#terminal-sentinel-flow) | `terminal_sentinel.py`, existing screen event path, popup UI |
 | Change the Senses panel | [Architecture — UI](architecture.md#ui-architecture) | `senses_panel.py`, dashboard callback, capability tests |
 | Diagnose Ubuntu Xorg/Wayland GUI or OCR | [Linux desktop support](linux_support.md) | `linux_session.py`, `screen_reader.py`, `w95_window.py` |
@@ -35,6 +40,8 @@ validation target because hosted Windows runners are x64.
 | Fix Windows ARM or launcher behavior | [Development guide](development.md#launcher-and-windows-arm) | `Medic_Checker.ps1`, `medic_helper.py`, launcher tests |
 | Choose and run tests | [Development guide — test map](development.md#test-map) | The closest `tests/test_*.py` file |
 | Manually validate Polyglot Presence | [Polyglot Presence manual checklist](testing/polyglot_presence_manual.md) | Record platform and result for every performed item |
+| Manually validate Continuation/Process/Computer Use | [Computer Use manual checklist](testing/computer_use_manual.md) | Leave every item unperformed until it is directly observed |
+| Manually validate Compact/Full/frozen | [Compact/Full manual checklist](testing/compact_full_mode_manual.md) | All 34 items begin NOT PERFORMED; source mocks and builds do not count |
 | Review deferred A–O concepts | [Polyglot Presence future roadmap](roadmap/polyglot_presence_roadmap.md) | All entries are planned / not implemented |
 | Configure explicit Unlimited-OCR | [Unlimited-OCR service guide](unlimited_ocr_server.md) | `unlimited_ocr_backend.py` |
 | Review the current release | [v5.7 release notes](releases/v5.7.md) | The linked implementation and test suites |
@@ -66,15 +73,32 @@ documentation, tests, or logs.
 - Tesseract is the automatic OCR backend. Unlimited-OCR is explicit-only.
 - External text (OCR, web pages, memories) remains labeled as untrusted prompt
   context and must not become automatic OS instructions.
-- Natural Thai style is prompt/personality guidance, never a global text
-  rewrite; exact user-provided, quoted, document, code, and command data remains
-  exact.
+- Language choice is presentation only: mirror the user's current language and
+  approximate register without unnecessary translation, transliteration,
+  gendered speech, honorifics, cultural particles, formality, or slang. Never
+  globally rewrite exact user-provided, quoted, document, code, or command data.
 - `type_text` remains Caution-gated, preserves its input string, revalidates its
   intended target, and never synthesizes Enter, Return, or Tab.
 - Publishing an Observation never calls a provider, persists memory, opens UI,
   or grants command authority. Downstream eligibility is decided separately.
 - Terminal Sentinel is disabled by default, watches nothing with empty
   allowlists, and makes no provider request before an explicit Explain action.
+- Continuation sessions start only from direct user authority. `tool_result`
+  remains untrusted and may select only the bounded read-only allowlist.
+- Computer Use is disabled by default and requires an explicit direct-user
+  session. Planner output cannot bypass deterministic policy, Command Guard, or
+  PID/name/creation-time/HWND/bounds validation before each effect.
+- Compact Mode is the default outer capability gate. Full-only services do not
+  start or perform effects in Compact, even if an individual feature flag is on.
+- Full Mode requires the final step of the explicit consent state machine. The
+  fixed Notepad presentation cannot type arbitrary text, is not Computer Use,
+  and calls no provider. Full never disables the existing safety boundaries.
+- A Full-to-Compact transition invalidates effect/session generations before
+  service cleanup. Late callbacks must not type, click, capture, or restart an
+  advanced worker.
+- Frozen code resolves mutable config/state beside the executable, not under
+  `_MEIPASS` or from the process current directory. Existing specs are a
+  packaging mechanism, not evidence of a successful current `.exe` build.
 - Secrets live only in `.env`; `config.txt` rejects secret keys.
 - Persistent JSON/state rewrites use atomic write/replace helpers where
   applicable.

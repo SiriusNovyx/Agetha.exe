@@ -18,6 +18,12 @@ It also fails closed if a future edit adds a secret, provider, permission,
 confirmation, protected-process, OCR-privacy, remote-OCR, or consent setting to
 the Fast Mode profile.
 
+`COMPACT_MODE` is specifically outside the Fast Mode allowlist. Fast Mode must
+not turn Compact off, restore an old Full/Compact value, or stand in for the
+deliberate Full-consent flow. Compact is the outer advanced-capability gate;
+Full still retains the guard/confirmation/security settings that Fast Mode is
+already forbidden to weaken. See [Compact and Full profiles](compact_full_mode.md).
+
 Fast Mode is not a privilege boundary. A fully compromised process running as
 the same user can still interfere with files owned by that user. Descriptor
 checks, post-lock revalidation, and atomic replacement narrow practical race

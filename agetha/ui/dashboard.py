@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agetha.app_config import BASE_DIR, CONFIG_PATH, read_config_document
+from agetha.core.capabilities import CapabilityPolicy, CapabilityProfile
 from agetha.utils import logger, write_atomic
 
 # Duplicated Win95 palette (must not import main.py)
@@ -382,6 +383,37 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
         ),
     ),
     (
+        "Agent continuation & process awareness — restart required",
+        (
+            ("ENABLE_AGENT_CONTINUATION", "bool", True, ()),
+            ("AGENT_MAX_STEPS", "text", True, ()),
+            ("AGENT_MAX_DURATION_SEC", "text", True, ()),
+            ("AGENT_MAX_TOOL_RESULT_CHARS", "text", True, ()),
+            ("ENABLE_PROCESS_AWARENESS", "bool", True, ()),
+            ("PROCESS_CONTEXT_MODE", "choice", True, (
+                "off", "foreground_only", "visible_apps", "all_processes",
+            )),
+            ("PROCESS_MAX_VISIBLE_APPS", "text", True, ()),
+            ("PROCESS_CONTEXT_EXCLUDED_APPS", "text", True, ()),
+        ),
+    ),
+    (
+        "Computer Use Lite — restart required",
+        (
+            ("ENABLE_COMPUTER_USE", "bool", True, ()),
+            ("COMPUTER_USE_MAX_STEPS", "text", True, ()),
+            ("COMPUTER_USE_TIMEOUT_SEC", "text", True, ()),
+            ("COMPUTER_USE_PLANNER_PROVIDER", "choice", True, (
+                "inherit", "ollama", "groq", "openrouter",
+            )),
+            ("COMPUTER_USE_PLANNER_MODEL", "text", True, ()),
+            ("COMPUTER_USE_PLANNER_CONFIDENCE_MIN", "text", True, ()),
+            ("COMPUTER_USE_RECOVERY_AFTER_FAILURES", "text", True, ()),
+            ("COMPUTER_USE_MAX_RECOVERY_CALLS", "text", True, ()),
+            ("COMPUTER_USE_ALLOWED_APPS", "text", True, ()),
+        ),
+    ),
+    (
         "Presence & realism (v4)",
         (
             ("ENABLE_CIRCADIAN_RHYTHM", "bool", False, ()),
@@ -534,6 +566,106 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
     ),
 )
 
+_PROFILE_SETTING_SECTION = (
+    "Capability profile",
+    (("COMPACT_MODE", "bool", False, ()),),
+)
+
+_COMPACT_SETTING_SECTION_TITLES = frozenset({
+    "AI Backend — restart required",
+    "AI Tuning — restart required",
+    "Memory & Context — restart required",
+    "UI — restart required",
+    "Voice — restart required",
+})
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardPresentation:
+    """Side-effect-free view of the Dashboard surfaces for one profile."""
+
+    profile: CapabilityProfile
+    compact_mode_on: bool
+    tabs: tuple[str, ...]
+    setting_sections: tuple[
+        tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]], ...]], ...
+    ]
+    show_system_monitor: bool
+    show_senses: bool
+
+    @property
+    def setting_keys(self) -> tuple[str, ...]:
+        return tuple(
+            key
+            for _section, items in self.setting_sections
+            for key, _kind, _needs_restart, _choices in items
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardProfileUpdate:
+    """Generic settings plus an isolated capability-profile request."""
+
+    generic_updates: dict[str, str]
+    requested_compact_mode: bool | None
+
+
+def split_dashboard_profile_update(
+    updates: dict[str, str],
+    *,
+    current_compact_mode: bool,
+) -> DashboardProfileUpdate:
+    """Keep mode transitions out of the ordinary config patch transaction."""
+    generic = {
+        key: value for key, value in updates.items()
+        if str(key).strip().upper() != "COMPACT_MODE"
+    }
+    raw_request = next(
+        (
+            value for key, value in updates.items()
+            if str(key).strip().upper() == "COMPACT_MODE"
+        ),
+        None,
+    )
+    if raw_request is None:
+        requested = None
+    else:
+        requested_value = str(raw_request).strip().casefold() in {
+            "1", "yes", "true", "on",
+        }
+        requested = (
+            requested_value
+            if requested_value is not bool(current_compact_mode)
+            else None
+        )
+    return DashboardProfileUpdate(generic, requested)
+
+
+def build_dashboard_presentation(settings: object) -> DashboardPresentation:
+    """Return the visible Dashboard model without probing the host."""
+    policy = CapabilityPolicy.from_settings(settings)
+    compact = policy.profile is CapabilityProfile.COMPACT
+    sections = (
+        (_PROFILE_SETTING_SECTION,)
+        + tuple(
+            section for section in _SETTING_SECTIONS
+            if not compact or section[0] in _COMPACT_SETTING_SECTION_TITLES
+        )
+    )
+    tabs = (
+        ("Virus Registry", "Notepad", "About", "Settings")
+        if compact
+        else ("System Monitor", "Virus Registry", "Notepad", "About", "Settings")
+    )
+    return DashboardPresentation(
+        profile=policy.profile,
+        compact_mode_on=compact,
+        tabs=tabs,
+        setting_sections=sections,
+        show_system_monitor=not compact,
+        show_senses=not compact,
+    )
+
 _LAUNCHER_KEYS = frozenset({
     "SKIP_TESSERACT_CHECK", "SKIP_ASSET_CHECK", "AUTO_PIP_INSTALL",
     "CREATE_DESKTOP_SHORTCUT", "CHECK_FOR_UPDATES",
@@ -634,12 +766,75 @@ def _system_snapshot() -> dict[str, str | float]:
     }
 
 
+class DashboardHandle:
+    """Owned Dashboard window with an idempotent, timer-safe close path."""
+
+    def __init__(self, win: tk.Toplevel) -> None:
+        self.win = win
+        self._close_callback: Callable[[], None] | None = None
+        self._closed = False
+        self._closing = False
+
+    def _bind_close(self, callback: Callable[[], None]) -> None:
+        self._close_callback = callback
+
+    def _mark_closed(self) -> None:
+        self._closed = True
+        self._closing = False
+
+    @property
+    def is_open(self) -> bool:
+        if self._closed:
+            return False
+        try:
+            exists = bool(self.win.winfo_exists())
+        except Exception:
+            exists = False
+        if not exists:
+            self._mark_closed()
+        return exists
+
+    def present(self) -> bool:
+        """Raise the existing Dashboard instead of creating a duplicate."""
+        if not self.is_open:
+            return False
+        try:
+            self.win.deiconify()
+            self.win.lift()
+            return True
+        except Exception:
+            self.close()
+            return False
+
+    def close(self) -> None:
+        """Close through the window-owned cleanup callback exactly once."""
+        if self._closed or self._closing:
+            return
+        self._closing = True
+        callback = self._close_callback
+        if callback is None:
+            try:
+                self.win.destroy()
+            except Exception:
+                pass
+            finally:
+                self._mark_closed()
+            return
+        try:
+            callback()
+        finally:
+            if not self._closed:
+                self._mark_closed()
+
+
 def open_dashboard(
     parent: tk.Misc,
     app_settings,
     *,
     on_open_senses: Callable[[], None] | None = None,
-) -> None:
+    on_compact_mode_request: Callable[[bool], None] | None = None,
+    on_close: Callable[[DashboardHandle], None] | None = None,
+) -> DashboardHandle:
     """Open a Toplevel dashboard with System / Virus / Notepad / Settings tabs."""
     import sys
     from agetha.ui.w95_window import (
@@ -648,6 +843,7 @@ def open_dashboard(
         refresh_borderless,
         show_borderless,
     )
+    presentation = build_dashboard_presentation(app_settings)
 
     try:
         ui_scale = float(getattr(parent, "_agetha_ui_scale", 1.0))
@@ -658,6 +854,7 @@ def open_dashboard(
         return max(1, int(round(value * ui_scale)))
 
     win = tk.Toplevel(parent)
+    handle = DashboardHandle(win)
     win.title("Agetha — Dashboard")
     apply_borderless_win95(win, parent, topmost=True)
     try:
@@ -714,8 +911,21 @@ def open_dashboard(
         activebackground=W95_BTN_BG, activeforeground=W95_TEXT,
     )
 
+    def _notify_closed() -> None:
+        handle._mark_closed()
+        if on_close is not None:
+            try:
+                on_close(handle)
+            except Exception as exc:
+                logger.debug(
+                    "Dashboard close notification failed: %s",
+                    type(exc).__name__,
+                )
+
     def _close_dashboard() -> None:
         nonlocal _closing
+        if _closing:
+            return
         _closing = True
         for hook in list(_close_hooks):
             try:
@@ -724,10 +934,37 @@ def open_dashboard(
                 pass
         _close_hooks.clear()
         _cancel_jobs()
-        _save_notepad()
-        win.destroy()
+        try:
+            _save_notepad()
+        except Exception as exc:
+            logger.debug("Dashboard notepad close-save failed: %s", type(exc).__name__)
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        finally:
+            _notify_closed()
 
+    def _on_destroy(event: tk.Event | None = None) -> None:
+        """Cancel owned work when the parent/Tk destroys this window."""
+        nonlocal _closing
+        if event is not None and getattr(event, "widget", None) is not win:
+            return
+        if _closing:
+            return
+        _closing = True
+        for hook in list(_close_hooks):
+            try:
+                hook()
+            except Exception:
+                pass
+        _close_hooks.clear()
+        _cancel_jobs()
+        _notify_closed()
+
+    handle._bind_close(_close_dashboard)
     win.protocol("WM_DELETE_WINDOW", _close_dashboard)
+    win.bind("<Destroy>", _on_destroy, add="+")
 
     tk.Button(
         title_bar, text="✕", command=_close_dashboard, **_btn_kw,
@@ -790,7 +1027,8 @@ def open_dashboard(
 
     # ── System Monitor ────────────────────────────────────────────────────────
     sys_frame = tk.Frame(notebook, bg=W95_BG)
-    notebook.add(sys_frame, text="System Monitor")
+    if presentation.show_system_monitor:
+        notebook.add(sys_frame, text="System Monitor")
 
     sys_vars = {
         "cpu": tk.StringVar(value="…"),
@@ -814,7 +1052,7 @@ def open_dashboard(
     row.pack(fill="x", padx=8, pady=4)
     tk.Label(row, text="Processes:", width=12, anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
     tk.Label(row, textvariable=sys_vars["processes"], anchor="w", bg=W95_BG, fg=W95_TEXT, font=W95_FONT).pack(side="left")
-    if on_open_senses is not None and bool(
+    if presentation.show_senses and on_open_senses is not None and bool(
         getattr(app_settings, "enable_senses_panel", True)
     ):
         tk.Button(
@@ -848,7 +1086,8 @@ def open_dashboard(
         if not _closing and win.winfo_exists():
             _schedule(_POLL_MS, _poll_system)
 
-    _schedule(100, _poll_system)
+    if presentation.show_system_monitor:
+        _schedule(100, _poll_system)
 
     # ── Virus Registry ──────────────────────────────────────────────────────
     virus_frame = tk.Frame(notebook, bg=W95_BG)
@@ -1081,6 +1320,8 @@ def open_dashboard(
     _close_hooks.append(_unbind_wheel)
 
     def _cfg_yes(key: str) -> bool:
+        if key == "COMPACT_MODE":
+            return presentation.compact_mode_on
         return str(raw_cfg.get(key, "no")).strip().lower() in ("yes", "true", "1", "on")
 
     def _mark_dirty(_key: str | None = None) -> None:
@@ -1091,7 +1332,7 @@ def open_dashboard(
     voice_menu_ref: dict[str, Any] = {}
     voice_hint_var = tk.StringVar(value="")
 
-    for section_title, items in _SETTING_SECTIONS:
+    for section_title, items in presentation.setting_sections:
         tk.Label(
             settings_inner, text=section_title,
             bg=W95_BG, fg=W95_TEXT, font=W95_FONT_BOLD, anchor="w",
@@ -1247,7 +1488,11 @@ def open_dashboard(
         ui_syncing["active"] = True
         try:
             for key, (kind, var) in editors.items():
-                value = str(values.get(key, ""))
+                fallback = (
+                    ("yes" if presentation.compact_mode_on else "no")
+                    if key == "COMPACT_MODE" else ""
+                )
+                value = str(values.get(key, fallback))
                 if kind == "bool":
                     var.set(value.strip().lower() in ("yes", "true", "1", "on"))
                 else:
@@ -1271,6 +1516,43 @@ def open_dashboard(
             else:
                 out[key] = str(var.get()).strip()
         return out
+
+    def _restore_compact_mode_editor() -> None:
+        pair = editors.get("COMPACT_MODE")
+        if pair is None:
+            return
+        ui_syncing["active"] = True
+        try:
+            pair[1].set(presentation.compact_mode_on)
+        finally:
+            ui_syncing["active"] = False
+
+    def _request_compact_mode(compact_on: bool) -> bool:
+        # The current Dashboard never presents an unconfirmed profile as active.
+        _restore_compact_mode_editor()
+        if on_compact_mode_request is None:
+            status_var.set("Compact Mode unchanged — transition handler unavailable.")
+            messagebox.showerror(
+                "Agetha — Compact Mode",
+                "The capability-profile transition is unavailable. Compact Mode was not changed.",
+                parent=win,
+            )
+            return False
+        try:
+            on_compact_mode_request(bool(compact_on))
+        except Exception as exc:
+            logger.warning(
+                "dashboard: Compact Mode transition request failed: %s",
+                type(exc).__name__,
+            )
+            status_var.set("Compact Mode unchanged — transition request failed.")
+            messagebox.showerror(
+                "Agetha — Compact Mode",
+                "The capability-profile transition could not start. Compact Mode was not changed.",
+                parent=win,
+            )
+            return False
+        return True
 
     def _apply_settings() -> None:
         try:
@@ -1300,8 +1582,23 @@ def open_dashboard(
             elif key in _LAUNCHER_KEYS:
                 launcher_changed.append(key)
 
-        if not updates:
+        split = split_dashboard_profile_update(
+            updates,
+            current_compact_mode=presentation.compact_mode_on,
+        )
+        updates = split.generic_updates
+        profile_request = split.requested_compact_mode
+        if profile_request is not None:
+            _restore_compact_mode_editor()
+
+        if not updates and profile_request is None:
             status_var.set("No changes to apply.")
+            return
+        if not updates:
+            if _request_compact_mode(profile_request):
+                status_var.set(
+                    "Compact Mode transition requested; the current view remains unchanged."
+                )
             return
 
         # Do not decide consent from the values captured when the dashboard was
@@ -1389,11 +1686,21 @@ def open_dashboard(
             logger.warning(f"dashboard: settings reload after apply failed: {exc}")
         _refresh_fast_mode_controls()
 
+        profile_requested = (
+            _request_compact_mode(profile_request)
+            if profile_request is not None else None
+        )
+
         changed_keys = tuple(getattr(result, "changed_keys", ()) or ())
-        status_var.set(
+        applied_status = (
             f"Applied {max(len(updates), len(changed_keys))} setting(s) "
             f"({_fast_mode_result_status(result)})."
         )
+        if profile_requested is True:
+            applied_status += " Capability-profile transition requested."
+        elif profile_requested is False:
+            applied_status += " Compact Mode remained unchanged."
+        status_var.set(applied_status)
 
         if restart_changed:
             names = "\n".join(f"  • {k}" for k in restart_changed[:20])
@@ -1445,3 +1752,4 @@ def open_dashboard(
     show_borderless(win)
 
     win.protocol("WM_DELETE_WINDOW", _close_dashboard)
+    return handle

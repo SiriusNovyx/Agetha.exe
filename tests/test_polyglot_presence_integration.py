@@ -33,6 +33,7 @@ from agetha.core.ai_engine import (  # noqa: E402
     SYSTEM_PROMPT_FASTER,
 )
 from agetha.core.observation_bus import ObservationBus  # noqa: E402
+from agetha.core.capabilities import CapabilityController, CapabilityPolicy  # noqa: E402
 from agetha.core.request_context import (  # noqa: E402
     REQUEST_ORIGINS,
     render_request_message,
@@ -57,26 +58,21 @@ def _engine(settings: AppSettings | None = None) -> AIEngine:
     return engine
 
 
-class TestNaturalThaiContract(unittest.TestCase):
-    def test_both_prompts_contain_personality_and_exact_data_boundary(self) -> None:
+class TestNaturalMultilingualContract(unittest.TestCase):
+    def test_both_prompts_contain_language_and_exact_data_boundary(self) -> None:
         for prompt in (SYSTEM_PROMPT, SYSTEM_PROMPT_FASTER):
             with self.subTest(prompt=prompt[:20]):
-                self.assertIn("สวัสดี", prompt)
-                self.assertIn("ขอบคุณครับ", prompt)
+                self.assertIn("Mirror the user's current language", prompt)
+                self.assertIn("conversational register", prompt)
                 self.assertIn("exact", prompt.casefold())
-        self.assertIn("Do not automatically end", SYSTEM_PROMPT)
+        self.assertIn("Do not translate or transliterate", SYSTEM_PROMPT)
         self.assertIn("personality guidance, not an output filter", SYSTEM_PROMPT)
 
-    def test_thai_assistant_examples_prefer_neutral_greeting(self) -> None:
-        examples = FEW_SHOTS + FEW_SHOTS_FASTER
-        thai_greetings = [
-            item["content"]
-            for item in examples
-            if item.get("role") == "assistant" and "สวัสดี" in item.get("content", "")
-        ]
-        self.assertTrue(thai_greetings)
-        self.assertTrue(all("สวัสดีครับ" not in item for item in thai_greetings))
-        self.assertTrue(all("สวัสดีค่ะ" not in item for item in thai_greetings))
+    def test_examples_are_multilingual_vectors_not_a_declared_preference(self) -> None:
+        examples = json.dumps(FEW_SHOTS + FEW_SHOTS_FASTER, ensure_ascii=False)
+        self.assertIn("hello", examples.casefold())
+        self.assertIn("สวัสดี", examples)
+        self.assertNotIn("preferred language", examples.casefold())
 
     def test_type_text_and_unrelated_dialogue_keep_exact_formal_thai(self) -> None:
         exact = "  ขอบคุณครับ\u0301  "
@@ -209,6 +205,7 @@ class TestUnicodeCommandIntegration(unittest.TestCase):
 
         handler = MagicMock(return_value=True)
         settings = AppSettings({
+            "COMPACT_MODE": "no",
             "ENABLE_COMMAND_EXECUTION": "yes",
             "ENABLE_UNICODE_TYPING": "yes",
         })
@@ -223,6 +220,7 @@ class TestUnicodeCommandIntegration(unittest.TestCase):
         app = self._app()
         ctx = DispatchCtx("type it", "neutral", [], False, "user")
         settings = AppSettings({
+            "COMPACT_MODE": "no",
             "ENABLE_COMMAND_EXECUTION": "yes",
             "ENABLE_UNICODE_TYPING": "yes",
         })
@@ -267,6 +265,7 @@ class TestUnicodeCommandIntegration(unittest.TestCase):
             message="Typing preview is ready; no text was entered.",
         )
         settings = AppSettings({
+            "COMPACT_MODE": "no",
             "ENABLE_COMMAND_EXECUTION": "yes",
             "ENABLE_UNICODE_TYPING": "yes",
         })
@@ -339,10 +338,20 @@ class TestUnicodeCommandIntegration(unittest.TestCase):
 
 
 class TestSentinelMainIntegration(unittest.TestCase):
+    @staticmethod
+    def _full_capabilities() -> CapabilityController:
+        return CapabilityController(CapabilityPolicy.from_settings(AppSettings({
+            "COMPACT_MODE": "no",
+            "ENABLE_AMBIENT_POLLS": "yes",
+            "ENABLE_TERMINAL_SENTINEL": "yes",
+            "ENABLE_PROCESS_AWARENESS": "no",
+        })))
+
     def test_sentinel_rejection_still_consumes_event_before_ambient_provider(self) -> None:
         import main
 
         app = main.CompanionApp.__new__(main.CompanionApp)
+        app._capabilities = self._full_capabilities()
         app._closing = False
         app._state = app.STATE_IDLE
         app._is_minimized = False
@@ -385,6 +394,8 @@ class TestSentinelMainIntegration(unittest.TestCase):
         import main
 
         app = main.CompanionApp.__new__(main.CompanionApp)
+        app._capabilities = self._full_capabilities()
+        app._process_awareness = None
         app._closing = False
         app._state = app.STATE_IDLE
         app._is_minimized = False

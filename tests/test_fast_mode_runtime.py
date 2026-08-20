@@ -139,18 +139,26 @@ class TestRequestProfiles(unittest.TestCase):
         self.assertEqual(len(engine._history), 7)
         self.assertEqual(engine._history[-1]["assistant"], "assistant-new")
 
-    def test_invalid_profile_state_falls_back_to_normal(self):
+    def test_security_profiles_survive_fast_mode_disabled(self):
         engine = _engine()
         engine._fast_profile_active = False
         profile = engine._resolve_request_profile("fast_ambient")
-        self.assertEqual(profile.name, "normal")
-        self.assertEqual(engine._output_limit_for_profile(profile), 220)
+        self.assertEqual(profile.name, "fast_ambient")
+        self.assertEqual(engine._output_limit_for_profile(profile), 96)
         with patch("agetha.core.ai_engine._MEMORY_SYSTEM_AVAILABLE", False):
-            system, _turn, messages = engine._build_prompt(
+            _system, _turn, messages = engine._build_prompt(
                 "", "hello", "", request_profile="fast_ambient",
             )
-        self.assertEqual(system, SYSTEM_PROMPT)
-        self.assertEqual(messages[:len(FEW_SHOTS)], FEW_SHOTS)
+        self.assertEqual(engine._history_turns_for_profile(profile), 0)
+        self.assertFalse(any(
+            message.get("content", "").startswith("user-")
+            for message in messages
+        ))
+        self.assertFalse(profile.record_history)
+        self.assertEqual(
+            engine._resolve_request_profile("not-a-profile").name,
+            "normal",
+        )
 
 
 class TestFastModeAiSafety(unittest.TestCase):
@@ -294,6 +302,33 @@ class TestFastModeAiSafety(unittest.TestCase):
         self.assertNotIn("ENABLE_COMMAND_CONFIRMATIONS", FAST_MODE_OVERRIDES)
         self.assertNotIn("PROTECTED_PROCESSES", FAST_MODE_OVERRIDES)
 
+    def test_internal_and_tool_profiles_cannot_persist_provider_memory(self):
+        engine = _engine()
+        engine._save_memory = MagicMock()
+        raw = '{"command":"speak","summary_memory":"untrusted persistence"}'
+
+        for name in ("fast_ambient", "fast_command", "fast_tool_result", "tool_continuation"):
+            with self.subTest(profile=name):
+                engine._persist_profile_memory(
+                    REQUEST_PROFILES[name],
+                    "[internal event: tool_result]",
+                    raw,
+                    {"command": "speak"},
+                )
+
+        engine._save_memory.assert_not_called()
+
+    def test_exact_typing_response_cannot_persist_provider_memory(self):
+        engine = _engine()
+        engine._save_memory = MagicMock()
+        engine._persist_profile_memory(
+            REQUEST_PROFILES["normal"],
+            "type the supplied text",
+            '{"command":"type_text","summary_memory":"private"}',
+            {"command": "type_text"},
+        )
+        engine._save_memory.assert_not_called()
+
 
 class _ResponseClient:
     def __init__(self, *, streaming=False, raw=None):
@@ -342,10 +377,11 @@ class TestProviderBudgets(unittest.TestCase):
         self.assertEqual(engine._client.calls[-1]["model"], "test/model")
         engine.query(doc_content="tool data", request_profile="fast_tool_result")
         self.assertEqual(engine._client.calls[-1]["max_tokens"], 600)
-        self.assertEqual(engine._record.call_count, 2)
-        retained_turn = engine._record.call_args_list[-1].args[0]
-        self.assertIn("source payload omitted", retained_turn)
-        self.assertNotIn("tool data", retained_turn)
+        self.assertEqual(engine._record.call_count, 1)
+        self.assertNotIn(
+            "tool data",
+            " ".join(str(call) for call in engine._record.call_args_list),
+        )
 
     def test_streaming_ambient_cap(self):
         engine = _query_engine(streaming=True)
@@ -454,6 +490,8 @@ class TestAmbientDecision(unittest.TestCase):
 class TestAmbientTickIntegration(unittest.TestCase):
     def _app(self, *, text="same", status="unchanged", fast=True, pending=False):
         import main
+        from agetha.core.capabilities import CapabilityController, CapabilityPolicy
+        from agetha.app_config import AppSettings
 
         app = main.CompanionApp.__new__(main.CompanionApp)
         app._closing = False
@@ -467,6 +505,14 @@ class TestAmbientTickIntegration(unittest.TestCase):
         app._last_direct_interaction_time = 0.0
         app._last_screen_text = "same"
         app._ai = MagicMock()
+        app._capabilities = CapabilityController(
+            CapabilityPolicy.from_settings(AppSettings({
+                "COMPACT_MODE": "no",
+                "ENABLE_AMBIENT_POLLS": "yes",
+                "ENABLE_PROCESS_AWARENESS": "no",
+            }))
+        )
+        app._process_awareness = None
         app._ai._faster_mode = True
         app._ai.query.return_value = {
             "command": "idle", "mood": "neutral", "segments": [], "shutdown": False,

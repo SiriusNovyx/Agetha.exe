@@ -1624,8 +1624,18 @@ class ScreenReader:
             return 11
         return 3
 
-    def capture_text(self, max_chars: int = 3000, focused_only: bool = True) -> str:
-        """Capture and OCR one stable frame, then atomically publish its state."""
+    def capture_text(
+        self,
+        max_chars: int = 3000,
+        focused_only: bool = True,
+        *,
+        force_refresh: bool = False,
+    ) -> str:
+        """Capture and OCR one stable frame, then atomically publish its state.
+
+        ``force_refresh`` bypasses only the unchanged-frame OCR cache.  Normal
+        monitoring keeps its existing cached behavior when the flag is omitted.
+        """
         scan_lock = getattr(self, "_standard_scan_lock", None)
         if scan_lock is None:
             scan_lock = threading.Lock()
@@ -1672,7 +1682,11 @@ class ScreenReader:
                     should_scan, reason, thumbnail, cached_state = detector.should_scan(
                         frame, now,
                     )
-                    if not should_scan and cached_state is not None:
+                    if (
+                        not force_refresh
+                        and not should_scan
+                        and cached_state is not None
+                    ):
                         with self._state_lock:
                             self.last_new_pattern_events = []
                             self.last_monitor_status = reason

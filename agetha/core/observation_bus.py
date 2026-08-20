@@ -50,6 +50,11 @@ class ObservationKind(str, Enum):
     USER_BECAME_IDLE = "user_became_idle"
     APP_FOCUSED = "app_focused"
     APP_UNFOCUSED = "app_unfocused"
+    PROCESS_STARTED = "process_started"
+    PROCESS_EXITED = "process_exited"
+    FOREGROUND_APP_CHANGED = "foreground_app_changed"
+    VISIBLE_APP_APPEARED = "visible_app_appeared"
+    VISIBLE_APP_HIDDEN = "visible_app_hidden"
     ERROR_PATTERN_DETECTED = "error_pattern_detected"
     TASK_DUE = "task_due"
     BATTERY_LOW = "battery_low"
@@ -58,6 +63,9 @@ class ObservationKind(str, Enum):
     PRESENTATION_MODE = "presentation_mode"
     FULLSCREEN_ACTIVE = "fullscreen_active"
     RAPID_TYPING = "rapid_typing"
+    COMPUTER_USE_STARTED = "computer_use_started"
+    COMPUTER_USE_COMPLETED = "computer_use_completed"
+    COMPUTER_USE_BLOCKED = "computer_use_blocked"
 
 
 class Sensitivity(str, Enum):

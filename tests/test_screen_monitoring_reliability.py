@@ -850,6 +850,27 @@ class TestConfigurationPrivacy(unittest.TestCase):
 
 
 class TestStaleResults(unittest.TestCase):
+    def test_48a_force_refresh_bypasses_unchanged_ocr_cache(self):
+        word = OCRWord("Fresh", 10, 20, 30, 12, 90)
+        reader = _ocr_reader(OCRResult("fresh", [word], "tesseract"))
+        cached_state = MagicMock(last_text="cached")
+        detector = MagicMock()
+        detector.should_scan.return_value = (
+            False,
+            "unchanged",
+            b"thumbnail",
+            cached_state,
+        )
+        reader._change_detector = detector
+
+        self.assertEqual(reader.capture_text(), "cached")
+        reader._standard_ocr_backend.analyze.assert_not_called()
+
+        self.assertEqual(reader.capture_text(force_refresh=True), "fresh")
+        reader._standard_ocr_backend.analyze.assert_called_once()
+        self.assertIs(reader.last_capture_metadata, reader._capture_frame.return_value)
+        self.assertEqual(reader.last_word_positions[0]["text"], "Fresh")
+
     def test_49_changed_foreground_marks_result_stale(self):
         line = OCRLine("ValueError: bad", 1, 2, 30, 10, 90)
         reader = _ocr_reader(OCRResult("ValueError: bad", [], "tesseract", lines=[line]))

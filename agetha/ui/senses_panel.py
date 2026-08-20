@@ -21,6 +21,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Mapping
 
+from agetha.core.capabilities import (
+    Capability,
+    CapabilityPolicy,
+    CapabilityProfile,
+    DecisionReason,
+)
 from agetha.platform.screen_monitoring import redact_sensitive_text
 from agetha.utils import logger
 
@@ -43,6 +49,222 @@ class SenseCapability:
     detail: str = ""
 
 
+def _state_token(value: object, default: str = "unknown") -> str:
+    """Return one bounded machine-state token, never arbitrary runtime text."""
+    raw = getattr(value, "value", value)
+    text = str(raw or "").strip().casefold().replace(" ", "_")
+    text = re.sub(r"[^a-z0-9_-]+", "", text)[:40]
+    return text or default
+
+
+def _bounded_count(value: object, maximum: int = 100_000) -> int:
+    try:
+        return max(0, min(int(value), maximum))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _safe_process_basename(value: object) -> str:
+    """Reduce an executable/path-like value to a privacy-safe basename."""
+    text = str(value or "").replace("\\", "/").rsplit("/", 1)[-1]
+    text = redact_sensitive_text(" ".join(text.split()))
+    if "[REDACTED" in text:
+        return "redacted application"
+    return "".join(character for character in text if character.isprintable())[:120]
+
+
+def _coarse_result(value: object) -> str:
+    """Classify a Computer Use result without retaining its free-form detail."""
+    text = _state_token(value, "")
+    if not text:
+        return "No result recorded"
+    known = {
+        "no_result_recorded": "No result recorded",
+        "completed_or_verified": "Completed or verified",
+        "cancelled": "Cancelled",
+        "shutdown": "Shutdown",
+        "timed_out": "Timed out",
+        "target_validation_changed": "Target validation changed",
+        "blocked_or_handed_off": "Blocked or handed off",
+        "failed_safely": "Failed safely",
+        "in_progress": "In progress",
+        "result_recorded_details_withheld": "Result recorded; details withheld",
+    }
+    if text in known:
+        return known[text]
+    categories = (
+        (("complete", "finish", "success", "verified"), "Completed or verified"),
+        (("cancel",), "Cancelled"),
+        (("shutdown",), "Shutdown"),
+        (("timeout", "expired", "deadline"), "Timed out"),
+        (("target", "window", "process"), "Target validation changed"),
+        (("block", "deny", "handoff", "sensitive"), "Blocked or handed off"),
+        (("fail", "error", "invalid"), "Failed safely"),
+        (("start", "running", "wait", "retry", "reobserve"), "In progress"),
+    )
+    for needles, label in categories:
+        if any(needle in text for needle in needles):
+            return label
+    return "Result recorded; details withheld"
+
+
+@dataclass(frozen=True)
+class ContinuationPanelSnapshot:
+    """Privacy-minimized, already-known Continuation Engine state."""
+
+    active: bool = False
+    state: str = "unknown"
+    step: int = 0
+    max_steps: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "active", bool(self.active))
+        object.__setattr__(self, "state", _state_token(self.state))
+        object.__setattr__(self, "step", _bounded_count(self.step, 10_000))
+        object.__setattr__(self, "max_steps", _bounded_count(self.max_steps, 10_000))
+
+
+@dataclass(frozen=True)
+class ProcessPanelSnapshot:
+    """Privacy-minimized, previously collected process-awareness state."""
+
+    state: str = "unknown"
+    foreground_app: str = ""
+    visible_app_count: int = 0
+    sensitive_foreground: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", _state_token(self.state))
+        object.__setattr__(
+            self,
+            "foreground_app",
+            "" if self.sensitive_foreground else _safe_process_basename(self.foreground_app),
+        )
+        object.__setattr__(
+            self, "visible_app_count", _bounded_count(self.visible_app_count, 10_000),
+        )
+        object.__setattr__(self, "sensitive_foreground", bool(self.sensitive_foreground))
+
+
+@dataclass(frozen=True)
+class ComputerUsePanelSnapshot:
+    """Privacy-minimized, in-memory Computer Use status for display only."""
+
+    active: bool = False
+    state: str = "unknown"
+    target_app: str = ""
+    step: int = 0
+    max_steps: int = 0
+    recovery_calls: int = 0
+    last_result: str = ""
+    accessibility_available: bool | None = None
+    ocr_available: bool | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "active", bool(self.active))
+        object.__setattr__(self, "state", _state_token(self.state))
+        object.__setattr__(self, "target_app", _safe_process_basename(self.target_app))
+        object.__setattr__(self, "step", _bounded_count(self.step, 100_000))
+        object.__setattr__(self, "max_steps", _bounded_count(self.max_steps, 100_000))
+        object.__setattr__(
+            self, "recovery_calls", _bounded_count(self.recovery_calls, 100_000),
+        )
+        object.__setattr__(self, "last_result", _coarse_result(self.last_result))
+        for attribute in ("accessibility_available", "ocr_available"):
+            value = getattr(self, attribute)
+            object.__setattr__(self, attribute, value if isinstance(value, bool) else None)
+
+
+def _continuation_panel_snapshot(engine: object | None) -> ContinuationPanelSnapshot | None:
+    """Read only the engine's immutable in-memory inspection snapshots."""
+    if engine is None:
+        return None
+    active_snapshot = None
+    try:
+        accessor = getattr(engine, "active_snapshot", None)
+        active_snapshot = accessor() if callable(accessor) else None
+    except Exception as exc:
+        logger.debug("Senses continuation snapshot lookup failed: %s", type(exc).__name__)
+    snapshot = active_snapshot
+    if snapshot is None:
+        try:
+            accessor = getattr(engine, "last_snapshot", None)
+            snapshot = accessor() if callable(accessor) else None
+        except Exception as exc:
+            logger.debug("Senses continuation history lookup failed: %s", type(exc).__name__)
+    return ContinuationPanelSnapshot(
+        active=active_snapshot is not None,
+        state=getattr(snapshot, "state", "idle") if snapshot is not None else "idle",
+        step=getattr(snapshot, "step", 0) if snapshot is not None else 0,
+        max_steps=getattr(snapshot, "max_steps", 0) if snapshot is not None else 0,
+    )
+
+
+def _process_panel_snapshot(service: object | None) -> ProcessPanelSnapshot | None:
+    """Read ``last_snapshot`` only; never invoke a process/window scan."""
+    if service is None:
+        return None
+    try:
+        snapshot = getattr(service, "last_snapshot", None)
+        state = getattr(snapshot, "status", getattr(service, "last_status", "not_collected"))
+        foreground = getattr(snapshot, "foreground", None)
+        identity = getattr(foreground, "identity", None)
+        return ProcessPanelSnapshot(
+            state=state,
+            foreground_app=getattr(identity, "name", ""),
+            visible_app_count=len(tuple(getattr(snapshot, "visible_apps", ()) or ())),
+            sensitive_foreground=bool(getattr(foreground, "sensitive", False)),
+        )
+    except Exception as exc:
+        logger.debug("Senses process snapshot lookup failed: %s", type(exc).__name__)
+        return ProcessPanelSnapshot(state="unknown")
+
+
+def _computer_use_panel_snapshot(
+    manager: object | None,
+    screen_reader: object | None,
+) -> ComputerUsePanelSnapshot | None:
+    """Read manager status flags only; never capture, observe, or plan."""
+    if manager is None:
+        return None
+    try:
+        accessor = getattr(manager, "snapshot", None)
+        snapshot = accessor() if callable(accessor) else None
+    except Exception as exc:
+        logger.debug("Senses Computer Use snapshot lookup failed: %s", type(exc).__name__)
+        snapshot = None
+    try:
+        observer = getattr(manager, "_observer", None)
+        accessibility = getattr(observer, "accessibility_available", None)
+        if callable(accessibility):
+            accessibility = None
+    except Exception as exc:
+        logger.debug("Senses accessibility status lookup failed: %s", type(exc).__name__)
+        accessibility = None
+    ocr_available = None
+    for attribute in ("_available", "_automatic_capture_available"):
+        try:
+            candidate = getattr(screen_reader, attribute, None)
+        except Exception as exc:
+            logger.debug("Senses OCR status lookup failed: %s", type(exc).__name__)
+            candidate = None
+        if isinstance(candidate, bool):
+            ocr_available = candidate
+            break
+    state = getattr(snapshot, "state", "idle") if snapshot is not None else "unknown"
+    return ComputerUsePanelSnapshot(
+        active=_state_token(state) == "running",
+        state=state,
+        target_app=getattr(snapshot, "target_process", "") if snapshot is not None else "",
+        step=getattr(snapshot, "step", 0) if snapshot is not None else 0,
+        max_steps=getattr(snapshot, "max_steps", 0) if snapshot is not None else 0,
+        recovery_calls=getattr(snapshot, "recovery_calls", 0) if snapshot is not None else 0,
+        last_result=getattr(snapshot, "last_result", "") if snapshot is not None else "",
+        accessibility_available=accessibility,
+        ocr_available=ocr_available,
+    )
+
+
 @dataclass(frozen=True)
 class SensesRuntime:
     """Already-known runtime state; no member triggers a capability probe."""
@@ -58,24 +280,51 @@ class SensesRuntime:
     deep_ocr_checked: bool = False
     deep_ocr_reachable: bool | None = None
     last_safe_scan_time: datetime | str | None = None
+    continuation_snapshot: ContinuationPanelSnapshot | None = None
+    process_snapshot: ProcessPanelSnapshot | None = None
+    computer_use_snapshot: ComputerUsePanelSnapshot | None = None
     closing: bool = False
 
     @classmethod
-    def from_app(cls, app: object | None) -> "SensesRuntime":
+    def from_app(
+        cls,
+        app: object | None,
+        *,
+        settings: object | None = None,
+    ) -> "SensesRuntime":
         if app is None:
             return cls()
+        policy = CapabilityPolicy.from_settings(settings) if settings is not None else None
+        inspect_advanced = policy is None or policy.profile is CapabilityProfile.FULL
+        screen_reader = getattr(app, "_screen", None)
         return cls(
-            screen_reader=getattr(app, "_screen", None),
+            screen_reader=screen_reader,
             voice_input=getattr(app, "_voice", None),
             voice_output=getattr(app, "_voice_out", None),
-            ai_engine=getattr(app, "_ai", None),
-            terminal_sentinel=getattr(app, "_terminal_sentinel", None),
+            ai_engine=getattr(app, "_ai", None) if inspect_advanced else None,
+            terminal_sentinel=(
+                getattr(app, "_terminal_sentinel", None)
+                if inspect_advanced else None
+            ),
             companion_state=str(getattr(app, "_state", "") or "") or None,
             selected_microphone=getattr(app, "_selected_microphone", None),
             provider_available=getattr(app, "_provider_available", None),
             deep_ocr_checked=bool(getattr(app, "_deep_ocr_checked", False)),
             deep_ocr_reachable=getattr(app, "_deep_ocr_reachable", None),
             last_safe_scan_time=getattr(app, "_last_safe_scan_time", None),
+            continuation_snapshot=_continuation_panel_snapshot(
+                getattr(app, "_continuation", None),
+            ),
+            process_snapshot=(
+                _process_panel_snapshot(getattr(app, "_process_awareness", None))
+                if inspect_advanced else None
+            ),
+            computer_use_snapshot=(
+                _computer_use_panel_snapshot(
+                    getattr(app, "_computer_use", None), screen_reader,
+                )
+                if inspect_advanced else None
+            ),
             closing=bool(getattr(app, "_closing", False)),
         )
 
@@ -90,6 +339,7 @@ class SensesSnapshot:
     network_ai: tuple[SenseCapability, ...]
     actions: tuple[SenseCapability, ...]
     presence: tuple[SenseCapability, ...]
+    profile: CapabilityProfile = CapabilityProfile.COMPACT
 
     @property
     def sections(self) -> tuple[tuple[str, tuple[SenseCapability, ...]], ...]:
@@ -190,6 +440,38 @@ def _cap(
     detail: object = "",
 ) -> SenseCapability:
     return SenseCapability(key, label, status, sanitize_status_detail(detail))
+
+
+_COMPACT_DISABLED_DETAIL = "Disabled — Compact Mode"
+
+
+def _effective_capability(
+    item: SenseCapability,
+    policy: CapabilityPolicy,
+    capability: Capability,
+) -> SenseCapability:
+    """Apply only the outer Compact gate; existing feature detail stays intact."""
+    decision = policy.decision(capability)
+    if decision.reason is DecisionReason.COMPACT_MODE:
+        return _cap(
+            item.key,
+            item.label,
+            CapabilityStatus.DISABLED,
+            _COMPACT_DISABLED_DETAIL,
+        )
+    return item
+
+
+def _effective_capability_rows(
+    items: tuple[SenseCapability, ...],
+    policy: CapabilityPolicy,
+    capabilities: Mapping[str, Capability],
+) -> tuple[SenseCapability, ...]:
+    return tuple(
+        _effective_capability(item, policy, capabilities[item.key])
+        if item.key in capabilities else item
+        for item in items
+    )
 
 
 def _known_bool(obj: object | None, attribute: str) -> bool | None:
@@ -302,11 +584,35 @@ def collect_senses_state(
         except Exception as exc:
             logger.debug("Senses settings initialization failed: %s", type(exc).__name__)
             settings = object()
-    view = runtime if isinstance(runtime, SensesRuntime) else SensesRuntime.from_app(runtime)
+    policy = CapabilityPolicy.from_settings(settings)
+    view = (
+        runtime
+        if isinstance(runtime, SensesRuntime)
+        else SensesRuntime.from_app(runtime, settings=settings)
+    )
     platform_value = str(platform_name or sys.platform).casefold()
     current_time = now or datetime.now().astimezone()
     environment = os.environ if env is None else env
     reader = view.screen_reader
+    continuation_enabled = _bool(
+        _setting(settings, "ENABLE_AGENT_CONTINUATION", True), True,
+    )
+    process_enabled = _bool(
+        _setting(settings, "ENABLE_PROCESS_AWARENESS", True), True,
+    )
+    process_mode = _state_token(
+        _setting(settings, "PROCESS_CONTEXT_MODE", "visible_apps"), "visible_apps",
+    )
+    computer_use_enabled = _bool(
+        _setting(settings, "ENABLE_COMPUTER_USE", False), False,
+    )
+    continuation_view = view.continuation_snapshot
+    process_view = view.process_snapshot
+    computer_use_view = view.computer_use_snapshot
+    computer_accessibility = getattr(
+        computer_use_view, "accessibility_available", None,
+    )
+    computer_ocr = getattr(computer_use_view, "ocr_available", None)
     is_linux = platform_value.startswith("linux")
     is_windows = platform_value.startswith("win")
 
@@ -479,6 +785,36 @@ def collect_senses_state(
             CapabilityStatus.AVAILABLE if exclusions_active else CapabilityStatus.NOT_CONFIGURED,
             "One or more exclusions are active" if exclusions_active else "No custom exclusions configured",
         ),
+        _cap(
+            "computer_use_accessibility", "Computer Use accessibility",
+            CapabilityStatus.DISABLED if not computer_use_enabled
+            else CapabilityStatus.UNKNOWN if computer_use_view is None
+            else CapabilityStatus.AVAILABLE
+            if computer_accessibility is True
+            else CapabilityStatus.UNAVAILABLE
+            if computer_accessibility is False
+            else CapabilityStatus.UNKNOWN,
+            "Computer Use disabled" if not computer_use_enabled
+            else "Runtime status has not been precomputed" if computer_use_view is None
+            else "Native accessibility controls available"
+            if computer_accessibility is True
+            else "Native accessibility unavailable; bounded OCR fallback is used when available"
+            if computer_accessibility is False
+            else "Accessibility support has not been reported",
+        ),
+        _cap(
+            "computer_use_ocr", "Computer Use OCR fallback",
+            CapabilityStatus.DISABLED if not computer_use_enabled
+            else CapabilityStatus.UNKNOWN if computer_use_view is None
+            else CapabilityStatus.AVAILABLE if computer_ocr is True
+            else CapabilityStatus.UNAVAILABLE if computer_ocr is False
+            else CapabilityStatus.UNKNOWN,
+            "Computer Use disabled" if not computer_use_enabled
+            else "Runtime status has not been precomputed" if computer_use_view is None
+            else "Scoped OCR controls available" if computer_ocr is True
+            else "Scoped OCR controls unavailable" if computer_ocr is False
+            else "OCR availability has not been reported",
+        ),
     )
 
     # Hearing ----------------------------------------------------------------
@@ -600,6 +936,12 @@ def collect_senses_state(
         provider_availability_detail = "Not probed when opening this panel"
     web_enabled = _bool(_setting(settings, "ENABLE_WEB_RAG", False), False)
     remote_deep = _is_remote_deep_ocr(settings)
+    planner_provider = _state_token(
+        _setting(settings, "COMPUTER_USE_PLANNER_PROVIDER", "inherit"), "inherit",
+    )
+    planner_model = sanitize_status_detail(
+        _setting(settings, "COMPUTER_USE_PLANNER_MODEL", ""), 100,
+    )
     network_ai = (
         _cap(
             "provider", "Selected provider",
@@ -631,6 +973,27 @@ def collect_senses_state(
             "provider_availability", "Provider availability",
             provider_availability_status, provider_availability_detail,
         ),
+        _cap(
+            "computer_planner_provider", "Computer Planner provider",
+            CapabilityStatus.AVAILABLE if computer_use_enabled else CapabilityStatus.DISABLED,
+            "Primary provider (inherited)" if computer_use_enabled and planner_provider == "inherit"
+            else planner_provider.title() if computer_use_enabled
+            else "Computer Use disabled",
+        ),
+        _cap(
+            "computer_planner_model", "Computer Planner model",
+            CapabilityStatus.AVAILABLE if computer_use_enabled and bool(planner_model)
+            else CapabilityStatus.NOT_CONFIGURED if computer_use_enabled
+            else CapabilityStatus.DISABLED,
+            planner_model if computer_use_enabled and planner_model
+            else "Provider default is inherited" if computer_use_enabled
+            else "Computer Use disabled",
+        ),
+        _cap(
+            "computer_recovery_model", "Computer recovery model",
+            CapabilityStatus.AVAILABLE if computer_use_enabled else CapabilityStatus.DISABLED,
+            "Primary provider and model" if computer_use_enabled else "Computer Use disabled",
+        ),
     )
 
     # Actions ----------------------------------------------------------------
@@ -651,6 +1014,52 @@ def collect_senses_state(
             item.strip() for item in str(_setting(settings, "PROTECTED_PROCESSES", "") or "").split(",")
             if item.strip()
         )
+    continuation_state = _state_token(
+        getattr(continuation_view, "state", "unknown"),
+    )
+    continuation_step = _bounded_count(getattr(continuation_view, "step", 0), 10_000)
+    continuation_max = _bounded_count(
+        getattr(continuation_view, "max_steps", 0), 10_000,
+    ) or _bounded_count(_setting(settings, "AGENT_MAX_STEPS", 6), 10_000)
+    continuation_active = bool(getattr(continuation_view, "active", False))
+
+    process_state = _state_token(getattr(process_view, "state", "unknown"))
+    process_off = not process_enabled or process_mode == "off"
+    if process_off:
+        process_status = CapabilityStatus.DISABLED
+    elif process_view is None or process_state in {"unknown", "not_collected"}:
+        process_status = CapabilityStatus.UNKNOWN
+    elif process_state.startswith("degraded"):
+        process_status = CapabilityStatus.DEGRADED
+    elif process_state in {"unavailable", "unsupported", "error"}:
+        process_status = CapabilityStatus.UNAVAILABLE
+    elif process_state in {"disabled", "off", "shutdown"}:
+        process_status = CapabilityStatus.DISABLED
+    else:
+        process_status = CapabilityStatus.AVAILABLE
+    process_foreground = _safe_process_basename(
+        getattr(process_view, "foreground_app", ""),
+    )
+    process_sensitive = bool(getattr(process_view, "sensitive_foreground", False))
+    visible_app_count = _bounded_count(
+        getattr(process_view, "visible_app_count", 0), 10_000,
+    )
+
+    computer_state = _state_token(getattr(computer_use_view, "state", "unknown"))
+    computer_active = bool(getattr(computer_use_view, "active", False))
+    computer_target = _safe_process_basename(
+        getattr(computer_use_view, "target_app", ""),
+    )
+    computer_step = _bounded_count(getattr(computer_use_view, "step", 0), 100_000)
+    computer_max = _bounded_count(
+        getattr(computer_use_view, "max_steps", 0), 100_000,
+    ) or _bounded_count(_setting(settings, "COMPUTER_USE_MAX_STEPS", 30), 100_000)
+    recovery_calls = _bounded_count(
+        getattr(computer_use_view, "recovery_calls", 0), 100_000,
+    )
+    last_computer_result = _coarse_result(
+        getattr(computer_use_view, "last_result", ""),
+    )
     actions = (
         _cap(
             "command_execution", "Command execution",
@@ -678,6 +1087,103 @@ def collect_senses_state(
             "fast_mode", "Fast Mode",
             CapabilityStatus.AVAILABLE if fast_mode else CapabilityStatus.DISABLED,
             "Enabled; safety and privacy settings remain authoritative" if fast_mode else "Disabled",
+        ),
+        _cap(
+            "continuation_engine", "Continuation Engine",
+            CapabilityStatus.DISABLED if not continuation_enabled
+            else CapabilityStatus.UNKNOWN if continuation_view is None
+            else CapabilityStatus.AVAILABLE,
+            "Disabled" if not continuation_enabled
+            else "Enabled; runtime state has not been precomputed" if continuation_view is None
+            else (
+                f"Active; {continuation_state.replace('_', ' ')}; "
+                f"step {continuation_step} / {continuation_max}"
+                if continuation_active
+                else f"Enabled; inactive; last state {continuation_state.replace('_', ' ')}"
+            ),
+        ),
+        _cap(
+            "process_awareness", "Process Awareness",
+            process_status,
+            "Disabled" if process_off
+            else "Runtime state has not been precomputed" if process_view is None
+            else (
+                f"{process_state.replace('_', ' ')}; {visible_app_count} visible application(s)"
+            ),
+        ),
+        _cap(
+            "process_context_mode", "Process context mode",
+            CapabilityStatus.DISABLED if process_off else CapabilityStatus.AVAILABLE,
+            "Off" if process_off else process_mode.replace("_", " "),
+        ),
+        _cap(
+            "process_foreground", "Foreground application",
+            CapabilityStatus.DISABLED if process_off
+            else CapabilityStatus.UNKNOWN if process_view is None
+            else CapabilityStatus.DEGRADED if process_sensitive
+            else CapabilityStatus.AVAILABLE if process_foreground
+            else CapabilityStatus.UNKNOWN,
+            "Process awareness disabled" if process_off
+            else "Runtime state has not been precomputed" if process_view is None
+            else "Sensitive application active" if process_sensitive
+            else process_foreground if process_foreground
+            else "No foreground application reported",
+        ),
+        _cap(
+            "computer_use", "Computer Use Lite",
+            CapabilityStatus.AVAILABLE if computer_use_enabled else CapabilityStatus.DISABLED,
+            "Enabled; explicit user activation required" if computer_use_enabled
+            else "Disabled by default",
+        ),
+        _cap(
+            "computer_use_active", "Computer Use active",
+            CapabilityStatus.DISABLED if not computer_use_enabled
+            else CapabilityStatus.UNKNOWN if computer_use_view is None
+            else CapabilityStatus.AVAILABLE if computer_active
+            else CapabilityStatus.DISABLED,
+            "Computer Use disabled" if not computer_use_enabled
+            else "Runtime state has not been precomputed" if computer_use_view is None
+            else f"Active; {computer_state.replace('_', ' ')}" if computer_active
+            else f"Inactive; {computer_state.replace('_', ' ')}",
+        ),
+        _cap(
+            "computer_use_target", "Computer Use target",
+            CapabilityStatus.DISABLED if not computer_use_enabled
+            else CapabilityStatus.UNKNOWN if computer_use_view is None
+            else CapabilityStatus.AVAILABLE if computer_active and computer_target
+            else CapabilityStatus.NOT_CONFIGURED,
+            "Computer Use disabled" if not computer_use_enabled
+            else "Runtime state has not been precomputed" if computer_use_view is None
+            else computer_target if computer_active and computer_target
+            else "No active target",
+        ),
+        _cap(
+            "computer_use_step", "Computer Use step",
+            CapabilityStatus.DISABLED if not computer_use_enabled
+            else CapabilityStatus.UNKNOWN if computer_use_view is None
+            else CapabilityStatus.AVAILABLE,
+            "Computer Use disabled" if not computer_use_enabled
+            else "Runtime state has not been precomputed" if computer_use_view is None
+            else f"{computer_step} / {computer_max}",
+        ),
+        _cap(
+            "computer_use_recovery_calls", "Computer recovery calls",
+            CapabilityStatus.DISABLED if not computer_use_enabled
+            else CapabilityStatus.UNKNOWN if computer_use_view is None
+            else CapabilityStatus.AVAILABLE,
+            "Computer Use disabled" if not computer_use_enabled
+            else "Runtime state has not been precomputed" if computer_use_view is None
+            else str(recovery_calls),
+        ),
+        _cap(
+            "computer_use_last_result", "Last Computer Use result",
+            CapabilityStatus.DISABLED if not computer_use_enabled
+            else CapabilityStatus.UNKNOWN if computer_use_view is None
+            else CapabilityStatus.DEGRADED if computer_state in {"blocked", "failed"}
+            else CapabilityStatus.AVAILABLE,
+            "Computer Use disabled" if not computer_use_enabled
+            else "Runtime state has not been precomputed" if computer_use_view is None
+            else last_computer_result,
         ),
     )
 
@@ -737,6 +1243,55 @@ def collect_senses_state(
         ),
     )
 
+    vision = _effective_capability_rows(
+        vision,
+        policy,
+        {
+            "focused_window_ocr": Capability.BACKGROUND_SENSING,
+            "automatic_capture": Capability.BACKGROUND_SENSING,
+            "computer_use_accessibility": Capability.COMPUTER_USE,
+            "computer_use_ocr": Capability.COMPUTER_USE,
+        },
+    )
+    network_ai = _effective_capability_rows(
+        network_ai,
+        policy,
+        {
+            "computer_planner_provider": Capability.COMPUTER_PLANNER,
+            "computer_planner_model": Capability.COMPUTER_PLANNER,
+            "computer_recovery_model": Capability.RECOVERY_PLANNER,
+        },
+    )
+    actions = (
+        _cap(
+            "capability_profile",
+            "Capability Profile",
+            CapabilityStatus.AVAILABLE,
+            policy.profile.value.upper(),
+        ),
+        *_effective_capability_rows(
+            actions,
+            policy,
+            {
+                "command_execution": Capability.APP_CONTROL,
+                "process_awareness": Capability.PROCESS_AWARENESS,
+                "process_context_mode": Capability.PROCESS_AWARENESS,
+                "process_foreground": Capability.PROCESS_AWARENESS,
+                "computer_use": Capability.COMPUTER_USE,
+                "computer_use_active": Capability.COMPUTER_USE,
+                "computer_use_target": Capability.COMPUTER_USE,
+                "computer_use_step": Capability.COMPUTER_USE,
+                "computer_use_recovery_calls": Capability.RECOVERY_PLANNER,
+                "computer_use_last_result": Capability.COMPUTER_USE,
+            },
+        ),
+    )
+    presence = _effective_capability_rows(
+        presence,
+        policy,
+        {"terminal_sentinel": Capability.TERMINAL_SENTINEL},
+    )
+
     return SensesSnapshot(
         platform=platform_value,
         collected_at=current_time,
@@ -746,6 +1301,7 @@ def collect_senses_state(
         network_ai=network_ai,
         actions=actions,
         presence=presence,
+        profile=policy.profile,
     )
 
 
@@ -1094,6 +1650,9 @@ __all__ = [
     "CapabilityItem",
     "CapabilityReport",
     "CapabilityStatus",
+    "ComputerUsePanelSnapshot",
+    "ContinuationPanelSnapshot",
+    "ProcessPanelSnapshot",
     "SenseCapability",
     "SensesPanel",
     "SensesRefreshController",

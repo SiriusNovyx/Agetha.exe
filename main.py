@@ -18,6 +18,7 @@ import os
 import platform
 import subprocess
 import webbrowser
+import queue
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -74,12 +75,26 @@ except ImportError:
 from agetha.core.ai_engine import AIEngine
 from agetha.core.external_context import prepare_external_context
 from agetha.core.file_drop import prepare_file_drop
+from agetha.core.continuation import (
+    AUTOMATIC_READ_ONLY_COMMANDS,
+    AuthorizedResource,
+    ContinuationDecision,
+    ContinuationEngine,
+    DecisionKind,
+)
 from agetha.core.request_context import (
     RequestOrigin,
     normalize_request_origin,
     render_request_message,
     request_profile_for_origin,
 )
+from agetha.core.capabilities import (
+    Capability,
+    CapabilityController,
+    CapabilityPolicy,
+    CapabilityProfile,
+)
+from agetha.core.capability_consent import CapabilityConsentFlow, ConsentState
 from agetha.platform.screen_reader import ScreenReader
 from agetha.commands.command_guard import CommandGuard
 from agetha.platform.voice_input import (
@@ -1136,6 +1151,14 @@ class CompanionApp:
             pass
 
         self._state      = self.STATE_SLEEPING
+        self._capabilities = CapabilityController(
+            CapabilityPolicy.from_settings(_SETTINGS),
+        )
+        self._capability_consent = CapabilityConsentFlow(
+            initial_full=not _SETTINGS.compact_mode,
+        )
+        self._capability_transition_generation: int | None = None
+        self._full_mode_consent_ui = None
         self._current_gif_player: GifPlayer | None = None
         self._gif_cache: dict[str, GifPlayer] = {}
         self._talking_rotate_job = None
@@ -1159,7 +1182,16 @@ class CompanionApp:
         self._pending_shutdown = False
         self._last_touch_time: float = 0.0           # epoch time of last gif-click touch event
         self._last_direct_interaction_time: float = time.time()  # updated on keystroke OR gif-click
-        self._guard = CommandGuard(self.root)
+        self._ui_owner_thread_id = threading.get_ident()
+        self._ui_callback_queue: queue.SimpleQueue[Callable[[], None]] = (
+            queue.SimpleQueue()
+        )
+        self._ui_queue_poll_job = None
+        self._guard = CommandGuard(
+            self.root,
+            schedule_ui=self._schedule_ui,
+            owner_thread_id=self._ui_owner_thread_id,
+        )
         self._cancel_event = threading.Event()
         self._ai_busy = False
         self._ai_busy_noninterruptible = False
@@ -1168,6 +1200,7 @@ class CompanionApp:
         self._pending_user_message: str | None = None
         self._pending_user_origin: RequestOrigin = "user"
         self._pending_screen_context: str | None = None
+        self._pending_capability_authorization: object | None = None
         self._post_ai_tick_callbacks: list[Callable[[], None]] = []
         self._deferred_ai_callbacks_inflight = False
         self._worker_lock = threading.Lock()
@@ -1189,12 +1222,34 @@ class CompanionApp:
         self._geom_anim_job = None
         self._typing_cancel_event: threading.Event | None = None
         self._typing_operation_lock = threading.Lock()
+        self._continuation = (
+            ContinuationEngine(
+                max_steps=_SETTINGS.agent_max_steps,
+                max_duration_sec=_SETTINGS.agent_max_duration_sec,
+                max_tool_result_chars=_SETTINGS.agent_max_tool_result_chars,
+                max_history=_SETTINGS.agent_max_steps,
+            )
+            if _SETTINGS.enable_agent_continuation
+            else None
+        )
+        self._continuation_tools = None
+        self._continuation_ui_epoch = 0
+        self._dashboard = None
         self._senses_panel = None
         self._sentinel_popups: set[object] = set()
         self._recent_key_times: list[float] = []
         self._presence_state_lock = threading.Lock()
         self._last_observed_app_key: tuple[object, ...] | None = None
         self._last_safe_scan_time: datetime | None = None
+        self._process_awareness = None
+        self._computer_use = None
+        self._computer_use_runtime_status = "not_initialized"
+        self._computer_use_focus_window = None
+        self._computer_use_start_cancel: threading.Event | None = None
+        self._computer_use_escape_hotkey = None
+        self._computer_use_ui_epoch = 0
+        self._computer_use_goal_summary = "Desktop task"
+        self._computer_use_status_window = None
         self._display_width = self.root.winfo_screenwidth()
         self._display_height = self.root.winfo_screenheight()
 
@@ -1203,6 +1258,21 @@ class CompanionApp:
         from agetha.features.terminal_sentinel import TerminalSentinel
 
         self._observation_bus = ObservationBus(max_size=128, dedup_window_seconds=30)
+        if self._capabilities.is_allowed(Capability.PROCESS_AWARENESS):
+            try:
+                from agetha.platform.process_awareness import ProcessAwareness
+
+                self._process_awareness = ProcessAwareness(
+                    mode=_SETTINGS.process_context_mode,
+                    max_visible_apps=_SETTINGS.process_max_visible_apps,
+                    excluded_apps=_SETTINGS.process_context_excluded_apps,
+                    publisher=self._publish_process_transition,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Process awareness initialization failed safely: %s",
+                    type(exc).__name__,
+                )
         self._presence = None
         if _SETTINGS.enable_presence_etiquette:
             try:
@@ -1223,7 +1293,9 @@ class CompanionApp:
                     rapid_typing_cooldown_seconds=_SETTINGS.presence_rapid_typing_cooldown_sec,
                     fullscreen_silent=_SETTINGS.presence_fullscreen_silent,
                 )
-        self._terminal_sentinel = TerminalSentinel.from_settings(_SETTINGS)
+        self._terminal_sentinel = None
+        if self._capabilities.is_allowed(Capability.TERMINAL_SENTINEL):
+            self._terminal_sentinel = TerminalSentinel.from_settings(_SETTINGS)
 
         self._build_ui()
         if not IS_WINDOWS:
@@ -1281,16 +1353,74 @@ class CompanionApp:
             pass
 
         # Start heavy init (audio, screen reader, AI) on a background thread
+        self._start_ui_dispatcher()
         self._start_worker(self._init_background, name="background-init")
 
     def _schedule_ui(self, callback: Callable[[], None]) -> object | None:
-        """Schedule Tk work without ever falling back to the calling worker."""
+        """Schedule UI work without calling any Tk API from a worker thread."""
         if getattr(self, "_closing", False):
+            return None
+        owner = getattr(self, "_ui_owner_thread_id", None)
+        if owner is not None and threading.get_ident() != owner:
+            pending = getattr(self, "_ui_callback_queue", None)
+            if pending is None:
+                return None
+            pending.put(callback)
+            return callback
+        if owner is None and threading.current_thread() is not threading.main_thread():
             return None
         try:
             return self.root.after(0, callback)
         except Exception:
             return None
+
+    def _start_ui_dispatcher(self) -> None:
+        """Start the Tk-owner poller for callbacks placed by workers."""
+        if (
+            getattr(self, "_closing", False)
+            or threading.get_ident() != getattr(self, "_ui_owner_thread_id", None)
+            or getattr(self, "_ui_queue_poll_job", None) is not None
+        ):
+            return
+        try:
+            self._ui_queue_poll_job = self.root.after(15, self._drain_ui_queue)
+        except Exception:
+            self._ui_queue_poll_job = None
+
+    def _drain_ui_queue(self) -> None:
+        """Run a bounded batch of worker callbacks on the Tk owner thread."""
+        self._ui_queue_poll_job = None
+        if (
+            getattr(self, "_closing", False)
+            or threading.get_ident() != getattr(self, "_ui_owner_thread_id", None)
+        ):
+            self._discard_pending_ui_callbacks()
+            return
+        pending = getattr(self, "_ui_callback_queue", None)
+        if pending is not None:
+            for _ in range(256):
+                try:
+                    callback = pending.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    callback()
+                except Exception as exc:
+                    logger.warning(
+                        "Queued UI callback failed safely: %s",
+                        type(exc).__name__,
+                    )
+        self._start_ui_dispatcher()
+
+    def _discard_pending_ui_callbacks(self) -> None:
+        pending = getattr(self, "_ui_callback_queue", None)
+        if pending is None:
+            return
+        while True:
+            try:
+                pending.get_nowait()
+            except queue.Empty:
+                return
 
     def _call_ui_sync(self, callback: Callable[[], object], timeout: float = 5.0) -> object | None:
         """Run a short Tk operation on the owner thread and return its result."""
@@ -1631,7 +1761,7 @@ class CompanionApp:
                 on_text_callback=self._on_voice_text,
                 device_index=device_index,
                 use_local_stt=_SETTINGS.use_local_stt,
-                on_fatal_error=lambda: self.root.after(0, self._reset_mic_button),
+                on_fatal_error=lambda: self._schedule_ui(self._reset_mic_button),
             )
             if not self._voice.available:
                 native_error_popup(
@@ -1661,7 +1791,7 @@ class CompanionApp:
             self._input_var.set(text)
             self.root.update_idletasks()
             self._on_user_input()
-        self.root.after(0, _send)
+        self._schedule_ui(_send)
 
     def _on_file_drag_enter(self, event=None) -> None:
         if self._dragging_file:
@@ -1680,20 +1810,71 @@ class CompanionApp:
         self._dragging_file = False
         self._set_state(self.STATE_IDLE)
 
-    def _open_dashboard(self) -> None:
+    def _open_dashboard(self, app_settings: object | None = None) -> None:
+        if self._closing:
+            return
+        current = getattr(self, "_dashboard", None)
+        if current is not None:
+            try:
+                if bool(current.is_open) and bool(current.present()):
+                    return
+            except Exception as exc:
+                logger.debug(
+                    "Existing Dashboard could not be restored: %s",
+                    type(exc).__name__,
+                )
+            self._dashboard = None
         try:
             from agetha.ui.dashboard import open_dashboard
-            open_dashboard(
+            self._dashboard = open_dashboard(
                 self.root,
-                get_settings(),
+                app_settings if app_settings is not None else get_settings(),
                 on_open_senses=self._open_senses_panel,
+                on_compact_mode_request=self._request_compact_mode,
+                on_close=self._on_dashboard_closed,
             )
         except Exception as exc:
+            self._dashboard = None
             logger.warning(f"Dashboard open failed: {exc}")
+
+    def _on_dashboard_closed(self, handle: object) -> None:
+        """Forget only the exact Dashboard instance that reported closing."""
+        if getattr(self, "_dashboard", None) is handle:
+            self._dashboard = None
+
+    def _refresh_dashboard_after_profile_commit(
+        self,
+        app_settings: object | None = None,
+    ) -> None:
+        """Rebuild an already-open Dashboard from committed settings only."""
+        current = getattr(self, "_dashboard", None)
+        if current is None:
+            return
+        try:
+            was_open = bool(current.is_open)
+        except Exception:
+            was_open = False
+        if not was_open:
+            self._dashboard = None
+            return
+        try:
+            current.close()
+        except Exception as exc:
+            logger.warning(
+                "Dashboard profile refresh close failed: %s",
+                type(exc).__name__,
+            )
+            return
+        if not self._closing:
+            self._open_dashboard(app_settings)
 
     def _open_senses_panel(self) -> None:
         settings = get_settings()
-        if not settings.enable_senses_panel or self._closing:
+        if (
+            not settings.enable_senses_panel
+            or self._closing
+            or not self._capabilities.is_allowed(Capability.ADVANCED_UI)
+        ):
             self._show_op_error("Senses Control Panel is disabled in config.")
             return
         current = getattr(self, "_senses_panel", None)
@@ -1820,6 +2001,9 @@ class CompanionApp:
         *,
         duration_ms: int | None = None,
         on_done: Callable[[], None] | None = None,
+        effect_runner: Callable[
+            [Callable[[], object]], tuple[bool, object | None]
+        ] | None = None,
     ) -> None:
         """Smooth move for Agetha's window — measure once, then only geometry writes."""
         if self._closing or self._is_dragging or self._is_minimized:
@@ -1830,11 +2014,24 @@ class CompanionApp:
 
         target_x, target_y = int(target_x), int(target_y)
 
+        def _write_geometry(value: str) -> bool:
+            if effect_runner is None:
+                self.root.geometry(value)
+                return True
+            try:
+                performed, _result = effect_runner(
+                    lambda: self.root.geometry(value),
+                )
+                return bool(performed)
+            except Exception:
+                return False
+
         self._cancel_geometry_animation()
 
         if not smooth or duration_ms <= 0:
+            if not _write_geometry(f"+{target_x}+{target_y}"):
+                return
             self._win_x, self._win_y = target_x, target_y
-            self.root.geometry(f"+{target_x}+{target_y}")
             if on_done:
                 on_done()
             return
@@ -1848,8 +2045,9 @@ class CompanionApp:
 
         dx, dy = target_x - start_x, target_y - start_y
         if abs(dx) + abs(dy) < 4:
+            if not _write_geometry(f"+{target_x}+{target_y}"):
+                return
             self._win_x, self._win_y = target_x, target_y
-            self.root.geometry(f"+{target_x}+{target_y}")
             if on_done:
                 on_done()
             return
@@ -1863,14 +2061,17 @@ class CompanionApp:
             e = ease_out_cubic(t)
             nx = int(start_x + dx * e)
             ny = int(start_y + dy * e)
+            if not _write_geometry(f"+{nx}+{ny}"):
+                self._geom_anim_job = None
+                return
             self._win_x, self._win_y = nx, ny
-            self.root.geometry(f"+{nx}+{ny}")
             if t < 1.0:
                 self._geom_anim_job = self.root.after(50, _tick)
             else:
                 self._geom_anim_job = None
+                if not _write_geometry(f"+{target_x}+{target_y}"):
+                    return
                 self._win_x, self._win_y = target_x, target_y
-                self.root.geometry(f"+{target_x}+{target_y}")
                 if on_done:
                     on_done()
 
@@ -2016,6 +2217,17 @@ class CompanionApp:
             return
         if self._input_box["state"] == "disabled":
             return
+        continuation = getattr(self, "_continuation", None)
+        if continuation is not None:
+            self._invalidate_continuation_ui_delivery()
+            continuation.cancel_active("preempted_by_new_user_input")
+        consent = getattr(self, "_capability_consent", None)
+        if consent is not None and consent.snapshot.state not in {
+            ConsentState.COMPACT,
+            ConsentState.FULL,
+        }:
+            self._cancel_full_mode_consent(consent.snapshot.generation)
+        self._stop_computer_use("preempted_by_new_user_input")
         if self._poll_job:
             try:
                 self.root.after_cancel(self._poll_job)
@@ -2088,6 +2300,36 @@ class CompanionApp:
             return bool(bus.publish(item))
         except (TypeError, ValueError, RuntimeError) as exc:
             logger.warning("Local observation was rejected: %s", type(exc).__name__)
+            return False
+
+    def _publish_process_transition(self, transition) -> bool:
+        """Adapt one minimized process fact onto the existing Observation Bus."""
+        try:
+            from agetha.core.observation_bus import ObservationKind
+
+            kind = ObservationKind(str(transition.kind.value))
+            identity = getattr(transition, "identity", None)
+            sensitive = bool(getattr(transition, "sensitive", False))
+            metadata = {"suppressed": True} if sensitive else {
+                "application": str(getattr(identity, "name", ""))[:128],
+            }
+            dedup_identity = (
+                "sensitive"
+                if sensitive or identity is None
+                else f"{identity.pid}:{identity.name.casefold()}:{identity.created_at}"
+            )
+            return self._publish_observation(
+                kind,
+                source="process_awareness",
+                summary=str(transition.summary)[:160],
+                confidence=1.0,
+                sensitivity="private",
+                dedup_key=f"process:{transition.kind.value}:{dedup_identity}"[:240],
+                metadata=metadata,
+                expires_in_seconds=300,
+                request_origin="ambient",
+            )
+        except (AttributeError, TypeError, ValueError):
             return False
 
     def _presence_state(self, *, dangerous_condition: bool = False):
@@ -2291,7 +2533,7 @@ class CompanionApp:
             except Exception as e:
                 print(f"[SNAP] Position error: {e}")
 
-        self.root.after(0, _do_position)
+        self._schedule_ui(_do_position)
 
     def _load_gifs_simple(self):
         """Decode GIF frames off-thread; build ImageTk on main thread."""
@@ -2359,6 +2601,9 @@ class CompanionApp:
             bleep = None
             screen = None
             ai = None
+            screen_authorization = self._capabilities.authorize(
+                Capability.BACKGROUND_SENSING,
+            )
 
             def _show_error_popup(lines: list):
                 """Marshal native error reporting onto the Tk owner thread."""
@@ -2379,7 +2624,11 @@ class CompanionApp:
             except Exception:
                 pass
             try:
-                screen = ScreenReader(own_tk_root=self.root)
+                screen = (
+                    ScreenReader(own_tk_root=self.root)
+                    if screen_authorization is not None
+                    else None
+                )
             except Exception as e:
                 print(f"[BackgroundInit] ScreenReader init failed: {e}")
                 message = f"Screen reader failed to start:\n{e}\n\nScreen reading will be disabled."
@@ -2391,7 +2640,13 @@ class CompanionApp:
             except Exception:
                 pass
             try:
-                ai = AIEngine(on_error=_show_error_popup)
+                ai = AIEngine(
+                    on_error=_show_error_popup,
+                    defer_provider_init=(
+                        self._capabilities.snapshot().profile
+                        is CapabilityProfile.COMPACT
+                    ),
+                )
             except Exception as e:
                 print(f"[BackgroundInit] AIEngine init failed: {e}")
                 message = f"AI engine failed to start:\n{e}"
@@ -2411,17 +2666,59 @@ class CompanionApp:
                             bleep.stop()
                     except Exception:
                         pass
+                    try:
+                        if screen:
+                            screen.stop()
+                    except Exception:
+                        pass
                     return
                 try:
                     self._bleep = bleep
-                    self._screen = screen
+                    if (
+                        screen is not None
+                        and screen_authorization is not None
+                        and self._capabilities.is_authorized(screen_authorization)
+                    ):
+                        self._screen = screen
+                    else:
+                        try:
+                            if screen is not None:
+                                screen.stop()
+                        except Exception:
+                            pass
                     self._ai = ai
+                    if self._continuation is not None:
+                        try:
+                            from agetha.core.read_only_tools import (
+                                ReadOnlyToolExecutor,
+                                safe_fetch_public_webpage,
+                            )
+
+                            self._continuation_tools = ReadOnlyToolExecutor(
+                                settings=get_settings(),
+                                ai=self._ai,
+                                process_awareness=self._process_awareness,
+                                capability_policy=self._capabilities,
+                                redactor=(
+                                    self._screen.redact_for_external_context
+                                    if self._screen is not None else None
+                                ),
+                                safe_fetch=safe_fetch_public_webpage,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Continuation tools initialization failed safely: %s",
+                                type(exc).__name__,
+                            )
+                            self._continuation_tools = None
                     if self._screen:
                         self._sync_screen_window_state()
                         try:
                             self._screen.cache_own_window_handle()
                         except Exception as exc:
                             logger.warning(f"Own-window handle cache failed: {exc}")
+                    if self._capabilities.is_allowed(Capability.COMPUTER_USE):
+                        self._initialize_computer_use_runtime()
                     try:
                         self._voice_out = VoiceOutputCoordinator(self._bleep, get_settings())
                     except Exception as exc:
@@ -2437,18 +2734,18 @@ class CompanionApp:
                         self._subtitle._voice_out = self._voice_out
                     # Load GIFs and start wake sequence — simple, flat loader
                     try:
-                        self.root.after(0, self._load_gifs_simple)
+                        self._schedule_ui(self._load_gifs_simple)
                     except Exception as e:
                         print(f"[BackgroundInit] load_gifs_simple failed: {e}")
                     try:
-                        self.root.after(0, self._start_placeholder_refresh)
+                        self._schedule_ui(self._start_placeholder_refresh)
                     except Exception:
                         pass
                 except Exception:
                     pass
 
             try:
-                self.root.after(0, _finish)
+                self._schedule_ui(_finish)
             except Exception:
                 # Tk may already be closing; never run this UI handoff on the worker.
                 try:
@@ -2462,6 +2759,618 @@ class CompanionApp:
             self._schedule_ui(lambda msg=message: native_error_popup(
                 "Agetha — Unexpected Error", msg,
             ))
+
+    def _computer_use_feature_gate(self) -> bool:
+        """Re-read the two authoritative local gates before desktop effects."""
+        if self._closing or not IS_WINDOWS:
+            return False
+        try:
+            return bool(
+                self._capabilities.is_allowed(Capability.COMPUTER_USE)
+                and self._capabilities.is_allowed(Capability.PROCESS_AWARENESS)
+            )
+        except Exception:
+            return False
+
+    def _initialize_computer_use_runtime(self) -> None:
+        """Compose Computer Use without capturing the screen or loading input."""
+        if self._closing or not self._computer_use_feature_gate():
+            return
+        try:
+            from agetha.computer_use.integration import build_runtime_bundle
+            from agetha.commands.command_handlers import guarded_type_for_computer_use
+
+            settings = get_settings()
+
+            def _reserve_planner() -> object | None:
+                return self._reserve_ai_operation(
+                    direct=False,
+                    user_message=None,
+                    origin="tool_result",
+                    noninterruptible=True,
+                )
+
+            def _release_planner(token: object) -> None:
+                self._release_ai_operation(token, noninterruptible=True)
+                self._drain_pending_user_message()
+
+            bundle = build_runtime_bundle(
+                ai_engine=self._ai,
+                screen_reader=self._screen,
+                process_awareness=self._process_awareness,
+                planner_route=settings.computer_use_planner_provider,
+                planner_model=settings.computer_use_planner_model,
+                reserve_provider=_reserve_planner,
+                release_provider=_release_planner,
+                guarded_type=lambda text, target, cancel, validate: guarded_type_for_computer_use(
+                    self,
+                    text,
+                    target,
+                    cancel,
+                    validate_locked_target=validate,
+                ),
+                feature_gate=self._computer_use_feature_gate,
+                is_shutdown=lambda: bool(self._closing),
+                focus_allowed=self._computer_use_focus_allowed_now,
+                status_sink=self._on_computer_use_snapshot,
+                audit_sink=self._record_computer_use_audit,
+                platform_name=sys.platform,
+            )
+            self._computer_use = bundle.manager
+            self._computer_use_focus_window = bundle.focus_window
+            self._computer_use_runtime_status = bundle.runtime_status
+        except Exception as exc:
+            self._computer_use = None
+            self._computer_use_focus_window = None
+            self._computer_use_runtime_status = "initialization_failed"
+            logger.warning(
+                "Computer Use runtime initialization failed safely: %s",
+                type(exc).__name__,
+            )
+
+    def _start_computer_use_request(self, user_message: str, response: dict) -> None:
+        """Accept one Guard-approved direct request and defer it past AI release."""
+        del response  # Model fields never supply payloads, executables, or authority.
+        manager = getattr(self, "_computer_use", None)
+        if manager is None or not self._computer_use_feature_gate():
+            self._speak_and_continue(
+                [{"text": "Computer Use is unavailable or off in settings.", "pause": 0.0}],
+                "neutral",
+                False,
+            )
+            return
+        try:
+            from agetha.computer_use.activation import (
+                extract_local_activation,
+                is_explicit_computer_use_request,
+            )
+
+            activation = extract_local_activation(
+                user_message,
+                configured_apps=get_settings().computer_use_allowed_apps,
+            )
+            if (
+                activation.typing_authorized
+                and not is_explicit_computer_use_request(user_message, activation)
+            ):
+                self._speak_and_continue(
+                    [{
+                        "text": "Name the target app or explicitly ask for Computer Use first.",
+                        "pause": 0.0,
+                    }],
+                    "neutral",
+                    False,
+                )
+                return
+        except Exception as exc:
+            logger.warning(
+                "Computer Use request parsing failed safely: %s",
+                type(exc).__name__,
+            )
+            self._speak_and_continue(
+                [{"text": "I couldn't safely prepare that desktop task.", "pause": 0.0}],
+                "neutral",
+                False,
+            )
+            return
+
+        previous = getattr(self, "_computer_use_start_cancel", None)
+        if previous is not None:
+            previous.set()
+        cancel_event = threading.Event()
+        self._computer_use_start_cancel = cancel_event
+        request_epoch = self._invalidate_computer_use_ui_delivery()
+        self._start_computer_use_escape_hotkey()
+        self._computer_use_goal_summary = (
+            "Type local text in the authorized app"
+            if activation.typing_authorized else "Use the authorized app"
+        )
+        self._schedule_ui(
+            lambda: (
+                self._show_computer_use_status()
+                if self._computer_use_delivery_is_current(cancel_event, request_epoch)
+                else None
+            ),
+        )
+
+        def _begin() -> None:
+            if (
+                cancel_event.is_set()
+                or self._closing
+                or request_epoch != int(getattr(self, "_computer_use_ui_epoch", 0))
+            ):
+                if request_epoch == int(getattr(self, "_computer_use_ui_epoch", 0)):
+                    self._close_computer_use_status()
+                return
+            self._start_worker(
+                self._run_computer_use_request,
+                name="computer-use",
+                args=(activation, cancel_event, request_epoch),
+            )
+
+        with self._ai_tick_lock:
+            ai_busy = bool(self._ai_busy)
+        if ai_busy:
+            self._defer_after_ai_tick(_begin)
+        else:
+            _begin()
+
+    def _run_computer_use_request(
+        self,
+        activation,
+        cancel_event: threading.Event,
+        request_epoch: int,
+    ) -> None:
+        manager = getattr(self, "_computer_use", None)
+        if manager is None or cancel_event.is_set() or self._closing:
+            self._schedule_computer_use_close(cancel_event, request_epoch)
+            return
+        settings = get_settings()
+        try:
+            presence = self._presence_decision()
+            presence_reason = str(getattr(presence, "reason", "")).casefold()
+        except Exception:
+            presence = None
+            presence_reason = ""
+        presentation_restricted = "presentation" in presence_reason
+        fullscreen_restricted = any(
+            marker in presence_reason for marker in ("fullscreen", "active game")
+        )
+        focus_allowed = self._computer_use_focus_allowed_now()
+
+        try:
+            from agetha.computer_use.integration import (
+                select_initial_target,
+            )
+            from agetha.commands.command_handlers import guarded_launch_application
+
+            selection = select_initial_target(
+                self._process_awareness,
+                activation,
+                cancel_event,
+                focus_window=(
+                    (
+                        lambda target: bool(
+                            self._computer_use_focus_allowed_now()
+                            and self._computer_use_focus_window is not None
+                            and self._computer_use_focus_window(target)
+                        )
+                    )
+                    if focus_allowed else None
+                ),
+                launcher=lambda command: bool(
+                    self._computer_use_focus_allowed_now()
+                    and self._computer_use_feature_gate()
+                    and guarded_launch_application(
+                        self,
+                        command,
+                        cancel_check=lambda: bool(
+                            cancel_event.is_set()
+                            or self._closing
+                            or not self._computer_use_feature_gate()
+                        ),
+                    )
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Computer Use target discovery failed safely: %s",
+                type(exc).__name__,
+            )
+            selection = None
+        if cancel_event.is_set() or self._closing:
+            self._schedule_computer_use_close(cancel_event, request_epoch)
+            return
+        target = getattr(selection, "target", None)
+        if target is None:
+            self._publish_computer_use_bootstrap_blocked()
+            self._schedule_computer_use_message(
+                "I couldn't lock a safe target window, so I stopped.",
+                cancel_event,
+                request_epoch,
+            )
+            return
+
+        try:
+            from agetha.computer_use.session import (
+                ComputerUseSessionSpec,
+                SessionAlreadyActive,
+            )
+
+            max_steps = settings.computer_use_max_steps
+            spec = ComputerUseSessionSpec(
+                goal=activation.sanitized_request or "Use the authorized application",
+                initial_target=target,
+                allowed_processes=frozenset({target.process.name}),
+                payloads=activation.payloads,
+                enabled=self._computer_use_feature_gate(),
+                explicit_user_activation=True,
+                request_origin="user",
+                max_steps=max_steps,
+                timeout_seconds=settings.computer_use_timeout_sec,
+                confidence_min=settings.computer_use_planner_confidence_min,
+                recovery_after_failures=min(
+                    settings.computer_use_recovery_after_failures,
+                    max_steps,
+                ),
+                max_recovery_calls=min(
+                    settings.computer_use_max_recovery_calls,
+                    max_steps,
+                ),
+                typing_authorized=activation.typing_authorized,
+                submit_authorized=activation.submit_authorized,
+                focus_authorized=True,
+                presentation_restricted=presentation_restricted,
+                fullscreen_restricted=fullscreen_restricted,
+            )
+            # Keep one cancellation event across bootstrap and session
+            # registration so STOP can never fall between two owners.
+            outcome = manager.run(spec, cancel_event=cancel_event)
+        except SessionAlreadyActive:
+            self._schedule_computer_use_message(
+                "Another desktop task is still stopping. Try again in a moment.",
+                cancel_event,
+                request_epoch,
+            )
+            return
+        except Exception as exc:
+            logger.warning(
+                "Computer Use session failed safely: %s",
+                type(exc).__name__,
+            )
+            self._schedule_computer_use_message(
+                "The desktop task stopped safely.",
+                cancel_event,
+                request_epoch,
+            )
+            return
+        finally:
+            if self._computer_use_start_cancel is cancel_event:
+                self._computer_use_start_cancel = None
+
+        state = str(getattr(getattr(outcome, "state", ""), "value", ""))
+        if state == "completed":
+            message = "Done. The desktop task completed."
+        elif state in {"cancelled", "shutdown"}:
+            self._schedule_computer_use_close(cancel_event, request_epoch)
+            return
+        elif state == "blocked":
+            message = "I stopped because the next desktop step was not safely allowed."
+        else:
+            message = "The desktop task stopped safely before completion."
+        allow_audio = bool(getattr(presence, "allow_voice", True))
+        self._schedule_computer_use_message(
+            message,
+            cancel_event,
+            request_epoch,
+            allow_audio=allow_audio,
+        )
+
+    def _computer_use_focus_allowed_now(self) -> bool:
+        """Read current presence state before any Computer Use focus effect."""
+        try:
+            reason = str(getattr(self._presence_decision(), "reason", "")).casefold()
+        except Exception:
+            return False
+        return not any(
+            marker in reason
+            for marker in ("presentation", "fullscreen", "active game")
+        )
+
+    def _stop_computer_use(self, reason: str = "stop") -> None:
+        """Immediate exact-once cancellation path used by STOP and Escape."""
+        self._invalidate_computer_use_ui_delivery()
+        self._stop_computer_use_escape_hotkey()
+        bootstrap = getattr(self, "_computer_use_start_cancel", None)
+        if bootstrap is not None:
+            bootstrap.set()
+        manager = getattr(self, "_computer_use", None)
+        if manager is not None:
+            try:
+                manager.cancel_active(reason)
+            except Exception:
+                pass
+        self._schedule_ui(self._close_computer_use_status)
+
+    def _invalidate_computer_use_ui_delivery(self) -> int:
+        self._computer_use_ui_epoch = (
+            int(getattr(self, "_computer_use_ui_epoch", 0)) + 1
+        )
+        return self._computer_use_ui_epoch
+
+    def _computer_use_delivery_is_current(
+        self,
+        cancel_event: threading.Event,
+        request_epoch: int,
+    ) -> bool:
+        return bool(
+            not self._closing
+            and not cancel_event.is_set()
+            and request_epoch == int(getattr(self, "_computer_use_ui_epoch", 0))
+        )
+
+    def _schedule_computer_use_close(
+        self,
+        cancel_event: threading.Event,
+        request_epoch: int,
+    ) -> None:
+        self._schedule_ui(
+            lambda: (
+                self._close_computer_use_status()
+                if request_epoch == int(getattr(self, "_computer_use_ui_epoch", 0))
+                else None
+            ),
+        )
+
+    def _schedule_computer_use_message(
+        self,
+        message: str,
+        cancel_event: threading.Event,
+        request_epoch: int,
+        *,
+        allow_audio: bool = True,
+    ) -> None:
+        self._schedule_ui(
+            lambda: (
+                self._finish_computer_use_message(message, allow_audio=allow_audio)
+                if self._computer_use_delivery_is_current(cancel_event, request_epoch)
+                else None
+            ),
+        )
+
+    def _start_computer_use_escape_hotkey(self) -> None:
+        self._stop_computer_use_escape_hotkey()
+        if not IS_WINDOWS:
+            return
+        try:
+            from agetha.computer_use.escape_hotkey import SessionEscapeHotkey
+
+            hotkey = SessionEscapeHotkey(
+                lambda: self._stop_computer_use("escape"),
+                platform_name=sys.platform,
+            )
+            self._computer_use_escape_hotkey = hotkey
+            if not hotkey.start():
+                self._computer_use_escape_hotkey = None
+                hotkey.stop()
+        except Exception as exc:
+            self._computer_use_escape_hotkey = None
+            logger.warning(
+                "Computer Use Escape hotkey unavailable: %s",
+                type(exc).__name__,
+            )
+
+    def _stop_computer_use_escape_hotkey(self) -> None:
+        hotkey = getattr(self, "_computer_use_escape_hotkey", None)
+        self._computer_use_escape_hotkey = None
+        if hotkey is not None:
+            try:
+                hotkey.stop()
+            except Exception:
+                pass
+
+    def _show_computer_use_status(self, snapshot=None) -> None:
+        if self._closing:
+            return
+        try:
+            from agetha.ui.computer_use_status import (
+                ComputerUseStatusView,
+                open_computer_use_status,
+            )
+
+            target = self._safe_computer_use_target(
+                getattr(snapshot, "target_process", "") if snapshot else "",
+            )
+            view = ComputerUseStatusView(
+                goal=self._computer_use_goal_summary,
+                target=target or "Waiting for target",
+                step=getattr(snapshot, "step", 0) if snapshot else 0,
+                max_steps=(
+                    getattr(snapshot, "max_steps", 0)
+                    if snapshot else get_settings().computer_use_max_steps
+                ) or get_settings().computer_use_max_steps,
+                last_action=getattr(snapshot, "last_action", "") if snapshot else "",
+                last_result=self._coarse_computer_use_result(
+                    getattr(snapshot, "last_result", "") if snapshot else "",
+                ),
+            )
+            window = getattr(self, "_computer_use_status_window", None)
+            if window is None or bool(getattr(window, "_closed", False)):
+                self._computer_use_status_window = open_computer_use_status(
+                    self.root,
+                    view,
+                    on_stop=lambda: self._stop_computer_use("stop_button"),
+                )
+            else:
+                window.update(view)
+        except Exception as exc:
+            logger.warning(
+                "Computer Use status UI failed safely: %s",
+                type(exc).__name__,
+            )
+
+    def _close_computer_use_status(self) -> None:
+        self._stop_computer_use_escape_hotkey()
+        window = getattr(self, "_computer_use_status_window", None)
+        if window is not None:
+            try:
+                window.close()
+            except Exception:
+                pass
+        self._computer_use_status_window = None
+
+    def _finish_computer_use_message(
+        self,
+        message: str,
+        *,
+        allow_audio: bool = True,
+    ) -> None:
+        self._close_computer_use_status()
+        if self._closing:
+            return
+        self._speak_and_continue(
+            [{"text": message, "pause": 0.0}],
+            "neutral",
+            False,
+            allow_audio=allow_audio,
+        )
+
+    @staticmethod
+    def _safe_computer_use_target(value: object) -> str:
+        return str(value or "").replace("\\", "/").rsplit("/", 1)[-1][:120]
+
+    @staticmethod
+    def _coarse_computer_use_result(value: object) -> str:
+        token = str(getattr(value, "value", value) or "").casefold()
+        if not token:
+            return ""
+        for needles, label in (
+            (("complete", "finish", "success", "verified"), "Completed or verified"),
+            (("cancel",), "Cancelled"),
+            (("shutdown",), "Shutdown"),
+            (("expire", "deadline", "timeout"), "Timed out"),
+            (("target", "window", "process"), "Target changed"),
+            (("block", "deny", "handoff", "sensitive"), "Blocked safely"),
+            (("fail", "error", "invalid"), "Failed safely"),
+            (("start", "running", "wait", "retry"), "In progress"),
+        ):
+            if any(needle in token for needle in needles):
+                return label
+        return "Result recorded"
+
+    def _on_computer_use_snapshot(self, snapshot) -> None:
+        """Consume only the manager's sanitized snapshot from its worker."""
+        if self._closing:
+            return
+        manager = getattr(self, "_computer_use", None)
+        try:
+            current = manager.snapshot() if manager is not None else None
+        except Exception:
+            current = None
+        if not self._same_computer_use_snapshot_owner(snapshot, current):
+            return
+        state = str(getattr(getattr(snapshot, "state", ""), "value", ""))
+        self._publish_computer_use_snapshot(snapshot, state)
+
+        def _render() -> None:
+            try:
+                latest = manager.snapshot() if manager is not None else None
+            except Exception:
+                latest = None
+            if not self._same_computer_use_snapshot_owner(snapshot, latest):
+                return
+            if state == "running":
+                self._show_computer_use_status(snapshot)
+            elif state in {"completed", "blocked", "cancelled", "failed", "shutdown"}:
+                self._close_computer_use_status()
+
+        self._schedule_ui(_render)
+
+    @staticmethod
+    def _same_computer_use_snapshot_owner(first, second) -> bool:
+        if first is None or second is None:
+            return False
+        return bool(
+            str(getattr(first, "session_id", ""))
+            and str(getattr(first, "session_id", ""))
+            == str(getattr(second, "session_id", ""))
+            and int(getattr(first, "generation", -1))
+            == int(getattr(second, "generation", -2))
+        )
+
+    def _publish_computer_use_snapshot(self, snapshot, state: str) -> None:
+        try:
+            from agetha.core.observation_bus import ObservationKind
+
+            if state == "running" and int(getattr(snapshot, "step", 0)) == 0:
+                kind = ObservationKind.COMPUTER_USE_STARTED
+            elif state == "completed":
+                kind = ObservationKind.COMPUTER_USE_COMPLETED
+            elif state in {"blocked", "failed"}:
+                kind = ObservationKind.COMPUTER_USE_BLOCKED
+            else:
+                return
+            session_prefix = str(getattr(snapshot, "session_id", ""))[:12]
+            target = self._safe_computer_use_target(
+                getattr(snapshot, "target_process", ""),
+            )
+            action = str(getattr(snapshot, "last_action", ""))[:40]
+            self._publish_observation(
+                kind,
+                source="computer_use",
+                summary=f"Computer Use {state}: {target or 'target withheld'}",
+                confidence=1.0,
+                sensitivity="internal",
+                dedup_key=f"computer-use:{session_prefix}:{kind.value}",
+                metadata={
+                    "session": session_prefix,
+                    "step": int(getattr(snapshot, "step", 0)),
+                    "action": action,
+                    "application": target,
+                    "result": state,
+                },
+                request_origin="user",
+            )
+        except Exception as exc:
+            logger.debug(
+                "Computer Use observation skipped: %s", type(exc).__name__,
+            )
+
+    def _publish_computer_use_bootstrap_blocked(self) -> None:
+        try:
+            from agetha.core.observation_bus import ObservationKind
+
+            self._publish_observation(
+                ObservationKind.COMPUTER_USE_BLOCKED,
+                source="computer_use",
+                summary="Computer Use blocked before a target was locked",
+                sensitivity="internal",
+                dedup_key="computer-use:bootstrap:blocked",
+                metadata={"session": "bootstrap", "result": "blocked"},
+                request_origin="user",
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _record_computer_use_audit(event) -> None:
+        try:
+            from agetha.core.audit_log import log_audit
+
+            log_audit(
+                "computer_use_step",
+                {
+                    "session": str(getattr(event, "session_id", ""))[:12],
+                    "step": int(getattr(event, "step", 0)),
+                    "action": str(getattr(event, "action", ""))[:40],
+                    "target": str(getattr(event, "target_process", ""))[:120],
+                    "policy": str(getattr(event, "policy_result", ""))[:80],
+                    "confidence": f"{float(getattr(event, 'confidence', 0.0)):.2f}",
+                },
+                str(getattr(event, "result", "unknown"))[:64],
+            )
+        except Exception:
+            return
 
     def _pick_idle_gif(self) -> str:
         """Pick idle-1/2/3 from host affection/heat so all three idle clips matter."""
@@ -2512,7 +3421,7 @@ class CompanionApp:
             )
         try:
             if threading.current_thread() is not threading.main_thread():
-                self.root.after(0, _run)
+                self._schedule_ui(_run)
             else:
                 _run()
         except Exception as exc:
@@ -2544,7 +3453,7 @@ class CompanionApp:
                         self._current_gif_player.stop()
                     self._current_gif_player = static
                     static.play()
-        player.play_once(lambda: self.root.after(0, _done))
+        player.play_once(lambda: self._schedule_ui(_done))
 
     def _play_gif_once_then_loop(self, anim_name: str, mood: str):
         """Play anim_name once, then loop it for as long as state is TALKING."""
@@ -2561,7 +3470,7 @@ class CompanionApp:
                     self._current_gif_player.stop()
                 self._current_gif_player = player
                 player.play()
-        player.play_once(lambda: self.root.after(0, _done))
+        player.play_once(lambda: self._schedule_ui(_done))
 
     def _start_talking_rotation(self, mood: str = "neutral"):
         self._talking_rotate_mood = mood or "neutral"
@@ -2614,13 +3523,13 @@ class CompanionApp:
             if not self._closing:
                 self._motion.play_mood(mood)
 
-        self._motion_request_job = self.root.after(0, _play)
+        self._motion_request_job = self._schedule_ui(_play)
 
     def _set_state(self, state: str, mood: str = "neutral"):
         if self._closing:
             return
         if threading.current_thread() is not threading.main_thread():
-            self.root.after(0, lambda s=state, m=mood: self._set_state(s, m))
+            self._schedule_ui(lambda s=state, m=mood: self._set_state(s, m))
             return
         with self._state_lock:
             self._apply_state(state, mood)
@@ -2831,12 +3740,13 @@ class CompanionApp:
         if self._closing:
             return
         self._set_state(self.STATE_IDLE, "neutral")
-        self.root.after(1000, self._schedule_screen_poll)
+        if self._capabilities.is_allowed(Capability.BACKGROUND_SENSING):
+            self.root.after(1000, self._schedule_screen_poll)
 
     def _schedule_screen_poll(self):
         if self._closing:
             return
-        if not get_settings().enable_ambient_polls:
+        if not self._capabilities.is_allowed(Capability.BACKGROUND_SENSING):
             return
         if self._poll_job:
             self.root.after_cancel(self._poll_job)
@@ -2863,7 +3773,7 @@ class CompanionApp:
         if threading.current_thread() is not threading.main_thread():
             self._schedule_ui(self._reschedule_screen_poll)
             return
-        if not get_settings().enable_ambient_polls:
+        if not self._capabilities.is_allowed(Capability.BACKGROUND_SENSING):
             if self._poll_job:
                 self.root.after_cancel(self._poll_job)
                 self._poll_job = None
@@ -2919,6 +3829,8 @@ class CompanionApp:
 
     def _evaluate_terminal_sentinel_events(self, matches: list, ocr_text: str) -> bool:
         """Consume confirmed OCR events locally; never call a provider here."""
+        if not self._capabilities.is_allowed(Capability.TERMINAL_SENTINEL):
+            return False
         sentinel = getattr(self, "_terminal_sentinel", None)
         screen = getattr(self, "_screen", None)
         if sentinel is None or not sentinel.enabled or not matches:
@@ -3067,6 +3979,11 @@ class CompanionApp:
                 presence.record_dismissal()
 
         def _explain() -> None:
+            authorization = self._capabilities.authorize(
+                Capability.TERMINAL_SENTINEL,
+            )
+            if authorization is None:
+                return
             request = sentinel.explain(notification_id)
             if request is None or self._closing:
                 return
@@ -3077,6 +3994,7 @@ class CompanionApp:
                     "user_message": request.user_message,
                     "origin": request.origin,
                     "explicit_screen_context": request.screen_context,
+                    "capability_authorization": authorization,
                 },
             )
 
@@ -3106,12 +4024,30 @@ class CompanionApp:
     def _on_cancel_ai(self, event=None):
         """Escape — cancel an in-flight AI request."""
         self._cancel_event.set()
+        consent = getattr(self, "_capability_consent", None)
+        if consent is not None and consent.snapshot.state not in {
+            ConsentState.COMPACT,
+            ConsentState.FULL,
+        }:
+            self._cancel_full_mode_consent(consent.snapshot.generation)
+        self._invalidate_continuation_ui_delivery()
+        continuation = getattr(self, "_continuation", None)
+        if continuation is not None:
+            continuation.cancel_active("escape")
+        self._stop_computer_use("escape")
         typing_cancel = getattr(self, "_typing_cancel_event", None)
         if typing_cancel is not None:
             typing_cancel.set()
         self._re_enable_input()
-        self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
-        self.root.after(0, lambda: self._subtitle.show_message("Cancelled.", "#888888"))
+        self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
+        self._schedule_ui(
+            lambda: self._subtitle.show_message("Cancelled.", "#888888"),
+        )
+
+    def _invalidate_continuation_ui_delivery(self) -> None:
+        self._continuation_ui_epoch = (
+            int(getattr(self, "_continuation_ui_epoch", 0)) + 1
+        )
 
     @staticmethod
     def _fast_ambient_is_local_idle(
@@ -3184,6 +4120,7 @@ class CompanionApp:
         user_message: str | None,
         origin: RequestOrigin,
         explicit_screen_context: str | None = None,
+        capability_authorization: object | None = None,
         noninterruptible: bool = False,
     ) -> object | None:
         """Reserve the single provider slot or safely queue direct input."""
@@ -3202,6 +4139,7 @@ class CompanionApp:
                     self._pending_user_message = user_message
                     self._pending_user_origin = origin
                     self._pending_screen_context = explicit_screen_context
+                    self._pending_capability_authorization = capability_authorization
                 return None
             token = object()
             self._cancel_event.clear()
@@ -3220,11 +4158,130 @@ class CompanionApp:
             self._ai_operation_token = None
             return True
 
+    def _ai_ui_delivery_is_current(
+        self,
+        operation_token: object | None,
+        result_is_current: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Return whether queued provider UI still belongs to the active request."""
+        if (
+            operation_token is None
+            or getattr(self, "_closing", False)
+            or self._cancel_event.is_set()
+        ):
+            return False
+        with self._ai_tick_lock:
+            if getattr(self, "_ai_operation_token", None) is not operation_token:
+                return False
+        if result_is_current is not None:
+            try:
+                return bool(result_is_current())
+            except Exception:
+                return False
+        return True
+
+    def _schedule_owned_ai_ui(
+        self,
+        operation_token: object | None,
+        callback: Callable[[], None],
+        *,
+        result_is_current: Callable[[], bool] | None = None,
+    ) -> object | None:
+        """Queue provider UI with an ownership check both now and on delivery."""
+        if not self._ai_ui_delivery_is_current(operation_token, result_is_current):
+            return None
+
+        def _deliver() -> None:
+            if self._ai_ui_delivery_is_current(operation_token, result_is_current):
+                callback()
+
+        return self._schedule_ui(_deliver)
+
+    @staticmethod
+    def _continuation_resources_from_user(message: str) -> tuple[AuthorizedResource, ...]:
+        """Derive narrow read-only capabilities from explicit user text."""
+        text = str(message or "")
+        resources: set[AuthorizedResource] = set()
+        for match in re.findall(r"https?://[^\s<>'\"]+", text, re.IGNORECASE)[:16]:
+            try:
+                resources.add(AuthorizedResource("url", match.rstrip(".,);]")))
+            except (TypeError, ValueError):
+                pass
+        path_candidates = re.findall(
+            r"(?:[A-Za-z]:[\\/][^\r\n\"']+|(?:~|\.{1,2})?[\\/][^\r\n\"']+)",
+            text,
+        )
+        for value in path_candidates[:16]:
+            try:
+                resources.add(AuthorizedResource("path", value.strip().rstrip(".,);]")))
+            except (TypeError, ValueError):
+                pass
+        process_candidates: set[str] = set()
+        patterns = (
+            r"\b(?:is|check|monitor|watch)\s+([A-Za-z0-9_.-]{2,80})(?:\s+process)?\b",
+            r"\b([A-Za-z0-9_.-]{2,80})\s+(?:is\s+)?(?:running|open)\b",
+        )
+        for pattern in patterns:
+            process_candidates.update(re.findall(pattern, text, re.IGNORECASE))
+        for value in tuple(process_candidates)[:16]:
+            cleaned = value.strip().casefold()
+            if cleaned in {"the", "this", "that", "process", "app", "application"}:
+                continue
+            try:
+                resources.add(AuthorizedResource("process", cleaned))
+                if "." not in cleaned:
+                    resources.add(AuthorizedResource("process", f"{cleaned}.exe"))
+            except (TypeError, ValueError):
+                pass
+        return tuple(sorted(resources))
+
+    @staticmethod
+    def _allows_sensitive_outbound_continuation(message: str) -> bool:
+        """Require an explicit private-data-to-web transfer instruction."""
+        text = str(message or "").casefold()
+        private_ref = (
+            r"(?:my\s+(?:local\s+)?(?:memory|memories|notes?|documents?|files?|private\s+data)"
+            r"|local\s+(?:notes?|documents?|files?|data))"
+        )
+        outbound = r"(?:(?:the\s+)?(?:web|internet)|online)"
+        transfer = r"(?:use|send|upload|share|post|submit|copy|paste|include)"
+        web_lookup = r"(?:search|look\s+up|find|check)"
+        patterns = (
+            fr"\b{transfer}\b.{{0,100}}{private_ref}.{{0,100}}\b{outbound}\b",
+            fr"{private_ref}.{{0,100}}\b{transfer}\b.{{0,100}}\b{outbound}\b",
+            fr"\b{web_lookup}\b.{{0,80}}\b{outbound}\b.{{0,80}}"
+            fr"\b(?:using|with|from)\b.{{0,40}}{private_ref}",
+            fr"\b{transfer}\b.{{0,80}}{private_ref}.{{0,80}}"
+            fr"\b(?:to|on|over)\b.{{0,30}}\b{outbound}\b",
+        )
+        denial = re.compile(
+            r"\b(?:no|not|never|without|avoid|refuse|do\s+not|don['’]t)\b",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                clause_start = max(
+                    text.rfind(".", 0, match.start()),
+                    text.rfind("!", 0, match.start()),
+                    text.rfind("?", 0, match.start()),
+                    text.rfind(";", 0, match.start()),
+                    text.rfind("\n", 0, match.start()),
+                ) + 1
+                following_boundaries = [
+                    index
+                    for separator in (".", "!", "?", ";", "\n")
+                    if (index := text.find(separator, match.end())) >= 0
+                ]
+                clause_end = min(following_boundaries, default=len(text))
+                if not denial.search(text[clause_start:clause_end]):
+                    return True
+        return False
+
     def _ai_tick(
         self,
         user_message: str | None = None,
         origin: RequestOrigin | None = None,
         explicit_screen_context: str | None = None,
+        capability_authorization: object | None = None,
     ):
         if self._closing:
             return
@@ -3233,7 +4290,56 @@ class CompanionApp:
             default="ambient" if user_message is None else "user",
         )
         is_user = origin != "ambient"
+        ambient_authorization = None
+        if origin == "terminal_sentinel":
+            if not self._capabilities.is_authorized(capability_authorization):
+                return
+        elif not is_user:
+            ambient_authorization = self._capabilities.authorize(
+                Capability.BACKGROUND_SENSING,
+            )
+            if ambient_authorization is None:
+                return
+
+        def _ambient_generation_is_current() -> bool:
+            if origin == "terminal_sentinel":
+                return self._capabilities.is_authorized(capability_authorization)
+            return bool(
+                is_user
+                or (
+                    ambient_authorization is not None
+                    and self._capabilities.is_authorized(ambient_authorization)
+                )
+            )
         fast_mode = self._fast_mode_runtime_active()
+        provider_user_message = user_message or ""
+        if origin == "user" and user_message:
+            try:
+                from agetha.computer_use.activation import (
+                    extract_local_activation,
+                    is_explicit_computer_use_request,
+                )
+
+                local_activation = extract_local_activation(
+                    user_message,
+                    configured_apps=_SETTINGS.computer_use_allowed_apps,
+                )
+                if (
+                    _SETTINGS.enable_computer_use
+                    and local_activation.payloads
+                    and is_explicit_computer_use_request(
+                        user_message, local_activation,
+                    )
+                ):
+                    provider_user_message = local_activation.sanitized_request
+            except Exception as exc:
+                # A parser failure must not accidentally send a possible exact
+                # desktop typing payload to provider history.
+                logger.warning(
+                    "Computer Use activation parsing failed closed: %s",
+                    type(exc).__name__,
+                )
+                provider_user_message = "[Direct user request withheld: local parsing failed]"
 
         # Deep sleep: skip ambient polls (presence rest). User interaction still wakes her.
         if not is_user and self._state == self.STATE_SLEEPING:
@@ -3245,10 +4351,20 @@ class CompanionApp:
             user_message=user_message,
             origin=origin,
             explicit_screen_context=explicit_screen_context,
+            capability_authorization=capability_authorization,
         )
         if operation_token is None:
             if not is_user:
                 self._reschedule_screen_poll()
+            return
+
+        def _discard_stale_ambient() -> None:
+            self._release_ai_operation(operation_token)
+            self._reschedule_screen_poll()
+            self._drain_pending_user_message()
+
+        if not _ambient_generation_is_current():
+            _discard_stale_ambient()
             return
 
         if not self._ai:
@@ -3262,6 +4378,21 @@ class CompanionApp:
         if self._closing:
             self._release_ai_operation(operation_token)
             return
+        continuation_owner: tuple[str, int] | None = None
+        continuation = getattr(self, "_continuation", None)
+        if origin == "user" and provider_user_message and continuation is not None:
+            started = continuation.start(
+                provider_user_message,
+                authority_origin="user",
+                authorized_resources=self._continuation_resources_from_user(
+                    provider_user_message,
+                ),
+                allow_sensitive_outbound=(
+                    self._allows_sensitive_outbound_continuation(user_message)
+                ),
+            )
+            if started.kind is DecisionKind.STARTED:
+                continuation_owner = (started.session_id, started.generation)
         if is_user and origin != "terminal_sentinel":
             self._schedule_ui(lambda: self._input_box.config(state="disabled"))
             if origin == "user" and user_message:
@@ -3282,21 +4413,62 @@ class CompanionApp:
 
         screen_text = str(explicit_screen_context or "")
         raw_screen_text = screen_text
+        process_context = ""
+        sensitive_foreground = False
+        process_awareness = getattr(self, "_process_awareness", None)
+        if (
+            process_awareness is not None
+            and self._capabilities.is_allowed(Capability.PROCESS_AWARENESS)
+        ):
+            try:
+                if not _ambient_generation_is_current():
+                    _discard_stale_ambient()
+                    return
+                process_awareness.poll()
+                if not _ambient_generation_is_current():
+                    _discard_stale_ambient()
+                    return
+                process_snapshot = process_awareness.last_snapshot
+                foreground = (
+                    process_snapshot.foreground if process_snapshot is not None else None
+                )
+                sensitive_foreground = bool(
+                    foreground is not None and foreground.sensitive
+                )
+                if origin == "user":
+                    process_context = process_awareness.provider_context(process_snapshot)
+            except Exception as exc:
+                logger.debug("Process awareness poll failed: %s", type(exc).__name__)
         monitor_status = ""
         repeated_event = False
         has_new_pattern_event = False
         sentinel_consumed = False
         previous_screen_text = self._last_screen_text
-        if self._screen and explicit_screen_context is None:
+        screen_reader = self._screen
+        if (
+            screen_reader
+            and explicit_screen_context is None
+            and not sensitive_foreground
+            and (
+                is_user
+                or _ambient_generation_is_current()
+            )
+        ):
             own_hwnd = None
             try:
-                own_hwnd = self._screen._get_own_hwnd()
+                if not _ambient_generation_is_current():
+                    _discard_stale_ambient()
+                    return
+                own_hwnd = screen_reader._get_own_hwnd()
             except Exception:
                 pass
 
             active_title = ""
             if _SETTINGS.include_window_title_in_context:
-                active_title = self._screen.get_active_window_title(skip_hwnd=own_hwnd)
+                if not _ambient_generation_is_current():
+                    _discard_stale_ambient()
+                    return
+                active_title = screen_reader.get_active_window_title(skip_hwnd=own_hwnd)
 
             typing_pause = _SETTINGS.ocr_pause_while_typing_sec
             # User messages bypass typing pause — they just typed and expect fresh screen context.
@@ -3307,14 +4479,23 @@ class CompanionApp:
             )
 
             if get_settings().enable_screen_reader and not recently_active:
-                if self._screen.automatic_capture_supported:
-                    screen_text = self._screen.capture_text(
+                if screen_reader.automatic_capture_supported:
+                    if not _ambient_generation_is_current():
+                        _discard_stale_ambient()
+                        return
+                    screen_text = screen_reader.capture_text(
                         focused_only=_SETTINGS.ocr_focused_window_only,
                     )
+                    if not _ambient_generation_is_current():
+                        _discard_stale_ambient()
+                        return
                 raw_screen_text = screen_text
-                monitor_status = getattr(self._screen, "last_monitor_status", "")
+                monitor_status = getattr(screen_reader, "last_monitor_status", "")
                 if monitor_status in {"ocr_complete", "ocr_empty", "unchanged"}:
                     self._last_safe_scan_time = datetime.now().astimezone()
+                if not _ambient_generation_is_current():
+                    _discard_stale_ambient()
+                    return
                 self._observe_capture_target()
                 preserve_previous_context = False
                 if monitor_status == "skipped_excluded_window":
@@ -3346,11 +4527,11 @@ class CompanionApp:
                     self._last_screen_text = screen_text
 
                 _matches = getattr(
-                    self._screen,
+                    screen_reader,
                     "last_pattern_matches" if is_user else "last_new_pattern_events",
                     [],
                 )
-                _current_matches = getattr(self._screen, "last_pattern_matches", [])
+                _current_matches = getattr(screen_reader, "last_pattern_matches", [])
                 if not is_user and _current_matches and not _matches:
                     screen_text = "[Repeated screen event suppressed; no new OCR event.]"
                     preserve_previous_context = True
@@ -3368,8 +4549,8 @@ class CompanionApp:
                     has_new_pattern_event = True
                     tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
                     screen_text = tags + "\n" + screen_text
-                elif is_user and getattr(self._screen, "has_angry_trigger", False):
-                    kws = ", ".join(self._screen.last_angry_keywords[:3])
+                elif is_user and getattr(screen_reader, "has_angry_trigger", False):
+                    kws = ", ".join(screen_reader.last_angry_keywords[:3])
                     screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
 
                 if active_title:
@@ -3379,12 +4560,15 @@ class CompanionApp:
                     "error", "warning", "failed", "exception", "traceback",
                     "fatal", "crash", "denied", "undefined", "null", "critical",
                 }
-                _positions = getattr(self._screen, "last_word_positions", [])
+                _positions = getattr(screen_reader, "last_word_positions", [])
                 _important = [p for p in _positions if p.get("text", "").lower() in _KEY_WORDS][:5]
                 if _important and (is_user or bool(_matches)) and not preserve_previous_context:
                     pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
                     screen_text = f"[Error positions: {pos_str}]\n" + screen_text
                 if not is_user and _matches:
+                    if not _ambient_generation_is_current():
+                        _discard_stale_ambient()
+                        return
                     sentinel_consumed = self._evaluate_terminal_sentinel_events(
                         list(_matches),
                         raw_screen_text,
@@ -3392,6 +4576,11 @@ class CompanionApp:
             elif active_title:
                 screen_text = f"[Active: {active_title}]"
                 self._last_screen_text = screen_text
+
+        if sensitive_foreground:
+            screen_text = "[Sensitive application active; title and OCR withheld.]"
+            raw_screen_text = screen_text
+            self._last_screen_text = ""
 
         if sentinel_consumed:
             logger.info("Terminal Sentinel kept a validated event local pending user action")
@@ -3440,10 +4629,15 @@ class CompanionApp:
             return
 
         ai_screen_context = screen_text or self._last_screen_text
+        if process_context:
+            ai_screen_context = (
+                f"[LOCAL APPLICATION CONTEXT]\n{process_context}\n"
+                f"[END LOCAL APPLICATION CONTEXT]\n{ai_screen_context}"
+            )
         if fast_mode and not is_user:
             ai_screen_context = self._compact_fast_ambient_context(ai_screen_context)
         screen_redactor = (
-            self._screen.redact_for_external_context if self._screen else None
+            screen_reader.redact_for_external_context if screen_reader else None
         )
         ai_screen_context = prepare_external_context(
             ai_screen_context,
@@ -3452,34 +4646,46 @@ class CompanionApp:
             redactor=screen_redactor,
         ).text
 
-        self._schedule_ui(lambda: self._set_state(self.STATE_THINKING))
+        self._schedule_owned_ai_ui(
+            operation_token,
+            lambda: self._set_state(self.STATE_THINKING),
+            result_is_current=_ambient_generation_is_current,
+        )
 
         def _on_token(raw_so_far: str):
-            if not self._cancel_event.is_set():
-                self._schedule_ui(
-                    lambda r=raw_so_far: self._subtitle.show_thinking(r),
-                )
+            self._schedule_owned_ai_ui(
+                operation_token,
+                lambda r=raw_so_far: self._subtitle.show_thinking(r),
+                result_is_current=_ambient_generation_is_current,
+            )
 
-        provider_message = render_request_message(origin, user_message or "")
+        provider_message = render_request_message(origin, provider_user_message)
         request_profile = request_profile_for_origin(origin)
+        provider_kwargs = {
+            "screen_context": ai_screen_context,
+            "user_message": provider_message,
+            "request_profile": request_profile,
+        }
+        if not is_user or origin == "terminal_sentinel":
+            if not _ambient_generation_is_current():
+                _discard_stale_ambient()
+                return
+            provider_kwargs["provider_authorization"] = _ambient_generation_is_current
 
         try:
             if _SETTINGS.enable_streaming:
                 response = self._ai.query_streaming(
-                    screen_context=ai_screen_context,
-                    user_message=provider_message,
                     on_token=_on_token,
-                    request_profile=request_profile,
+                    **provider_kwargs,
                 )
             else:
-                response = self._ai.query(
-                    screen_context=ai_screen_context,
-                    user_message=provider_message,
-                    request_profile=request_profile,
-                )
+                response = self._ai.query(**provider_kwargs)
         except Exception as exc:
             if self._closing:
                 self._release_ai_operation(operation_token)
+                return
+            if not _ambient_generation_is_current():
+                _discard_stale_ambient()
                 return
             err_str = str(exc)
             logger.error("AI tick failed: %s", type(exc).__name__)
@@ -3500,12 +4706,22 @@ class CompanionApp:
                 self._schedule_ui(self._re_enable_input)
             self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
             self._release_ai_operation(operation_token)
+            if continuation_owner is not None and continuation is not None:
+                continuation.provider_failed(
+                    continuation_owner[0], continuation_owner[1], "provider_error",
+                )
             self._reschedule_screen_poll()
             self._drain_pending_user_message()
             return
 
+        if not _ambient_generation_is_current():
+            _discard_stale_ambient()
+            return
+
         if self._cancel_event.is_set():
             self._release_ai_operation(operation_token)
+            if continuation_owner is not None and continuation is not None:
+                continuation.cancel_active("cancelled")
             if origin != "terminal_sentinel":
                 self._schedule_ui(self._re_enable_input)
             self._drain_pending_user_message()
@@ -3520,6 +4736,28 @@ class CompanionApp:
         if origin != "terminal_sentinel":
             self._schedule_ui(self._re_enable_input)
         self._schedule_ui(self._update_token_status)
+        continuation_decision: ContinuationDecision | None = None
+        if continuation_owner is not None and continuation is not None:
+            command = (
+                str(response.get("command", "")).strip().lower()
+                if isinstance(response, dict)
+                else ""
+            )
+            if command in AUTOMATIC_READ_ONLY_COMMANDS | {"speak", "idle"}:
+                continuation_decision = continuation.accept_initial_model_response(
+                    continuation_owner[0], continuation_owner[1], response,
+                )
+            else:
+                # Stateful direct-user commands retain the existing dispatcher,
+                # feature gates, previews, and Command Guard confirmations.
+                continuation.cancel_active("delegated_to_direct_dispatch")
+
+        if continuation_decision is not None:
+            self._release_ai_operation(operation_token)
+            self._run_deferred_ai_tick_callbacks()
+            self._handle_continuation_decision(continuation_decision)
+            return
+
         try:
             self._dispatch_response(response, user_message, origin=origin)
         finally:
@@ -3612,6 +4850,7 @@ class CompanionApp:
                 self._pending_user_message = None
                 self._pending_user_origin = "user"
                 self._pending_screen_context = None
+                self._pending_capability_authorization = None
             return
         pending: str | None
         with self._ai_tick_lock:
@@ -3624,13 +4863,19 @@ class CompanionApp:
             pending = self._pending_user_message
             pending_origin = getattr(self, "_pending_user_origin", "user")
             pending_screen_context = getattr(self, "_pending_screen_context", None)
+            pending_capability_authorization = getattr(
+                self, "_pending_capability_authorization", None,
+            )
             self._pending_user_message = None
             self._pending_user_origin = "user"
             self._pending_screen_context = None
+            self._pending_capability_authorization = None
         if pending is not None:
             kwargs = {"user_message": pending, "origin": pending_origin}
             if pending_screen_context is not None:
                 kwargs["explicit_screen_context"] = pending_screen_context
+            if pending_capability_authorization is not None:
+                kwargs["capability_authorization"] = pending_capability_authorization
             self._start_worker(
                 self._ai_tick,
                 name="queued-ai",
@@ -3714,6 +4959,8 @@ class CompanionApp:
         shutdown_requested: bool = False,
         *,
         allow_audio: bool = True,
+        on_done: Callable[[], None] | None = None,
+        reschedule: bool = True,
     ):
         if segments:
             self._speech_active = True
@@ -3741,22 +4988,29 @@ class CompanionApp:
                         pass
                 self._subtitle.speak(
                     segments,
-                    on_done=lambda: self._on_speech_done(shutdown_requested),
+                    on_done=lambda: self._on_speech_done(
+                        shutdown_requested,
+                        on_done=on_done,
+                        reschedule=reschedule,
+                    ),
                     allow_audio=allow_audio,
                 )
 
-            self.root.after(0, _begin_speech)
+            self._schedule_ui(_begin_speech)
         else:
-            self.root.after(0, lambda: self._set_state(self.STATE_IDLE, mood))
-            self._reschedule_screen_poll()
+            self._schedule_ui(lambda: self._set_state(self.STATE_IDLE, mood))
+            if reschedule:
+                self._reschedule_screen_poll()
+            if on_done is not None:
+                self._schedule_ui(on_done)
 
     def _show_op_error(self, message: str) -> None:
         msg = str(message)[:140]
-        self.root.after(0, lambda: self._subtitle.show_message(msg, "#ff4444"))
+        self._schedule_ui(lambda: self._subtitle.show_message(msg, "#ff4444"))
 
     def _show_op_success(self, message: str) -> None:
         msg = str(message)[:140]
-        self.root.after(0, lambda: self._subtitle.show_message(msg, "#44cc66"))
+        self._schedule_ui(lambda: self._subtitle.show_message(msg, "#44cc66"))
 
     def pick_window_sync(
         self,
@@ -3928,6 +5182,211 @@ class CompanionApp:
                 pass
             active_cancellers.discard(_cancel)
 
+    @staticmethod
+    def _continuation_segments(decision: ContinuationDecision) -> list[dict[str, object]]:
+        return [
+            {"text": item.text, "pause": item.pause}
+            for item in decision.messages
+            if item.text
+        ]
+
+    def _handle_continuation_decision(
+        self,
+        decision: ContinuationDecision,
+        *,
+        delivery_epoch: int | None = None,
+    ) -> None:
+        """Advance one state-machine decision without recursion or provider overlap."""
+        if self._closing or decision.kind is DecisionKind.IGNORED:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            queued_epoch = int(getattr(self, "_continuation_ui_epoch", 0))
+            scheduled = self._schedule_ui(
+                lambda current=decision, epoch=queued_epoch: (
+                    self._handle_continuation_decision(
+                        current,
+                        delivery_epoch=epoch,
+                    )
+                ),
+            )
+            if scheduled is None:
+                continuation = getattr(self, "_continuation", None)
+                if continuation is not None:
+                    continuation.cancel_active("ui_schedule_failed")
+            return
+        if (
+            delivery_epoch is not None
+            and delivery_epoch != int(getattr(self, "_continuation_ui_epoch", 0))
+        ):
+            return
+        if not self._continuation_decision_is_owned(decision):
+            return
+        if decision.kind is DecisionKind.STATUS:
+            session_id, generation = decision.session_id, decision.generation
+            allow_audio = True
+            try:
+                allow_audio = bool(self._presence_decision().allow_voice)
+            except Exception:
+                pass
+            self._speak_and_continue(
+                self._continuation_segments(decision),
+                "thinking",
+                False,
+                allow_audio=allow_audio,
+                on_done=lambda: self._finish_continuation_status(
+                    session_id, generation,
+                ),
+                reschedule=False,
+            )
+            return
+        if decision.kind is DecisionKind.RUN_TOOL:
+            self._start_worker(
+                self._run_continuation_tool,
+                name="continuation-tool",
+                args=(decision,),
+            )
+            return
+        if decision.kind is DecisionKind.CALL_PROVIDER:
+            self._start_worker(
+                self._run_continuation_provider,
+                name="continuation-provider",
+                args=(decision,),
+            )
+            return
+        if decision.kind is DecisionKind.FINAL:
+            segments = self._continuation_segments(decision)
+            if segments:
+                self._speak_and_continue(segments, "neutral", False)
+            else:
+                self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
+                self._reschedule_screen_poll()
+            return
+        if decision.kind in {DecisionKind.BLOCKED, DecisionKind.STOPPED}:
+            quiet_reasons = {
+                "cancelled", "escape", "shutdown", "preempted_by_new_user_input",
+                "delegated_to_direct_dispatch",
+            }
+            if decision.reason not in quiet_reasons:
+                message = "I stopped before the next step because it was not safely authorized."
+                if decision.reason in {"deadline_exceeded", "max_steps_reached"}:
+                    message = "I stopped because this task reached its safety limit."
+                self._schedule_ui(
+                    lambda text=message: self._subtitle.show_message(text, "#ff8800"),
+                )
+            self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
+            self._reschedule_screen_poll()
+
+    def _continuation_decision_is_owned(
+        self,
+        decision: ContinuationDecision,
+    ) -> bool:
+        """Reject queued decisions whose session was preempted before Tk ran."""
+        continuation = getattr(self, "_continuation", None)
+        if continuation is None or decision.snapshot is None:
+            return False
+        active = continuation.active_snapshot()
+        if active is not None:
+            return bool(
+                active.session_id == decision.session_id
+                and active.generation == decision.generation
+            )
+        if decision.kind not in {
+            DecisionKind.FINAL,
+            DecisionKind.BLOCKED,
+            DecisionKind.STOPPED,
+        }:
+            return False
+        last = continuation.last_snapshot()
+        return bool(
+            last is not None
+            and last.session_id == decision.session_id
+            and last.generation == decision.generation
+        )
+
+    def _finish_continuation_status(self, session_id: str, generation: int) -> None:
+        continuation = getattr(self, "_continuation", None)
+        if continuation is None or self._closing:
+            return
+        self._handle_continuation_decision(
+            continuation.status_finished(session_id, generation),
+        )
+
+    def _run_continuation_tool(self, decision: ContinuationDecision) -> None:
+        """Run one validated read-only tool for the current continuation owner."""
+        continuation = getattr(self, "_continuation", None)
+        tools = getattr(self, "_continuation_tools", None)
+        snapshot = decision.snapshot
+        request = decision.tool_request
+        if (
+            continuation is None
+            or tools is None
+            or snapshot is None
+            or request is None
+            or self._closing
+        ):
+            if continuation is not None and snapshot is not None:
+                self._handle_continuation_decision(
+                    continuation.provider_failed(
+                        snapshot.session_id,
+                        snapshot.generation,
+                        "read_only_tools_unavailable",
+                    ),
+                )
+            return
+        session_id, generation = snapshot.session_id, snapshot.generation
+
+        def _cancelled() -> bool:
+            return (
+                self._closing
+                or not continuation.is_current(session_id, generation)
+            )
+
+        if _cancelled():
+            return
+        outcome = tools.execute(
+            request.command,
+            request.arguments(),
+            cancel_check=_cancelled,
+        )
+        if _cancelled():
+            return
+        self._handle_continuation_decision(
+            continuation.accept_tool_outcome(session_id, generation, outcome),
+        )
+
+    def _run_continuation_provider(self, decision: ContinuationDecision) -> None:
+        continuation = getattr(self, "_continuation", None)
+        snapshot = decision.snapshot
+        if continuation is None or snapshot is None or self._closing:
+            return
+        session_id, generation = snapshot.session_id, snapshot.generation
+
+        def _current() -> bool:
+            return continuation.is_current(session_id, generation) and not self._closing
+
+        if not _current():
+            return
+        follow = self._ai_query(
+            snapshot.original_user_message,
+            screen_context="",
+            doc_content=decision.provider_context,
+            request_profile="tool_continuation",
+            origin="tool_result",
+            preserve_user_message=True,
+            result_is_current=_current,
+        )
+        if not _current():
+            return
+        if not isinstance(follow, dict):
+            self._handle_continuation_decision(
+                continuation.provider_failed(session_id, generation),
+            )
+            return
+        next_decision = continuation.accept_continuation_model_response(
+            session_id, generation, follow,
+        )
+        self._handle_continuation_decision(next_decision)
+
     def _ai_query(
         self,
         user_message: str,
@@ -3938,15 +5397,23 @@ class CompanionApp:
         reserved_ai_slot: bool = False,
         request_profile: str | None = None,
         origin: RequestOrigin = "tool_result",
+        preserve_user_message: bool = False,
+        result_is_current: Callable[[], bool] | None = None,
     ):
-        if self._cancel_event.is_set() or not self._ai:
+        if (
+            self._cancel_event.is_set()
+            or not self._ai
+            or (result_is_current is not None and not result_is_current())
+        ):
             return None
         owns_ai_slot = not reserved_ai_slot
         operation_token: object | None = None
+        stream_operation_token: object | None = None
         if reserved_ai_slot:
             with self._ai_tick_lock:
                 if not self._ai_busy or not self._ai_busy_noninterruptible:
                     return None
+                stream_operation_token = self._ai_operation_token
         else:
             operation_token = self._reserve_ai_operation(
                 direct=False,
@@ -3955,11 +5422,19 @@ class CompanionApp:
             )
             if operation_token is None:
                 return None
-        self._schedule_ui(lambda: self._set_state(self.STATE_THINKING))
+            stream_operation_token = operation_token
+        self._schedule_owned_ai_ui(
+            stream_operation_token,
+            lambda: self._set_state(self.STATE_THINKING),
+            result_is_current=result_is_current,
+        )
 
         def _on_token(raw):
-            if not self._cancel_event.is_set():
-                self._schedule_ui(lambda r=raw: self._subtitle.show_thinking(r))
+            self._schedule_owned_ai_ui(
+                stream_operation_token,
+                lambda r=raw: self._subtitle.show_thinking(r),
+                result_is_current=result_is_current,
+            )
 
         try:
             selected_screen_context = (
@@ -3973,11 +5448,13 @@ class CompanionApp:
                     self._screen.redact_for_external_context if self._screen else None
                 ),
             ).text
-            provider_message = render_request_message(
-                normalize_request_origin(origin), user_message,
+            provider_message = (
+                user_message
+                if preserve_user_message
+                else render_request_message(normalize_request_origin(origin), user_message)
             )
             if _SETTINGS.enable_streaming:
-                return self._ai.query_streaming(
+                result = self._ai.query_streaming(
                     screen_context=selected_screen_context,
                     user_message=provider_message,
                     doc_content=doc_content,
@@ -3986,14 +5463,18 @@ class CompanionApp:
                     on_token=_on_token,
                     request_profile=request_profile,
                 )
-            return self._ai.query(
-                screen_context=selected_screen_context,
-                user_message=provider_message,
-                doc_content=doc_content,
-                memory_search_context=memory_search_context,
-                suppress_search_memory=suppress_search_memory,
-                request_profile=request_profile,
-            )
+            else:
+                result = self._ai.query(
+                    screen_context=selected_screen_context,
+                    user_message=provider_message,
+                    doc_content=doc_content,
+                    memory_search_context=memory_search_context,
+                    suppress_search_memory=suppress_search_memory,
+                    request_profile=request_profile,
+                )
+            if result_is_current is not None and not result_is_current():
+                return None
+            return result
         except Exception as exc:
             logger.error("_ai_query failed: %s", type(exc).__name__)
             return None
@@ -4042,8 +5523,10 @@ class CompanionApp:
                 )
 
             self._speech_active = True
-            self.root.after(12, lambda: self._play_gif(static_name))
-            self.root.after(0, _begin_short_speech)
+            self._schedule_ui(
+                lambda: self.root.after(12, lambda: self._play_gif(static_name)),
+            )
+            self._schedule_ui(_begin_short_speech)
             return True
         except Exception:
             return False
@@ -4058,14 +5541,24 @@ class CompanionApp:
         from agetha.commands.command_handlers import dispatch
         dispatch(self, response, user_message, origin=origin)
 
-    def _on_speech_done(self, shutdown: bool = False):
+    def _on_speech_done(
+        self,
+        shutdown: bool = False,
+        *,
+        on_done: Callable[[], None] | None = None,
+        reschedule: bool = True,
+    ):
         self._speech_active = False
         # _persistent_mood already set — _set_state(STATE_IDLE) picks it up
-        self.root.after(0, lambda: self._set_state(self.STATE_IDLE))
+        self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
         if shutdown:
             self.root.after(50, self._shutdown)
         else:
-            self.root.after(0, self._reschedule_screen_poll)
+            if reschedule:
+                self._schedule_ui(self._reschedule_screen_poll)
+            if on_done is not None and not self._closing:
+                self._schedule_ui(on_done)
+            self._drain_pending_user_message()
 
     def _restore_from_tray(self) -> None:
         if self._closing:
@@ -4089,6 +5582,10 @@ class CompanionApp:
     def _disable_input_for_close(self) -> None:
         self._closing = True
         self._cancel_event.set()
+        bootstrap_cancel = getattr(self, "_computer_use_start_cancel", None)
+        if bootstrap_cancel is not None:
+            bootstrap_cancel.set()
+        self._stop_computer_use_escape_hotkey()
         typing_cancel = getattr(self, "_typing_cancel_event", None)
         if typing_cancel is not None:
             typing_cancel.set()
@@ -4134,10 +5631,37 @@ class CompanionApp:
         self._shutdown_complete = True
         self._closing = True
         self._cancel_event.set()
+        bootstrap_cancel = getattr(self, "_computer_use_start_cancel", None)
+        if bootstrap_cancel is not None:
+            bootstrap_cancel.set()
+        self._stop_computer_use_escape_hotkey()
+        continuation = getattr(self, "_continuation", None)
+        if continuation is not None:
+            continuation.shutdown()
+        computer_use = getattr(self, "_computer_use", None)
+        if computer_use is not None:
+            try:
+                computer_use.shutdown()
+            except Exception:
+                pass
+        status_window = getattr(self, "_computer_use_status_window", None)
+        if status_window is not None:
+            try:
+                status_window.close()
+            except Exception:
+                pass
+            self._computer_use_status_window = None
         typing_cancel = getattr(self, "_typing_cancel_event", None)
         if typing_cancel is not None:
             typing_cancel.set()
 
+        dashboard = getattr(self, "_dashboard", None)
+        self._dashboard = None
+        if dashboard is not None:
+            try:
+                dashboard.close()
+            except Exception as exc:
+                logger.debug("Dashboard shutdown skipped: %s", type(exc).__name__)
         senses_panel = getattr(self, "_senses_panel", None)
         if senses_panel is not None:
             try:
@@ -4145,6 +5669,484 @@ class CompanionApp:
             except Exception as exc:
                 logger.debug("Senses panel shutdown skipped: %s", type(exc).__name__)
             self._senses_panel = None
+        consent_ui = getattr(self, "_full_mode_consent_ui", None)
+        if consent_ui is not None:
+            try:
+                consent_ui.close()
+            except Exception:
+                pass
+            self._full_mode_consent_ui = None
+        consent_flow = getattr(self, "_capability_consent", None)
+        if consent_flow is not None:
+            consent_flow.shutdown()
+        self._graceful_shutdown_continue()
+
+    def _start_full_mode_services(self) -> None:
+        """Construct only configured Full-only owners for the current generation."""
+        if self._closing:
+            return
+        settings = get_settings()
+        if not self._capabilities.is_allowed(Capability.ADVANCED_UI):
+            return
+        if (
+            self._screen is None
+            and self._capabilities.is_allowed(Capability.BACKGROUND_SENSING)
+            and settings.enable_screen_reader
+        ):
+            authorization = self._capabilities.authorize(
+                Capability.BACKGROUND_SENSING,
+            )
+            try:
+                candidate = ScreenReader(own_tk_root=self.root)
+                if (
+                    authorization is None
+                    or not self._capabilities.is_authorized(authorization)
+                ):
+                    candidate.stop()
+                    return
+                self._screen = candidate
+                # ScreenReader construction is platform/config work only.  Any
+                # Tk-backed handle lookup remains on this owner-thread method.
+                self._sync_screen_window_state()
+                self._screen.cache_own_window_handle()
+            except Exception as exc:
+                self._screen = None
+                logger.warning(
+                    "Screen reader initialization failed safely: %s",
+                    type(exc).__name__,
+                )
+        if (
+            self._process_awareness is None
+            and self._capabilities.is_allowed(Capability.PROCESS_AWARENESS)
+        ):
+            try:
+                from agetha.platform.process_awareness import ProcessAwareness
+                self._process_awareness = ProcessAwareness(
+                    mode=settings.process_context_mode,
+                    max_visible_apps=settings.process_max_visible_apps,
+                    excluded_apps=settings.process_context_excluded_apps,
+                    publisher=getattr(self, "_publish_process_transition", None),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Process awareness initialization failed safely: %s",
+                    type(exc).__name__,
+                )
+        continuation_tools = getattr(self, "_continuation_tools", None)
+        if continuation_tools is not None:
+            try:
+                continuation_tools.set_process_awareness(self._process_awareness)
+            except (AttributeError, TypeError):
+                pass
+        if (
+            self._terminal_sentinel is None
+            and self._capabilities.is_allowed(Capability.TERMINAL_SENTINEL)
+        ):
+            try:
+                from agetha.features.terminal_sentinel import TerminalSentinel
+                self._terminal_sentinel = TerminalSentinel.from_settings(settings)
+            except Exception as exc:
+                logger.warning(
+                    "Terminal Sentinel initialization failed safely: %s",
+                    type(exc).__name__,
+                )
+        if self._capabilities.is_allowed(Capability.COMPUTER_USE):
+            self._initialize_computer_use_runtime()
+        if self._capabilities.is_allowed(Capability.BACKGROUND_SENSING):
+            self._schedule_screen_poll()
+
+    def _stop_full_mode_services(self) -> None:
+        """Dispose terminal Full-only owners after the outer profile gate flips."""
+        self._invalidate_continuation_ui_delivery()
+        self._stop_computer_use("compact_mode")
+        typing_cancel = getattr(self, "_typing_cancel_event", None)
+        if typing_cancel is not None:
+            typing_cancel.set()
+        computer_use = getattr(self, "_computer_use", None)
+        self._computer_use = None
+        if computer_use is not None:
+            try:
+                computer_use.shutdown()
+            except Exception:
+                pass
+        process = getattr(self, "_process_awareness", None)
+        self._process_awareness = None
+        if process is not None:
+            try:
+                process.shutdown()
+            except Exception:
+                pass
+        sentinel = getattr(self, "_terminal_sentinel", None)
+        self._terminal_sentinel = None
+        if sentinel is not None:
+            try:
+                sentinel.stop()
+            except Exception:
+                pass
+        screen = getattr(self, "_screen", None)
+        self._screen = None
+        if screen is not None:
+            try:
+                screen.stop()
+            except Exception:
+                pass
+        continuation_tools = getattr(self, "_continuation_tools", None)
+        if continuation_tools is not None:
+            try:
+                continuation_tools.set_process_awareness(None)
+            except (AttributeError, TypeError):
+                pass
+        senses = getattr(self, "_senses_panel", None)
+        self._senses_panel = None
+        if senses is not None:
+            try:
+                senses.close()
+            except Exception:
+                pass
+        observations = getattr(self, "_observation_bus", None)
+        if observations is not None:
+            try:
+                observations.clear()
+            except Exception:
+                pass
+        poll_job = getattr(self, "_poll_job", None)
+        self._poll_job = None
+        if poll_job is not None:
+            try:
+                self.root.after_cancel(poll_job)
+            except Exception:
+                pass
+        for popup in tuple(getattr(self, "_sentinel_popups", ())):
+            try:
+                popup.close()
+            except Exception:
+                pass
+        getattr(self, "_sentinel_popups", set()).clear()
+
+    def _activate_compact_mode(self) -> bool:
+        """Fail closed first, then stop owners and persist the safe profile."""
+        from agetha.app_config import patch_config_key
+
+        generation = self._capabilities.begin_compact_transition()
+        self._capability_transition_generation = None
+        self._capability_consent.downgrade_to_compact()
+        consent_ui = getattr(self, "_full_mode_consent_ui", None)
+        if consent_ui is not None:
+            consent_ui.cancel_all()
+        self._stop_full_mode_services()
+        persisted = bool(patch_config_key("COMPACT_MODE", "yes"))
+        settings = get_settings(reload=True) if persisted else get_settings()
+        compact_policy = CapabilityPolicy.from_settings(settings)
+        if compact_policy.profile.value != "compact":
+            settings = type(settings)(
+                {**dict(getattr(settings, "raw", {})), "COMPACT_MODE": "yes"}
+            )
+            compact_policy = CapabilityPolicy.from_settings(settings)
+        committed = self._capabilities.commit_compact(compact_policy, generation)
+        if committed:
+            self._refresh_dashboard_after_profile_commit(settings)
+        return persisted
+
+    def _request_compact_mode(self, compact_on: bool) -> None:
+        """Dashboard callback: safe downgrade or begin deliberate Full consent."""
+        if self._closing:
+            return
+        if bool(compact_on):
+            self._activate_compact_mode()
+            return
+        self._begin_full_mode_consent()
+
+    def _ensure_full_mode_consent_ui(self):
+        if self._full_mode_consent_ui is None:
+            from agetha.ui.full_mode_consent import FullModeConsentUI
+            self._full_mode_consent_ui = FullModeConsentUI(
+                self.root,
+                reduced_motion=get_settings().reduced_motion,
+            )
+        return self._full_mode_consent_ui
+
+    def _begin_full_mode_consent(self) -> None:
+        if not self._capabilities.snapshot().profile.value == "compact":
+            return
+        snapshot = self._capability_consent.begin_enable()
+        if snapshot.state is not ConsentState.FIRST_CONFIRMATION:
+            return
+        transition = self._capabilities.begin_full_transition()
+        self._capability_transition_generation = transition
+        generation = snapshot.generation
+        ui = self._ensure_full_mode_consent_ui()
+        ui.show_first_confirmation(
+            lambda approved: self._on_first_full_mode_decision(generation, approved),
+        )
+
+    def _on_first_full_mode_decision(self, generation: int, approved: bool) -> None:
+        if not self._capability_consent.is_current(
+            generation,
+            ConsentState.FIRST_CONFIRMATION,
+        ):
+            return
+        if not approved:
+            self._cancel_full_mode_consent(generation)
+            return
+        snapshot = self._capability_consent.confirm_first(generation)
+        if (
+            snapshot.state is not ConsentState.CONSENT_DEMO
+            or not self._capability_consent.is_current(
+                generation,
+                ConsentState.CONSENT_DEMO,
+            )
+        ):
+            return
+        self._start_worker(
+            lambda: self._run_full_mode_consent_demo(generation),
+            name="full-mode-consent-demo",
+        )
+
+    def _cancel_full_mode_consent(self, generation: int | None = None) -> None:
+        current = self._capability_consent.snapshot
+        if generation is not None and int(generation) != current.generation:
+            return
+        cancelled = self._capability_consent.cancel(generation)
+        if cancelled.state is not ConsentState.COMPACT:
+            return
+        compact = CapabilityPolicy.from_settings(get_settings())
+        self._capabilities.cancel_transition(compact)
+        self._capability_transition_generation = None
+        ui = getattr(self, "_full_mode_consent_ui", None)
+        if ui is not None:
+            ui.cancel_all()
+
+    def _run_full_mode_consent_demo(self, generation: int) -> None:
+        """Run only the fixed Notepad bootstrap; never the Computer Use planner."""
+        result = self._build_full_mode_consent_demo(generation).run_full_mode_consent_demo()
+
+        def finish() -> None:
+            if not self._capability_consent.is_current(
+                generation, ConsentState.CONSENT_DEMO,
+            ):
+                return
+            ui = self._ensure_full_mode_consent_ui()
+            if result.typed:
+                self._show_final_full_mode_confirmation(generation)
+            else:
+                ui.show_demo_fallback(
+                    result.safe_reason,
+                    lambda proceed: (
+                        self._show_final_full_mode_confirmation(generation)
+                        if proceed else self._cancel_full_mode_consent(generation)
+                    ),
+                )
+
+        self._schedule_ui(finish)
+
+    def _build_full_mode_consent_demo(self, generation: int):
+        """Compose the fixed Win32 Notepad demo without a general launcher API."""
+        from agetha.platform.full_mode_consent import (
+            ConsentDemoProcess,
+            ConsentDemoTarget,
+            FixedConsentTyper,
+            FullModeConsentDemo,
+            NOTEPAD_COMMAND,
+        )
+        from agetha.platform.process_awareness import WindowsProcessBackend
+        from agetha.platform.unicode_typing import (
+            TypingTarget,
+            default_dependencies,
+            type_unicode_text,
+        )
+
+        backend = WindowsProcessBackend()
+
+        def trusted_notepad_path() -> Path | None:
+            if not IS_WINDOWS or ctypes is None:
+                return None
+            try:
+                size = 32768
+                buffer = ctypes.create_unicode_buffer(size)
+                copied = int(ctypes.windll.kernel32.GetSystemDirectoryW(buffer, size))
+                if copied <= 0 or copied >= size:
+                    return None
+                candidate = Path(buffer.value) / "notepad.exe"
+                return candidate if candidate.is_file() else None
+            except Exception:
+                return None
+
+        def cancelled() -> bool:
+            return (
+                self._closing
+                or not self._capability_consent.is_current(
+                    generation, ConsentState.CONSENT_DEMO,
+                )
+            )
+
+        def launch(command: tuple[str, ...]):
+            if not IS_WINDOWS or command != NOTEPAD_COMMAND or cancelled():
+                return None
+            executable = trusted_notepad_path()
+            if executable is None:
+                return None
+            try:
+                process = subprocess.Popen(
+                    [str(executable)],
+                    shell=False,
+                )
+                identity = backend.identity_for_pid(int(process.pid))
+            except Exception:
+                return None
+            if (
+                identity is None
+                or identity.name.casefold() != "notepad.exe"
+                or identity.created_at is None
+            ):
+                return None
+            return ConsentDemoProcess(
+                identity.pid, identity.name, identity.created_at,
+            )
+
+        def convert(application) -> ConsentDemoTarget | None:
+            identity = getattr(application, "identity", None)
+            hwnd = getattr(application, "window_handle", None)
+            bounds = getattr(application, "bounds", None)
+            if identity is None or hwnd is None or bounds is None:
+                return None
+            try:
+                user32, _kernel32 = backend._native()
+                foreground = int(user32.GetForegroundWindow())
+                valid = bool(user32.IsWindow(int(hwnd)))
+            except Exception:
+                return None
+            return ConsentDemoTarget(
+                pid=identity.pid,
+                process_name=identity.name,
+                created_at=identity.created_at,
+                hwnd=int(hwnd),
+                bounds=tuple(bounds),
+                foreground_hwnd=foreground,
+                process_alive=backend.process_is_current(identity),
+                window_valid=valid,
+            )
+
+        def find_target(expected: ConsentDemoProcess, timeout: float, abort):
+            deadline = time.monotonic() + max(0.0, min(float(timeout), 10.0))
+            while time.monotonic() < deadline and not abort():
+                for application in backend.visible_applications():
+                    identity = application.identity
+                    if (
+                        identity.pid == expected.pid
+                        and identity.name.casefold() == "notepad.exe"
+                        and identity.created_at == expected.created_at
+                    ):
+                        target = convert(application)
+                        if target is not None and target.foreground_hwnd == target.hwnd:
+                            return target
+                time.sleep(0.05)
+            return None
+
+        def validate(expected: ConsentDemoTarget):
+            if cancelled():
+                return None
+            for application in backend.visible_applications():
+                if application.window_handle == expected.hwnd:
+                    return convert(application)
+            return None
+
+        def send_static(target: ConsentDemoTarget, text: str) -> bool:
+            live = validate(target)
+            if live != target or cancelled():
+                return False
+            dependencies = default_dependencies()
+            dependencies.cancel_requested = cancelled
+            dependencies.shutdown_requested = lambda: bool(self._closing)
+            dependencies.effect_authorized = lambda: validate(target) == target
+            typing_target = TypingTarget(
+                stable_id=f"win:{target.hwnd}:{target.pid}",
+                process_name=target.process_name,
+                window_handle=target.hwnd,
+            )
+            result = type_unicode_text(
+                text,
+                mode="unicode",
+                speed="instant",
+                restore_clipboard=False,
+                preview_approved=True,
+                intended_target=typing_target,
+                dependencies=dependencies,
+                preview_threshold=100_000,
+            )
+            return bool(result.success and result.characters_sent == len(text))
+
+        fixed_typer = FixedConsentTyper(
+            send_static=send_static,
+            authorized=lambda target: validate(target) == target and not cancelled(),
+        )
+        return FullModeConsentDemo(
+            launcher=launch,
+            target_wait=find_target,
+            validator=validate,
+            type_static=fixed_typer,
+            cancel_requested=cancelled,
+            shutdown_requested=lambda: bool(self._closing),
+        )
+
+    def _show_final_full_mode_confirmation(self, generation: int) -> None:
+        if not self._capability_consent.is_current(
+            generation,
+            ConsentState.CONSENT_DEMO,
+        ):
+            return
+        snapshot = self._capability_consent.finish_demo(generation)
+        if (
+            snapshot.state is not ConsentState.FINAL_CONFIRMATION
+            or not self._capability_consent.is_current(
+                generation,
+                ConsentState.FINAL_CONFIRMATION,
+            )
+        ):
+            return
+        self._ensure_full_mode_consent_ui().show_final_confirmation(
+            lambda approved: self._on_final_full_mode_decision(generation, approved),
+        )
+
+    def _on_final_full_mode_decision(self, generation: int, approved: bool) -> None:
+        if not self._capability_consent.is_current(
+            generation,
+            ConsentState.FINAL_CONFIRMATION,
+        ):
+            return
+        if not approved:
+            self._cancel_full_mode_consent(generation)
+            return
+        transition = self._capability_transition_generation
+        capability_snapshot = self._capabilities.snapshot()
+        if (
+            transition is None
+            or transition != capability_snapshot.generation
+            or not capability_snapshot.transitioning
+            or capability_snapshot.profile.value != "compact"
+        ):
+            return
+        from agetha.app_config import patch_config_key
+        if not patch_config_key("COMPACT_MODE", "no"):
+            self._cancel_full_mode_consent(generation)
+            self._show_op_error("Full Mode could not be saved; Compact Mode remains active.")
+            return
+        settings = get_settings(reload=True)
+        policy = CapabilityPolicy.from_settings(settings)
+        snapshot = self._capability_consent.confirm_final(generation)
+        if snapshot.state is not ConsentState.FULL:
+            self._capabilities.cancel_transition(
+                CapabilityPolicy.from_settings(get_settings()),
+            )
+            return
+        if not self._capabilities.commit_full(policy, transition):
+            self._activate_compact_mode()
+            return
+        self._capability_transition_generation = None
+        self._start_full_mode_services()
+        self._refresh_dashboard_after_profile_commit(settings)
+
+    def _graceful_shutdown_continue(self) -> None:
+        """Finish shutdown after consent and profile owners are invalidated."""
         for popup in tuple(getattr(self, "_sentinel_popups", ())):
             try:
                 popup.close()
@@ -4154,6 +6156,7 @@ class CompanionApp:
         for resource, method in (
             (getattr(self, "_terminal_sentinel", None), "stop"),
             (getattr(self, "_presence", None), "shutdown"),
+            (getattr(self, "_process_awareness", None), "shutdown"),
             (getattr(self, "_observation_bus", None), "shutdown"),
         ):
             if resource is not None:
@@ -4183,6 +6186,7 @@ class CompanionApp:
         for attr in (
             "_poll_job", "_placeholder_refresh_job", "_restore_job", "_wake_job",
             "_motion_request_job", "_loaf_job", "_sleep_job",
+            "_ui_queue_poll_job",
         ):
             job_id = getattr(self, attr, None)
             if job_id is not None:
@@ -4191,6 +6195,7 @@ class CompanionApp:
                 except Exception:
                     pass
                 setattr(self, attr, None)
+        self._discard_pending_ui_callbacks()
         self._cancel_all_after_jobs()
 
         try:

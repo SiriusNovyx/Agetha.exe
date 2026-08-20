@@ -47,6 +47,8 @@ FAST_MODE_LOCK_RETRY_SECONDS = 0.075
 FAST_MODE_LOCK_TIMEOUT_SECONDS = 4.0
 
 FAST_MODE_FORBIDDEN_KEYS = frozenset({
+    # Capability-profile consent is independent of performance tuning.
+    "COMPACT_MODE",
     # Provider selection, models, credentials, and remote endpoints.
     "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "GROQ_MODEL",
     "OPENROUTER_MODEL", "LOCAL_AI_MODEL", "UNLIMITED_OCR_SERVER_URL",

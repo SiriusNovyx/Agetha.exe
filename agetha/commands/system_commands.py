@@ -323,11 +323,23 @@ def restart_system(delay: int = 60) -> str:
     return "[restart not supported]"
 
 
-def set_reminder(seconds: int, reminder_text: str, callback) -> str:
+def set_reminder(
+    seconds: int,
+    reminder_text: str,
+    callback,
+    *,
+    cancel_check=None,
+) -> str:
     seconds = max(1, int(seconds))
     text = (reminder_text or "Reminder").strip()
 
     def _fire():
+        try:
+            if cancel_check is not None and cancel_check():
+                return
+        except Exception as exc:
+            logger.warning("Reminder authorization check failed closed: %s", type(exc).__name__)
+            return
         try:
             callback(text)
         except Exception as exc:

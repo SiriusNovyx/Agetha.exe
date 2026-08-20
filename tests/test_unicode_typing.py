@@ -354,6 +354,23 @@ class TestUnicodeTypingEngine(unittest.TestCase):
         self.assertEqual(fake.clipboard_writes, [])
         self.assertEqual(fake.paste_calls, 0)
 
+    def test_external_effect_authority_failure_blocks_native_and_clipboard_input(self) -> None:
+        for mode, native in (("unicode", True), ("paste", False)):
+            with self.subTest(mode=mode):
+                fake = FakePlatform()
+                dependencies = fake.dependencies(native=native)
+                dependencies.effect_authorized = lambda: False
+                result = ut.UnicodeTypingEngine(
+                    dependencies,
+                    clipboard_settle_seconds=0.0,
+                ).type_text("private", mode=mode, intended_target=TARGET)
+
+                self.assertFalse(result.success)
+                self.assertEqual(fake.activation_calls, [])
+                self.assertEqual(fake.native_calls, [])
+                self.assertEqual(fake.clipboard_writes, [])
+                self.assertEqual(fake.paste_calls, 0)
+
     def test_focus_change_after_clipboard_write_restores_without_pasting(self) -> None:
         fake = FakePlatform()
         fake.target_sequence = [TARGET, TARGET, OTHER_TARGET]

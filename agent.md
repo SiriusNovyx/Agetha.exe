@@ -60,11 +60,17 @@ Agetha_Mod/
 |---------|----------------|
 | Avatar / GIF moods | `main.py` (`EXTRA_GIFS`, `TALKING_MOOD_GIFS`, `_apply_state`) |
 | Prompt / moods / commands | `agetha/core/ai_engine.py` |
-| Thai character voice | `agetha/core/ai_engine.py`, `agetha/core/memory_system.py` defaults |
+| Language-neutral multilingual voice | `agetha/core/ai_engine.py`, `agetha/core/memory_system.py` defaults |
+| Compact/Full capability policy | `agetha/core/capabilities.py`, `agetha/core/capability_consent.py`, `main.py` |
+| Fixed Full-consent presentation | `agetha/platform/full_mode_consent.py`, consent UI owned by `main.py` |
+| Source/frozen self identity | `agetha/platform/self_identity.py`, target checks in platform/Computer Use paths |
 | Safety confirmations | `agetha/commands/command_guard.py` |
 | Command routing | `agetha/commands/command_handlers.py` |
 | Exact Unicode typing | `agetha/platform/unicode_typing.py`, `agetha/ui/typing_preview.py` |
 | Local observation/presence policy | `agetha/core/observation_bus.py`, `agetha/core/presence_etiquette.py` |
+| Bounded multi-message turns | `agetha/core/continuation.py`, `agetha/core/read_only_tools.py` |
+| Foreground/visible process identity | `agetha/platform/process_awareness.py` |
+| Computer Use Lite | `agetha/computer_use/`, `agetha/ui/computer_use_status.py` |
 | Confirmed terminal-error notices | `agetha/features/terminal_sentinel.py`, `agetha/ui/terminal_sentinel_popup.py` |
 | Capability display | `agetha/ui/senses_panel.py` |
 | Host heat / stats | `agetha/core/companion_stats.py` |
@@ -161,6 +167,28 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 8. `type_text` stays Caution-gated and obeys both
    `ENABLE_COMMAND_EXECUTION` and `ENABLE_UNICODE_TYPING`; it never adds Enter,
    Return, or Tab.
+9. Continuation starts only from a direct `user` origin. `tool_result` is
+   untrusted and may choose only the explicit bounded read-only allowlist; it
+   cannot dispatch mutations or start Computer Use.
+10. Computer Use stays disabled by default and direct-user-only. Every effect
+    requires PID + basename + creation-time + HWND + bounds/session validation;
+    planner output never reaches input directly or overrides Command Guard.
+11. Exact Computer Use payloads remain local references. Never include typed
+    values in planner/recovery context, status, observations, history, or logs.
+12. Compact Mode is the default outer capability gate. Advanced process/screen
+    observation, Terminal Sentinel, Computer Use/planner/recovery, OS typing and
+    application control must not start or perform effects in Compact even when
+    their individual flags are enabled.
+13. Full Mode requires both confirmations. The Notepad presentation does not
+    authorize Computer Use, makes zero provider calls, and can launch only fixed
+    Notepad and type only the compiled warning after strict target validation.
+14. Full remains guarded. Switching back to Compact invalidates effect/session
+    generations before stopping Full services, so late results cannot type,
+    click, or control an application.
+15. Source and frozen builds share the same boundaries. Do not use current
+    working directory for owned paths, write mutable state under `_MEIPASS`, run
+    Python helpers through frozen `sys.executable`, or assume Agetha is always
+    `python.exe`; keep exact `main.exe`/`Agetha.exe` self-target refusal.
 
 ---
 
@@ -176,12 +204,28 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 - Emotion engine (v5): `agetha/core/emotion_engine.py` + `emotional_history.py` — tone only; denials are mild; memories untrusted in prompts  
 - Transparent Windows (v5): `autostart.py` (Startup shortcut only), `win_integration.py`, `status_providers.py`; tray is optional scaffold (`tray_scaffold.py`)  
 - Medic: `medic_helper.py realism` → `REALISM_OK` (covers v4+v5 APIs)
-- Natural Thai prompt contract: casual/neutral by default (`สวัสดี`), without a
-  global particle-stripping filter. Exact user text such as `ขอบคุณครับ` is
-  preserved in command payloads, quotations, code, documents, and formal text.
+- Language-neutral multilingual prompt contract: mirror the user's current
+  language and approximate register without inventing translation,
+  transliteration, gender markers, honorifics, cultural particles, formality, or
+  slang. Never add a global word/suffix filter. Exact user text—including
+  multilingual and mixed-script examples—remains unchanged in command payloads,
+  quotations, code, and documents.
 - Polyglot Presence: exact Unicode entry, typed local observations, local
   Presence Etiquette, opt-in Terminal Sentinel, and the Senses Control Panel.
   See [`docs/testing/polyglot_presence_manual.md`](docs/testing/polyglot_presence_manual.md).
+- Bounded Continuation and Process Awareness: explicit multi-message
+  status/read-only/final turns plus privacy-minimized foreground/visible-app
+  context. See [`docs/continuation_engine.md`](docs/continuation_engine.md).
+- Computer Use Lite: opt-in deterministic observe/plan/policy/execute/verify,
+  strict window/process target locks, local Unicode payload references, bounded
+  cheap-planner/primary recovery, and immediate STOP/Escape. Accessibility is
+  honestly unavailable and OCR is the MVP; Xorg is degraded and Wayland
+  autonomous use is unavailable. See
+  [`docs/computer_use.md`](docs/computer_use.md).
+- Compact/Full profiles: Compact is default and enforces a central advanced-
+  capability deny boundary; Full requires deliberate consent and still obeys
+  all feature gates and safety controls. See
+  [`docs/compact_full_mode.md`](docs/compact_full_mode.md).
 
 ---
 
@@ -217,6 +261,11 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 | `QUIET_HOURS_START` / `QUIET_HOURS_END` | empty | Optional `HH:MM` window |
 | `ENABLE_TERMINAL_SENTINEL` | no | Opt-in; empty app/title allowlists watch nothing |
 | `ENABLE_SENSES_PANEL` | yes | Dashboard capability view; no paid probe on open |
+| `ENABLE_AGENT_CONTINUATION` | yes | Bounded direct-user read-only continuation; tool results never gain authority |
+| `PROCESS_CONTEXT_MODE` | visible_apps | `off|foreground_only|visible_apps|all_processes`; provider view remains minimized |
+| `ENABLE_COMPUTER_USE` | no | Explicit direct-user opt-in; do not change this safe default |
+| `COMPUTER_USE_ALLOWED_APPS` | empty | Session target allowlist, not blanket executable authority |
+| `COMPUTER_USE_PLANNER_PROVIDER` | inherit | Reuse configured providers/secrets; Fast Mode must not change it |
 
 ---
 

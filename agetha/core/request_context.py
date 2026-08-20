@@ -38,6 +38,8 @@ def render_request_message(origin: RequestOrigin, text: str) -> str:
 
 
 def request_profile_for_origin(origin: RequestOrigin) -> str:
+    if origin == "tool_result":
+        return "tool_continuation"
     if origin == "ambient":
         return "fast_ambient"
     if origin in INTERNAL_ORIGINS:

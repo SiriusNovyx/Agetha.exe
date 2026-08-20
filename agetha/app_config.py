@@ -106,6 +106,12 @@ DEFAULT_CONFIG = """# ==========================================================
 # =============================================================================
 
 
+# ── Capability profile ──────────────────────────────────────────────────────
+# yes = classic/upstream-compatible Compact presentation and safe core features.
+# no = Full profile; advanced features still obey every individual feature gate.
+COMPACT_MODE = yes
+
+
 # ── AI Backend ───────────────────────────────────────────────────────────────
 # Priority: local Ollama > Groq / OpenRouter (cloud).
 # With both Groq + OpenRouter enabled, Agetha asks which to use at startup
@@ -331,6 +337,32 @@ TERMINAL_SENTINEL_COOLDOWN_SEC = 120
 
 # Real capability/status panel; opening it performs no paid provider request.
 ENABLE_SENSES_PANEL = yes
+
+# Bounded, centrally owned read-only tool continuation. Tool results never gain
+# user authority, and a new direct user request cancels the prior session.
+ENABLE_AGENT_CONTINUATION = yes
+AGENT_MAX_STEPS = 6
+AGENT_MAX_DURATION_SEC = 120
+AGENT_MAX_TOOL_RESULT_CHARS = 8000
+
+# Local application awareness. Provider context remains minimized even when
+# local inspection is configured more broadly.
+ENABLE_PROCESS_AWARENESS = yes
+PROCESS_CONTEXT_MODE = visible_apps
+PROCESS_MAX_VISIBLE_APPS = 20
+PROCESS_CONTEXT_EXCLUDED_APPS =
+
+# Deterministic bounded desktop automation. This is intentionally opt-in and
+# may only be started by an explicit direct-user request.
+ENABLE_COMPUTER_USE = no
+COMPUTER_USE_MAX_STEPS = 30
+COMPUTER_USE_TIMEOUT_SEC = 120
+COMPUTER_USE_PLANNER_PROVIDER = inherit
+COMPUTER_USE_PLANNER_MODEL =
+COMPUTER_USE_PLANNER_CONFIDENCE_MIN = 0.65
+COMPUTER_USE_RECOVERY_AFTER_FAILURES = 2
+COMPUTER_USE_MAX_RECOVERY_CALLS = 2
+COMPUTER_USE_ALLOWED_APPS =
 
 
 # ── Emotion engine (v5.0.0) ──────────────────────────────────────────────────
@@ -645,7 +677,7 @@ FAST_MODE_OVERRIDES: dict[str, str] = {
 }
 
 _BOOL_KEYS = frozenset({
-    "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
+    "COMPACT_MODE", "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
     "ENABLE_VOICE", "USE_LOCAL_STT", "ENABLE_FILE_DRAG_DROP",
     "ENABLE_STREAMING", "ENABLE_AMBIENT_POLLS",
     "ENABLE_DATETIME_CONTEXT", "DATETIME_INCLUDE_SECONDS", "DATETIME_INCLUDE_TIMEZONE",
@@ -664,6 +696,8 @@ _BOOL_KEYS = frozenset({
     "ENABLE_CIRCADIAN_RHYTHM", "ENABLE_DREAMS", "ENABLE_TASKS",
     "ENABLE_PRESENCE_ETIQUETTE", "PRESENCE_FULLSCREEN_SILENT",
     "ENABLE_TERMINAL_SENTINEL", "ENABLE_SENSES_PANEL",
+    "ENABLE_AGENT_CONTINUATION", "ENABLE_PROCESS_AWARENESS",
+    "ENABLE_COMPUTER_USE",
     "ENABLE_EMOTION_ENGINE", "ENABLE_AUTOSTART_CONTROL", "ENABLE_THEME_CONTROL",
     "ENABLE_STATUS_PROVIDERS", "ENABLE_TRAY", "TRAY_BACKGROUND_CLOSE",
     "ENABLE_CRT_CLOSE_ANIMATION", "REDUCED_MOTION", "ENABLE_MOOD_GLOW",
@@ -697,6 +731,10 @@ _INT_KEYS = frozenset({
     "UNICODE_TYPING_DELAY_MS", "UNICODE_TYPING_PREVIEW_THRESHOLD",
     "PRESENCE_DISMISS_COOLDOWN_SEC", "PRESENCE_RAPID_TYPING_COOLDOWN_SEC",
     "TERMINAL_SENTINEL_COOLDOWN_SEC",
+    "AGENT_MAX_STEPS", "AGENT_MAX_DURATION_SEC", "AGENT_MAX_TOOL_RESULT_CHARS",
+    "PROCESS_MAX_VISIBLE_APPS", "COMPUTER_USE_MAX_STEPS",
+    "COMPUTER_USE_TIMEOUT_SEC", "COMPUTER_USE_RECOVERY_AFTER_FAILURES",
+    "COMPUTER_USE_MAX_RECOVERY_CALLS",
 })
 
 _FLOAT_KEYS = frozenset({
@@ -707,11 +745,14 @@ _FLOAT_KEYS = frozenset({
     "OCR_MIN_WORD_CONFIDENCE", "OCR_MIN_PATTERN_CONFIDENCE",
     "TTS_VOLUME",
     "EMOTION_DECAY_PER_HOUR",
+    "COMPUTER_USE_PLANNER_CONFIDENCE_MIN",
 })
 
 _VOICE_OUTPUT_MODES = frozenset({"bleeps_only", "tts_only", "both"})
 _VOICE_TTS_ENGINES = frozenset({"pyttsx3", "edge_tts", "kokoro"})
 _UNICODE_TYPING_MODES = frozenset({"auto", "unicode", "paste", "preview", "paced"})
+_PROCESS_CONTEXT_MODES = frozenset({"off", "foreground_only", "visible_apps", "all_processes"})
+_COMPUTER_USE_PLANNER_PROVIDERS = frozenset({"inherit", "ollama", "groq", "openrouter"})
 _GLITCH_STYLES = frozenset({
     "scanlines", "static", "rgb_split", "flicker", "bsod", "matrix", "tear",
 })
@@ -891,9 +932,10 @@ def _load_env_overrides(config: dict[str, str]) -> None:
             k, v = k.strip().upper(), v.strip()
             if k == "GROQ_API_KEY_1":
                 k = "GROQ_API_KEY"
-            if k == "FASTER_MODE" or k in FAST_MODE_OVERRIDES:
-                # Fast Mode is a disk-backed transaction. Environment copies
-                # of managed values would create a split-brain runtime state.
+            if k in {"FASTER_MODE", "COMPACT_MODE"} or k in FAST_MODE_OVERRIDES:
+                # Fast/Compact modes are disk-backed transactions. Environment
+                # copies of managed or consent-bearing values would create a
+                # split-brain runtime state or bypass the Full Mode ceremony.
                 continue
             if v:
                 config[k] = v
@@ -1082,6 +1124,11 @@ class AppSettings:
     @property
     def raw(self) -> dict[str, str]:
         return self._raw
+
+    # ── Capability profile ─────────────────────────────────────────────────
+    @property
+    def compact_mode(self) -> bool:
+        return self.bool("COMPACT_MODE", True)
 
     # ── AI ──────────────────────────────────────────────────────────────────
     @property
@@ -1356,6 +1403,76 @@ class AppSettings:
     @property
     def enable_senses_panel(self) -> bool:
         return self.bool("ENABLE_SENSES_PANEL", True)
+
+    @property
+    def enable_agent_continuation(self) -> bool:
+        return self.bool("ENABLE_AGENT_CONTINUATION", True)
+
+    @property
+    def agent_max_steps(self) -> int:
+        return self.int("AGENT_MAX_STEPS", 6, 1, 20)
+
+    @property
+    def agent_max_duration_sec(self) -> int:
+        return self.int("AGENT_MAX_DURATION_SEC", 120, 10, 900)
+
+    @property
+    def agent_max_tool_result_chars(self) -> int:
+        return self.int("AGENT_MAX_TOOL_RESULT_CHARS", 8000, 256, 50_000)
+
+    @property
+    def enable_process_awareness(self) -> bool:
+        return self.bool("ENABLE_PROCESS_AWARENESS", True)
+
+    @property
+    def process_context_mode(self) -> str:
+        value = self.get("PROCESS_CONTEXT_MODE", "visible_apps").strip().lower()
+        return value if value in _PROCESS_CONTEXT_MODES else "visible_apps"
+
+    @property
+    def process_max_visible_apps(self) -> int:
+        return self.int("PROCESS_MAX_VISIBLE_APPS", 20, 1, 100)
+
+    @property
+    def process_context_excluded_apps(self) -> str:
+        return self.get("PROCESS_CONTEXT_EXCLUDED_APPS", "")[:4000]
+
+    @property
+    def enable_computer_use(self) -> bool:
+        return self.bool("ENABLE_COMPUTER_USE", False)
+
+    @property
+    def computer_use_max_steps(self) -> int:
+        return self.int("COMPUTER_USE_MAX_STEPS", 30, 1, 100)
+
+    @property
+    def computer_use_timeout_sec(self) -> int:
+        return self.int("COMPUTER_USE_TIMEOUT_SEC", 120, 10, 1800)
+
+    @property
+    def computer_use_planner_provider(self) -> str:
+        value = self.get("COMPUTER_USE_PLANNER_PROVIDER", "inherit").strip().lower()
+        return value if value in _COMPUTER_USE_PLANNER_PROVIDERS else "inherit"
+
+    @property
+    def computer_use_planner_model(self) -> str:
+        return self.get("COMPUTER_USE_PLANNER_MODEL", "").strip()[:300]
+
+    @property
+    def computer_use_planner_confidence_min(self) -> float:
+        return self.float("COMPUTER_USE_PLANNER_CONFIDENCE_MIN", 0.65, 0.0, 1.0)
+
+    @property
+    def computer_use_recovery_after_failures(self) -> int:
+        return self.int("COMPUTER_USE_RECOVERY_AFTER_FAILURES", 2, 1, 10)
+
+    @property
+    def computer_use_max_recovery_calls(self) -> int:
+        return self.int("COMPUTER_USE_MAX_RECOVERY_CALLS", 2, 0, 10)
+
+    @property
+    def computer_use_allowed_apps(self) -> str:
+        return self.get("COMPUTER_USE_ALLOWED_APPS", "")[:4000]
 
     # ── v5.0.0 — Emotion engine ───────────────────────────────────────────────
     @property

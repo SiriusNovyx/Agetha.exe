@@ -26,6 +26,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Collection, Iterator
 
+from agetha.platform.self_identity import (
+    is_self_process_identity,
+    process_id_from_stable_target_id,
+)
 from agetha.platform.screen_monitoring import redact_sensitive_text
 from agetha.utils import logger
 
@@ -125,6 +129,10 @@ def _never() -> bool:
     return False
 
 
+def _always() -> bool:
+    return True
+
+
 def _same_target(left: TypingTarget, right: TypingTarget) -> bool:
     return bool(left.stable_id) and left.stable_id == right.stable_id
 
@@ -142,6 +150,7 @@ class UnicodeTypingDependencies:
     send_paste_shortcut: PasteSender | None = None
     activate_target: TargetActivator | None = None
     targets_match: Callable[[TypingTarget, TypingTarget], bool] = _same_target
+    effect_authorized: StopPredicate = _always
     sleep: Callable[[float], None] = time.sleep
     cancel_requested: StopPredicate = _never
     shutdown_requested: StopPredicate = _never
@@ -331,7 +340,10 @@ def is_restricted_target(target: TypingTarget) -> bool:
 def _looks_like_own_window(target: TypingTarget) -> bool:
     if target.is_own_window:
         return True
-    if Path(target.process_name).name.casefold() == "agetha.exe":
+    if is_self_process_identity(
+        process_name=target.process_name,
+        process_id=process_id_from_stable_target_id(target.stable_id),
+    ):
         return True
     title = target.title.strip().casefold()
     return title in {"agetha", "agetha mod"} or title.startswith("agetha —")
@@ -607,6 +619,15 @@ class UnicodeTypingEngine:
         )
 
     def _target_is_current(self, expected: TypingTarget) -> bool:
+        try:
+            if not self._dependencies.effect_authorized():
+                return False
+        except Exception as exc:
+            logger.debug(
+                "Unicode typing effect authorization failed: %s",
+                type(exc).__name__,
+            )
+            return False
         current = self._current_target()
         if current is None:
             return False
@@ -771,6 +792,25 @@ class UnicodeTypingEngine:
                 )
             return self._copy_only(requested, target, reason="target-unavailable")
 
+        if intended_target is not None:
+            try:
+                authorized = bool(self._dependencies.effect_authorized())
+            except Exception as exc:
+                logger.debug(
+                    "Unicode typing effect authorization failed: %s",
+                    type(exc).__name__,
+                )
+                authorized = False
+            if not authorized:
+                return self._result(
+                    success=False,
+                    method="target-unavailable",
+                    text=requested,
+                    sent=0,
+                    target=target,
+                    restored=None,
+                    message="The approved target is no longer authorized.",
+                )
         if intended_target is not None and not self._activate_and_validate_intended_target(target):
             return self._result(
                 success=False,
@@ -1538,6 +1578,7 @@ def default_dependencies() -> UnicodeTypingDependencies:
             stop_requested=lambda: (
                 dependencies.cancel_requested()
                 or dependencies.shutdown_requested()
+                or not dependencies.effect_authorized()
             ),
         )
         return dependencies

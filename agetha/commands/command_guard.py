@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Callable
 
 from agetha.utils import IS_WINDOWS, apply_window_icon, logger, native_message_box
@@ -55,6 +56,7 @@ class CommandGuard:
         "request_screen_read": SAFE, "request_path": SAFE, "show_error_gif": SAFE,
         "analyze_screen_deep": CAUTION,
         "wake_user": SAFE, "play_emotion_sound": SAFE, "monitor_process": SAFE,
+        "get_active_app": SAFE, "list_running_apps": SAFE,
         "view_memory": SAFE, "search_memory": SAFE,
         "glitch_overlay": SAFE,
         "read_notepad": SAFE, "play_virus_trivia": SAFE,
@@ -70,6 +72,7 @@ class CommandGuard:
         "set_theme": DANGER,             # HKCU registry write (reversible)
         "recycle_bin_status": SAFE,      # aggregate read only
         "search_web": CAUTION, "fetch_webpage": CAUTION,
+        "computer_use": CAUTION,
         "read_document": SAFE, "get_clipboard": SAFE, "open_folder": SAFE,
         "clear_memory": CAUTION,
         "read_file": CAUTION, "open_file": CAUTION, "open_app": CAUTION,
@@ -90,9 +93,19 @@ class CommandGuard:
         DANGER: "Agetha — Dangerous Action",
     }
 
-    def __init__(self, root=None):
+    def __init__(
+        self,
+        root=None,
+        *,
+        schedule_ui: Callable[[Callable[[], None]], object | None] | None = None,
+        owner_thread_id: int | None = None,
+    ):
         self._root = root
         self._settings = get_settings()
+        self._schedule_ui = schedule_ui
+        self._owner_thread_id = (
+            threading.get_ident() if owner_thread_id is None else int(owner_thread_id)
+        )
 
     def set_root(self, root) -> None:
         self._root = root
@@ -101,7 +114,13 @@ class CommandGuard:
         """Human-readable summary of a command (for dry-run UI)."""
         return self._format_details(command, response)
 
-    def check_dry_run(self, command: str, details: str) -> bool:
+    def check_dry_run(
+        self,
+        command: str,
+        details: str,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> bool:
         """Dry-run gate: ask user to approve executing a suggested command."""
         title = "Agetha — Dry Run"
         message = (
@@ -109,26 +128,25 @@ class CommandGuard:
             f"{details}\n\n"
             f"Command: {command}"
         )
-        if self._root is not None:
-            result: list[bool | None] = [None]
-            done = threading.Event()
+        return self._confirm_on_ui(
+            lambda: self._native_confirm(
+                title,
+                message,
+                "warning",
+                "yesno",
+                default_no=True,
+            ),
+            label="dry_run",
+            cancel_check=cancel_check,
+        )
 
-            def _on_main():
-                try:
-                    result[0] = self._native_confirm(title, message, "warning", "yesno", default_no=True)
-                finally:
-                    done.set()
-
-            self._root.after(0, _on_main)
-            done.wait(timeout=120)
-            if result[0] is None:
-                logger.warning("CommandGuard danger confirm timed out")
-                return False
-            return bool(result[0])
-
-        return self._native_confirm(title, message, "warning", "yesno", default_no=True)
-
-    def check(self, command: str, response: dict) -> bool:
+    def check(
+        self,
+        command: str,
+        response: dict,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> bool:
         """Return True if the command may proceed. Thread-safe (marshals to Tk main thread)."""
         if not self._settings.enable_command_confirmations:
             return True
@@ -136,30 +154,82 @@ class CommandGuard:
         if tier == self.SAFE:
             return True
 
-        if self._root is not None:
-            result: list[bool | None] = [None]
-            done = threading.Event()
+        return self._confirm_on_ui(
+            lambda: self._show_dialog(command, response, tier),
+            label=command,
+            cancel_check=cancel_check,
+        )
 
-            def _on_main():
-                try:
-                    result[0] = self._show_dialog(command, response, tier)
-                except Exception as exc:
-                    logger.error(f"CommandGuard dialog failed: {exc}")
-                    result[0] = False
-                finally:
-                    done.set()
+    def _confirm_on_ui(
+        self,
+        callback: Callable[[], bool],
+        *,
+        label: str,
+        cancel_check: Callable[[], bool] | None,
+        timeout_seconds: float = 120.0,
+    ) -> bool:
+        """Run a modal confirmation only on its UI owner and fail closed late."""
 
+        def _cancelled() -> bool:
             try:
-                self._root.after(0, _on_main)
+                return bool(cancel_check is not None and cancel_check())
             except Exception:
-                return False
-            done.wait(timeout=120)
-            if result[0] is None:
-                logger.warning(f"CommandGuard timed out for {command}")
-                return False
-            return bool(result[0])
+                return True
 
-        return self._show_dialog(command, response, tier)
+        if _cancelled():
+            return False
+        owner = getattr(self, "_owner_thread_id", None)
+        if self._root is None or (
+            owner is not None and threading.get_ident() == owner
+        ):
+            try:
+                return bool(callback()) if not _cancelled() else False
+            except Exception as exc:
+                logger.error(
+                    "CommandGuard dialog failed safely: %s",
+                    type(exc).__name__,
+                )
+                return False
+
+        scheduler = getattr(self, "_schedule_ui", None)
+        if not callable(scheduler):
+            logger.warning("CommandGuard UI scheduler unavailable for %s", label)
+            return False
+
+        result: list[bool | None] = [None]
+        done = threading.Event()
+        invalidated = threading.Event()
+
+        def _on_owner() -> None:
+            if invalidated.is_set() or _cancelled():
+                done.set()
+                return
+            try:
+                value = bool(callback())
+                if not invalidated.is_set() and not _cancelled():
+                    result[0] = value
+            except Exception as exc:
+                logger.error(
+                    "CommandGuard dialog failed safely: %s",
+                    type(exc).__name__,
+                )
+                result[0] = False
+            finally:
+                done.set()
+
+        try:
+            scheduled = scheduler(_on_owner)
+        except Exception:
+            scheduled = None
+        if scheduled is None:
+            return False
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        while not done.wait(0.05):
+            if _cancelled() or time.monotonic() >= deadline:
+                invalidated.set()
+                logger.warning("CommandGuard confirmation stopped for %s", label)
+                return False
+        return bool(result[0]) if not invalidated.is_set() else False
 
     def _resolve_tier(self, command: str, response: dict) -> str:
         if command == "force_close":
@@ -433,6 +503,12 @@ class CommandGuard:
                 + " to the configured Unlimited-OCR service for read-only analysis."
             ),
             "open_app": lambda r: f"Launch: {r.get('app', '') or r.get('app_name', '???')}",
+            "computer_use": lambda r: (
+                "Start a bounded Computer Use session for this explicit goal:\n\n"
+                f"{str(r.get('goal', '') or '[goal omitted]')[:300]}\n\n"
+                "The session may interact only with configured/authorized applications "
+                "and can be stopped immediately."
+            ),
             "open_file": lambda r: f"Open file: {r.get('path', '???')}",
             "open_folder": lambda r: f"Open folder: {r.get('path', '???')}",
             "copy_to_clipboard": lambda r: f"Copy to clipboard: \"{(r.get('text', '???'))[:100]}\"",
