@@ -65,6 +65,7 @@ class UnresolvedContextObjective:
     kind: ContextKind
     created_at_monotonic: float
     expires_at_monotonic: float
+    owner: tuple[str, int] | None = None
 
 
 class UnresolvedContextObjectiveStore:
@@ -92,6 +93,7 @@ class UnresolvedContextObjectiveStore:
         kind: ContextKind,
         *,
         origin: str,
+        owner: tuple[str, int] | None = None,
     ) -> bool:
         if str(origin or "").strip().casefold() != "user":
             return False
@@ -104,11 +106,22 @@ class UnresolvedContextObjectiveStore:
             return False
         if not math.isfinite(now):
             return False
+        normalized_owner: tuple[str, int] | None = None
+        if owner is not None:
+            try:
+                session_id = str(owner[0] or "").strip()
+                generation = int(owner[1])
+            except (IndexError, TypeError, ValueError, OverflowError):
+                return False
+            if not session_id or generation < 0:
+                return False
+            normalized_owner = (session_id, generation)
         objective = UnresolvedContextObjective(
             text,
             ContextKind(kind),
             now,
             now + self._ttl_seconds,
+            normalized_owner,
         )
         with self._lock:
             self._current = objective
@@ -141,9 +154,26 @@ class UnresolvedContextObjectiveStore:
             "Use this only when the current request is a semantic follow-up."
         )
 
-    def clear(self) -> None:
+    def clear(self, *, owner: tuple[str, int] | None = None) -> bool:
         with self._lock:
+            if owner is not None:
+                try:
+                    normalized_owner = (
+                        str(owner[0] or "").strip(),
+                        int(owner[1]),
+                    )
+                except (IndexError, TypeError, ValueError, OverflowError):
+                    return False
+                if (
+                    not normalized_owner[0]
+                    or normalized_owner[1] < 0
+                    or self._current is None
+                    or self._current.owner != normalized_owner
+                ):
+                    return False
+            had_objective = self._current is not None
             self._current = None
+            return had_objective
 
 
 __all__ = [
