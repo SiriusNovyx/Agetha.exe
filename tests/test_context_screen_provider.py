@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import unittest
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import main
+from agetha.core.capabilities import (
+    CapabilityController,
+    CapabilityPolicy,
+    CapabilityProfile,
+)
 from agetha.core.context_dependencies import ContextKind, ContextRequest
 
 
@@ -14,7 +20,12 @@ class TestMainOwnedScreenContextProvider(unittest.TestCase):
         app = main.CompanionApp.__new__(main.CompanionApp)
         app._screen = screen
         app._closing = False
-        app._capabilities = SimpleNamespace(is_allowed=lambda _capability: True)
+        app._capabilities = CapabilityController(
+            CapabilityPolicy(
+                CapabilityProfile.FULL,
+                {"ENABLE_COMMAND_EXECUTION": True},
+            ),
+        )
         return app
 
     def test_one_targeted_local_capture_returns_labeled_untrusted_context(self) -> None:
@@ -96,6 +107,58 @@ class TestMainOwnedScreenContextProvider(unittest.TestCase):
         self.assertEqual(outcome.status, "cancelled")
         screen.preserve_external_target.assert_not_called()
         screen.capture_text.assert_not_called()
+
+    def test_capture_is_ordered_before_compact_transition(self) -> None:
+        capture_started = threading.Event()
+        release_capture = threading.Event()
+        transition_started = threading.Event()
+        transition_finished = threading.Event()
+        outcomes = []
+
+        def capture_text(**_kwargs) -> str:
+            capture_started.set()
+            self.assertTrue(release_capture.wait(2.0))
+            return "Build failed: missing symbol"
+
+        screen = SimpleNamespace(
+            preserve_external_target=lambda: None,
+            capture_text=capture_text,
+            redact_for_external_context=lambda value: value,
+            last_monitor_status="ocr_complete",
+        )
+        app = self.app(screen)
+
+        capture_worker = threading.Thread(
+            target=lambda: outcomes.append(
+                app._acquire_read_only_context(
+                    ContextRequest(ContextKind.SCREEN),
+                    cancel_check=lambda: False,
+                ),
+            ),
+        )
+        capture_worker.start()
+        self.assertTrue(capture_started.wait(2.0))
+
+        def downgrade() -> None:
+            transition_started.set()
+            app._capabilities.begin_compact_transition()
+            transition_finished.set()
+
+        transition_worker = threading.Thread(target=downgrade)
+        transition_worker.start()
+        self.assertTrue(transition_started.wait(2.0))
+        try:
+            self.assertFalse(transition_finished.wait(0.05))
+        finally:
+            release_capture.set()
+            capture_worker.join(2.0)
+            transition_worker.join(2.0)
+
+        self.assertFalse(capture_worker.is_alive())
+        self.assertFalse(transition_worker.is_alive())
+        self.assertEqual(len(outcomes), 1)
+        self.assertTrue(outcomes[0].success)
+        self.assertTrue(transition_finished.is_set())
 
     def test_unsupported_kind_fails_without_touching_screen(self) -> None:
         screen = SimpleNamespace(
