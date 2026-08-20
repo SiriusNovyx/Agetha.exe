@@ -280,9 +280,24 @@ class TestMainCapabilityLifecycle(unittest.TestCase):
 
     def test_persistence_failure_stays_fail_closed_compact(self) -> None:
         app = self._app(_settings(compact=False))
-        with patch("agetha.app_config.patch_config_key", return_value=False):
+        compact = _settings(compact=True)
+        with patch.object(main, "get_settings", return_value=compact), patch(
+            "agetha.app_config.patch_config_key", return_value=False,
+        ), patch(
+            "agetha.app_config.arm_compact_mode_fail_closed", return_value=True,
+        ) as arm_marker:
             self.assertFalse(app._activate_compact_mode())
+        arm_marker.assert_called_once_with()
         self.assertEqual(app._capabilities.snapshot().profile, CapabilityProfile.COMPACT)
+
+    def test_dashboard_surfaces_failed_compact_config_write(self) -> None:
+        app = self._app(_settings(compact=False))
+        app._show_op_error = MagicMock()
+        app._activate_compact_mode = MagicMock(return_value=False)
+
+        app._request_compact_mode(True)
+
+        app._show_op_error.assert_called_once()
 
 
 if __name__ == "__main__":

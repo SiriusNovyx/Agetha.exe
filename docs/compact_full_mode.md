@@ -136,6 +136,14 @@ begins, no new keyboard, mouse, or application-control effect may occur. The
 same owned cancellation routines are reused by shutdown; callbacks remain
 generation-checked and all Tk work stays on the owner thread.
 
+Before updating `config.txt`, the downgrade durably arms a fail-closed marker
+beside the config, with a per-user state fallback when the installation
+directory is not writable. The settings loader treats either marker as an
+authoritative Compact request, so a read-only or interrupted config update
+cannot restore Full on the next launch. A later completed Full consent clears
+the marker only after its `COMPACT_MODE=no` write succeeds; if marker cleanup
+fails, Agetha rolls the config back to Compact and reports the error.
+
 ## Source and frozen application behavior
 
 [`app_config.py`](../agetha/app_config.py) resolves source state beside the

@@ -295,6 +295,35 @@ class TestFullModeMainIntegration(unittest.TestCase):
             ["Full Mode could not be saved; Compact Mode remains active."],
         )
 
+    def test_full_enable_fails_closed_when_restart_marker_cannot_clear(self) -> None:
+        app = self._app()
+        writes: list[tuple[str, str]] = []
+
+        with self._runtime_settings(self.compact_settings, self.full_settings), patch(
+            "agetha.app_config.patch_config_key",
+            side_effect=lambda key, value: writes.append((key, value)) or True,
+        ), patch(
+            "agetha.app_config.clear_compact_mode_fail_closed",
+            return_value=False,
+        ):
+            self._reach_final_confirmation(app)
+            app._full_mode_consent_ui.final_decision(True)
+
+        self.assertEqual(
+            writes,
+            [("COMPACT_MODE", "no"), ("COMPACT_MODE", "yes")],
+        )
+        self.assertEqual(app._capability_consent.snapshot.state, ConsentState.COMPACT)
+        self.assertEqual(app._capabilities.snapshot().profile, CapabilityProfile.COMPACT)
+        self.assertEqual(app._start_full_mode_services_count, 0)
+        self.assertEqual(
+            app._errors,
+            [
+                "Full Mode restart protection could not be cleared; Compact Mode "
+                "remains active."
+            ],
+        )
+
     def test_escape_during_demo_cancels_consent_and_invalidates_pending_worker(
         self,
     ) -> None:

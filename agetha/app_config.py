@@ -10,6 +10,7 @@ values in config.txt are ignored.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -29,6 +30,7 @@ else:
 
 CONFIG_PATH = BASE_DIR / "config.txt"
 ENV_PATH = BASE_DIR / ".env"
+COMPACT_MODE_FAIL_CLOSED_MARKER = ".agetha_compact_mode_required"
 
 _CONFIG_WRITE_LOCK = threading.RLock()
 
@@ -89,6 +91,64 @@ def _write_atomic_config(path: Path, content: str) -> None:
             "write_applied_verification_failed" if replaced else "write_not_applied"
         )
         raise AtomicWriteError(state, f"atomic write failed during {state}") from exc
+
+
+def compact_mode_fail_closed_path(config_path: Path | None = None) -> Path:
+    """Return the owned marker that makes a failed downgrade survive restart."""
+    target = Path(config_path or CONFIG_PATH)
+    return target.parent / COMPACT_MODE_FAIL_CLOSED_MARKER
+
+
+def _compact_mode_fail_closed_paths(
+    config_path: Path | None = None,
+) -> tuple[Path, ...]:
+    """Return install-local then per-user fallback marker paths for this config."""
+    target = Path(config_path or CONFIG_PATH)
+    primary = compact_mode_fail_closed_path(target)
+    paths = [primary]
+    if target == Path(CONFIG_PATH):
+        state_value = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
+        state_root = Path(state_value) if state_value else Path.home() / ".local" / "state"
+        identity = os.path.normcase(os.path.abspath(str(target))).encode("utf-8")
+        scope = hashlib.sha256(identity).hexdigest()[:16]
+        fallback = state_root / "Agetha" / "safety" / f"compact-required-{scope}"
+        if fallback != primary:
+            paths.append(fallback)
+    return tuple(paths)
+
+
+def compact_mode_fail_closed_required(config_path: Path | None = None) -> bool:
+    """Treat any marker entry, including a symlink, as a safe Compact request."""
+    return any(os.path.lexists(path) for path in _compact_mode_fail_closed_paths(config_path))
+
+
+def arm_compact_mode_fail_closed(config_path: Path | None = None) -> bool:
+    """Durably require Compact startup before attempting the config transaction."""
+    last_error: Exception | None = None
+    for marker in _compact_mode_fail_closed_paths(config_path):
+        try:
+            with _CONFIG_WRITE_LOCK:
+                _write_atomic_config(marker, "compact-required\n")
+            return True
+        except Exception as exc:
+            last_error = exc
+    _log_config(f"Could not arm Compact Mode restart protection: {last_error}")
+    return False
+
+
+def clear_compact_mode_fail_closed(config_path: Path | None = None) -> bool:
+    """Clear restart protection only after an explicit durable profile write."""
+    cleared = True
+    for marker in _compact_mode_fail_closed_paths(config_path):
+        try:
+            with _CONFIG_WRITE_LOCK:
+                if os.path.lexists(marker):
+                    marker.unlink()
+                    _fsync_parent_directory(marker)
+        except Exception as exc:
+            cleared = False
+            _log_config(f"Could not clear Compact Mode restart protection: {exc}")
+    return cleared
 
 DEFAULT_CONFIG = """# =============================================================================
 # Agetha Mod — config.txt
@@ -1014,6 +1074,12 @@ def parse_config_file(path: Path | None = None) -> dict[str, str]:
         # Profile diagnostics/recovery are handled by its public reconciliation
         # API. A broken optional state file must never prevent config loading.
         pass
+    if compact_mode_fail_closed_required(path):
+        merged["COMPACT_MODE"] = "yes"
+        result.warnings.append(
+            "Compact Mode restart protection is active because a prior profile "
+            "write did not complete."
+        )
     _last_load = result
 
     for w in result.warnings:

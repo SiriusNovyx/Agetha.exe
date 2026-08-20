@@ -5869,7 +5869,11 @@ class CompanionApp:
 
     def _activate_compact_mode(self) -> bool:
         """Fail closed first, then stop owners and persist the safe profile."""
-        from agetha.app_config import patch_config_key
+        from agetha.app_config import (
+            arm_compact_mode_fail_closed,
+            clear_compact_mode_fail_closed,
+            patch_config_key,
+        )
 
         generation = self._capabilities.begin_compact_transition()
         self._capability_transition_generation = None
@@ -5878,8 +5882,11 @@ class CompanionApp:
         if consent_ui is not None:
             consent_ui.cancel_all()
         self._stop_full_mode_services()
+        marker_armed = arm_compact_mode_fail_closed()
         persisted = bool(patch_config_key("COMPACT_MODE", "yes"))
-        settings = get_settings(reload=True) if persisted else get_settings()
+        if persisted:
+            clear_compact_mode_fail_closed()
+        settings = get_settings(reload=True) if (persisted or marker_armed) else get_settings()
         compact_policy = CapabilityPolicy.from_settings(settings)
         if compact_policy.profile.value != "compact":
             settings = type(settings)(
@@ -5896,7 +5903,12 @@ class CompanionApp:
         if self._closing:
             return
         if bool(compact_on):
-            self._activate_compact_mode()
+            if not self._activate_compact_mode():
+                self._show_op_error(
+                    "Compact Mode is active, but config.txt could not be updated. "
+                    "Restart protection remains active; restore write access and "
+                    "select Compact Mode again to repair the config."
+                )
             return
         self._begin_full_mode_consent()
 
@@ -6169,10 +6181,18 @@ class CompanionApp:
             or capability_snapshot.profile.value != "compact"
         ):
             return
-        from agetha.app_config import patch_config_key
+        from agetha.app_config import clear_compact_mode_fail_closed, patch_config_key
         if not patch_config_key("COMPACT_MODE", "no"):
             self._cancel_full_mode_consent(generation)
             self._show_op_error("Full Mode could not be saved; Compact Mode remains active.")
+            return
+        if not clear_compact_mode_fail_closed():
+            patch_config_key("COMPACT_MODE", "yes")
+            self._cancel_full_mode_consent(generation)
+            self._show_op_error(
+                "Full Mode restart protection could not be cleared; Compact Mode "
+                "remains active."
+            )
             return
         settings = get_settings(reload=True)
         policy = CapabilityPolicy.from_settings(settings)
