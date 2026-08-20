@@ -119,7 +119,7 @@ def _remove_owned_runtime_directory(path: Path) -> None:
 
 class TestFrozenLauncher(unittest.TestCase):
     def test_frozen_shortcut_launches_the_executable_without_source_arguments(self) -> None:
-        install_dir = Path("C:/Program Files/Agetha")
+        install_dir = (_TEST_DIR / "frozen-install").resolve()
         executable = install_dir / "Agetha.exe"
 
         with (
@@ -136,8 +136,8 @@ class TestFrozenLauncher(unittest.TestCase):
         self.assertNotIn("main.py", f"{target} {arguments}")
 
     def test_source_launcher_is_independent_of_the_current_working_directory(self) -> None:
-        source_root = Path("C:/source/Agetha")
-        interpreter = Path("C:/Python/python.exe")
+        source_root = (_TEST_DIR / "source-install").resolve()
+        interpreter = source_root / "python.exe"
         previous_cwd = Path.cwd()
 
         try:

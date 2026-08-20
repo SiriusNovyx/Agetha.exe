@@ -112,7 +112,7 @@ class TestCompactProviderInitialization(unittest.TestCase):
         ), patch.object(Path, "write_text", return_value=0), patch.object(
             ai_module, "get_settings", return_value=settings,
         ), patch.object(ai_module, "GROQ_OK", True), patch.object(
-            ai_module, "Groq",
+            ai_module, "Groq", create=True,
         ) as groq_client, patch.object(
             ai_module, "_OpenRouterClient",
         ) as openrouter_client, patch.object(
