@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from agetha import __version__
 from agetha.config.io import (
     AtomicWriteError,
     fsync_parent_directory as _fsync_parent_directory,
@@ -604,14 +605,11 @@ AUTO_PIP_INSTALL = yes
 # CREATE_DESKTOP_SHORTCUT — yes = create Desktop\\Agetha.lnk on each Medic_Checker run.
 CREATE_DESKTOP_SHORTCUT = no
 
-# CHECK_FOR_UPDATES — yes = compare APP_VERSION to GITHUB_RELEASES_URL (needs URL below).
+# CHECK_FOR_UPDATES — yes = compare the source build version to GITHUB_RELEASES_URL.
 CHECK_FOR_UPDATES = yes
 
 
 # ── App meta ──────────────────────────────────────────────────────────────────
-
-# APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 5.7.5
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
@@ -1846,7 +1844,7 @@ class AppSettings:
 
     @property
     def app_version(self) -> str:
-        return self.get("APP_VERSION", "5.7.5").strip() or "5.7.5"
+        return __version__
 
     @property
     def github_releases_url(self) -> str:

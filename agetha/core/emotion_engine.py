@@ -29,6 +29,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from agetha import __version__
 from agetha.utils import logger
 from agetha.app_config import BASE_DIR
 
@@ -36,7 +37,6 @@ MEMORY_DIR = BASE_DIR / "memory"
 STATE_FILE = MEMORY_DIR / "emotional_state.json"
 
 SCHEMA_VERSION = 1
-APP_VERSION = "5.7.5"
 
 _lock = threading.RLock()
 
@@ -125,7 +125,7 @@ def _default_state(now: datetime) -> dict[str, Any]:
     base = _baselines()
     return {
         "version": SCHEMA_VERSION,
-        "app_version": APP_VERSION,
+        "app_version": __version__,
         "valence": base["valence"],
         "arousal": base["arousal"],
         "trust": base["trust"],

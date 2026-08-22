@@ -540,7 +540,6 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
             ("ENABLE_MOOD_MOTION", "bool", True, ()),
             ("MOOD_MOTION_COOLDOWN_SECONDS", "text", True, ()),
             ("ENABLE_FILE_DRAG_DROP", "bool", True, ()),
-            ("APP_VERSION", "text", True, ()),
             ("GITHUB_RELEASES_URL", "text", True, ()),
         ),
     ),

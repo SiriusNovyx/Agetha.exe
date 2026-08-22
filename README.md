@@ -844,8 +844,7 @@ Click the **📊** button in the title bar (beside minimize) to open the **Dashb
 | `SKIP_ASSET_CHECK` | `no` | Skip asset file verification |
 | `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
 | `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
-| `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
-| `APP_VERSION` | `5.7.5` | Shown in window title |
+| `CHECK_FOR_UPDATES` | `yes` | Compare the source-owned build version to the GitHub release API |
 | `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
 | `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
 | `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |

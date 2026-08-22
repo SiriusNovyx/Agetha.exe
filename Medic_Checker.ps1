@@ -40,8 +40,14 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.7.5'
-    if ($v) { return $v }
+    $metadataPath = Join-Path $Script:Root 'agetha\__init__.py'
+    if (Test-Path -LiteralPath $metadataPath) {
+        foreach ($line in Get-Content -LiteralPath $metadataPath) {
+            if ($line -match '^\s*__version__\s*=\s*"([^"]+)"\s*$') {
+                return $Matches[1]
+            }
+        }
+    }
     return '5.7.5'
 }
 
