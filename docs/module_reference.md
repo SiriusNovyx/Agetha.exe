@@ -42,7 +42,7 @@ then launch the app. Its architecture selection must stay synchronized with
 | File | Responsibility and important symbols |
 |---|---|
 | [agetha/__init__.py](../agetha/__init__.py) | Package marker and package `__version__`. Do not bump it merely to mirror an unrelated upstream release. |
-| [agetha/app_config.py](../agetha/app_config.py) | Authoritative `DEFAULT_CONFIG`, `FAST_MODE_OVERRIDES`, parser diagnostics, `AppSettings`, cached runtime overlays, structural/atomic config updates, secret filtering, type validation, and clamps. |
+| [agetha/app_config.py](../agetha/app_config.py) | Compatibility facade and transaction coordinator for `DEFAULT_CONFIG`, `FAST_MODE_OVERRIDES`, parser diagnostics, `AppSettings`, cached overlays, secret filtering, type validation, and clamps. |
 | [agetha/utils.py](../agetha/utils.py) | Logging, `write_atomic()`, icon/native dialog helpers, simple env loading, compatibility config creation, platform flags, and refreshable legacy timing/window constants. |
 
 ### Configuration symbols
@@ -60,13 +60,30 @@ application consent/lifecycle owner rather than the ordinary settings patch.
 Importing `agetha.utils` loads settings and can create a missing `config.txt`.
 Keep that side effect in mind in isolated tests.
 
+### `agetha/config`
+
+| File | Responsibility and important symbols |
+|---|---|
+| [config/io.py](../agetha/config/io.py) | `AtomicWriteError`, same-directory exclusive temporary writes, flush/fsync/replace, parent-directory fsync, and ambiguous post-replace failure reporting. |
+| [config/transactions.py](../agetha/config/transactions.py) | Pure structural key normalization and comment/order/blank/unknown-key-preserving rendering. It owns no path or transaction policy. |
+| [config/schema.py](../agetha/config/schema.py) | Immutable `SettingSpec` registry for the conservative stable subset. Special security and transaction settings stay outside it. |
+| [config/generate_settings_reference.py](../agetha/config/generate_settings_reference.py) | Renders and checks the downstream [stable settings reference](generated/settings_reference.md). Runtime does not read generated documentation. |
+
 ## `agetha/commands`
 
 | File | Responsibility and important symbols |
 |---|---|
 | [commands/__init__.py](../agetha/commands/__init__.py) | Package marker only; no eager imports. |
-| [command_guard.py](../agetha/commands/command_guard.py) | `CommandGuard`: Safe/Caution/Danger classification, dry-run descriptions, native/Tk confirmations, timeout-deny behavior, protected-process checks, and force-close policy. Unknown commands default to Danger. |
-| [command_handlers.py](../agetha/commands/command_handlers.py) | `DispatchCtx`, `HANDLERS`, `register()`, and `dispatch()`. Contains registered handlers for UI, files, clipboard, process/window, browser/web, system, memory, effects, tasks/emotions, Windows integration, OCR, and direct-user Computer Use activation. Coordinates feature gates, guard calls, Tk handoffs, and results. Bare `tool_result` dispatch is non-effectful. Unicode/Computer Use typing uses target capture, privacy-safe preview/guard integration, and app-owned cancellation; direct handler calls fail closed without the approval token. |
+| [specs.py](../agetha/commands/specs.py) | Immutable `CommandSpec`, `RiskTier`, `DispatchKind`, and canonical `COMMAND_SPECS`; derives names, base-risk and capability views, validates static metadata, and checks handler bindings without importing implementations. |
+| [generate_command_matrix.py](../agetha/commands/generate_command_matrix.py) | Deterministically renders or checks the downstream mechanical [command matrix](generated/command_matrix.md). Runtime never reads generated documentation as policy. |
+| [command_guard.py](../agetha/commands/command_guard.py) | `CommandGuard`: derived base Safe/Caution/Danger view, dry-run descriptions, native/Tk confirmations, timeout-deny behavior, protected-process checks, and dynamic force-close policy. Unknown commands default to Danger. |
+| [command_handlers.py](../agetha/commands/command_handlers.py) | Compatibility exports and central dispatch. It retains core commands, recursive tool-result continuation, and security-coupled window/typing/context handlers. It coordinates origin narrowing, capability checks, feature gates, CommandGuard, and effect-time authorization. |
+| [handlers/registry.py](../agetha/commands/handlers/registry.py) | One explicit handler registry and duplicate/spec/dispatch validation. |
+| [handlers/support.py](../agetha/commands/handlers/support.py) | Shared dispatch context, UI/worker handoffs, result reporting, and generation-bound effect helpers. |
+| [handlers/files.py](../agetha/commands/handlers/files.py) | File, folder, clipboard-write, local command, sound, notification, and screenshot handlers. |
+| [handlers/system.py](../agetha/commands/handlers/system.py) | Volume, wallpaper, search, lock, shutdown/restart, autostart, theme, settings, and recycle-bin handlers. |
+| [handlers/web_context.py](../agetha/commands/handlers/web_context.py) | Gated search and webpage context handlers. |
+| [handlers/memory_presentation.py](../agetha/commands/handlers/memory_presentation.py) | Memory, notepad, tasks, emotions, dreams, trivia, and glitch presentation handlers. |
 | [system_commands.py](../agetha/commands/system_commands.py) | Guarded URL/clipboard/folder access, system info, volume/wallpaper, scoped file search, legacy basic typing compatibility, lock/shutdown/restart, reminders, notifications, and screenshot paths. The current `type_text` command uses `platform/unicode_typing.py`, not the legacy helper. Uses supported Windows and existing Linux paths where implemented; Windows-only operations degrade safely on Linux. |
 
 The complete command change contract is in
@@ -79,9 +96,9 @@ model output.
 | File | Responsibility and important symbols |
 |---|---|
 | [core/__init__.py](../agetha/core/__init__.py) | Package marker only; callers import concrete modules. |
-| [ai_engine.py](../agetha/core/ai_engine.py) | `_LocalOllamaClient`, `_OpenRouterClient`, `AIEngine`, `VALID_MOODS`, `VALID_COMMANDS`, system prompts/few shots, isolated tool-continuation/structured planner requests, bounded provider/retry and direct-user response-repair flow, `_build_prompt()`, `_parse()`, `query()`, `query_streaming()`, and `request_structured()`. |
-| [provider_protocol.py](../agetha/core/provider_protocol.py) | Provider-specific Groq model normalization, GPT-OSS request options/reasoning policy, typed HTTP/error classification, and provider-response validation status metadata. |
-| [capabilities.py](../agetha/core/capabilities.py) | `CapabilityProfile`, `Capability`, deterministic policy decisions/reasons, command classification, and the thread-safe `CapabilityController` with transitioning Compact state and generation-bound effect authorizations. Compact is the outer advanced-capability deny boundary; Full still respects individual gates. |
+| [ai_engine.py](../agetha/core/ai_engine.py) | `AIEngine`, prompt/profile/history semantics, provider routing and bounded fallback loops, direct-user response repair, `_build_prompt()`, `_parse()`, `query()`, `query_streaming()`, and `request_structured()`. Legacy transport class names remain compatibility aliases. |
+| [provider_protocol.py](../agetha/core/provider_protocol.py) | Provider-neutral response validation status metadata plus compatibility re-exports for moved transport policy. |
+| [capabilities.py](../agetha/core/capabilities.py) | `CapabilityProfile`, `Capability`, deterministic policy decisions/reasons, derived command classification with a fail-closed unknown fallback, and the thread-safe `CapabilityController` with transitioning Compact state and generation-bound effect authorizations. Compact is the outer advanced-capability deny boundary; Full still respects individual gates. |
 | [capability_consent.py](../agetha/core/capability_consent.py) | Pure `COMPACT`/first-confirmation/demo/final-confirmation/`FULL` state machine. Owns no Tk, config, provider, or OS effect; generation checks make cancel, close, downgrade, and shutdown reject stale callbacks. |
 | [external_context.py](../agetha/core/external_context.py) | `PreparedExternalContext` and `prepare_external_context()`; shared fail-closed redaction and truncation for untrusted provider context. |
 | [file_drop.py](../agetha/core/file_drop.py) | `PreparedFileDrop` and `prepare_file_drop()`; bounded local file validation, sensitive/binary policy, and path-safe provider metadata. |
@@ -117,6 +134,16 @@ model output.
 
 `AIEngine` does not serialize concurrent queries. `CompanionApp` owns that
 serialization.
+
+## `agetha/providers`
+
+| File | Responsibility and important symbols |
+|---|---|
+| [providers/base.py](../agetha/providers/base.py) | Small adapter contract and provider HTTP/error classification. |
+| [providers/router.py](../agetha/providers/router.py) | Explicit adapter selection and request delegation. It owns no prompt, history, repair, UI, or command policy. |
+| [providers/groq.py](../agetha/providers/groq.py) | Groq SDK construction, model normalization, GPT-OSS reasoning profiles, JSON Object Mode, and request shaping. |
+| [providers/openrouter.py](../agetha/providers/openrouter.py) | OpenRouter HTTP and SSE transport, usage extraction, and HTTP error conversion. |
+| [providers/ollama.py](../agetha/providers/ollama.py) | Local Ollama request and streaming transport. |
 
 ## `agetha/features`
 

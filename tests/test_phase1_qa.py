@@ -189,7 +189,9 @@ class TestLongtermDisabled(unittest.TestCase):
         ctx.shutdown_requested = False
         response = {"query": "cat", "command": "search_memory"}
 
-        with patch("agetha.commands.command_handlers.get_settings") as mock_settings:
+        with patch(
+            "agetha.commands.handlers.memory_presentation.get_settings"
+        ) as mock_settings:
             mock_settings.return_value.enable_longterm_memory = False
             with patch("agetha.core.memory_search.search_memories") as mock_search:
                 ok = handle_search_memory(app, response, ctx)

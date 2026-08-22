@@ -672,7 +672,7 @@ class TestAutostartCommandGate(unittest.TestCase):
         from agetha.platform import autostart
         app = FakeApp()
         off = AppSettings({"ENABLE_AUTOSTART_CONTROL": "no"})
-        with patch.object(ch, "get_settings", return_value=off), \
+        with patch("agetha.commands.handlers.system.get_settings", return_value=off), \
              patch.object(autostart, "enable") as en, \
              patch.object(autostart, "disable") as dis:
             ch.handle_set_autostart(app, {"enabled": True}, _make_ctx())
@@ -686,7 +686,7 @@ class TestAutostartCommandGate(unittest.TestCase):
         from agetha.core import audit_log
         app = FakeApp()
         on = AppSettings({"ENABLE_AUTOSTART_CONTROL": "yes"})
-        with patch.object(ch, "get_settings", return_value=on), \
+        with patch("agetha.commands.handlers.system.get_settings", return_value=on), \
              patch.object(autostart, "enable", return_value=(True, "done")) as en, \
              patch.object(autostart, "validate", return_value="valid"), \
              patch.object(autostart, "shortcut_path", return_value=Path("C:\\x\\Agetha.lnk")), \
@@ -904,7 +904,7 @@ class TestSetTheme(unittest.TestCase):
         from agetha.commands import command_handlers as ch
         app = FakeApp()
         off = AppSettings({"ENABLE_THEME_CONTROL": "no"})
-        with patch.object(ch, "get_settings", return_value=off), \
+        with patch("agetha.commands.handlers.system.get_settings", return_value=off), \
              patch.object(self.wi, "set_theme") as st:
             ch.handle_set_theme(app, {"mode": "dark"}, _make_ctx())
             st.assert_not_called()

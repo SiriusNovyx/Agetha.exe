@@ -459,11 +459,14 @@ automatic read-only allowlist, and performs no memory/history write.
 
 ## Provider and parse flow
 
-| Mode | Client | Notes |
+| Mode | Adapter | Notes |
 |---|---|---|
-| Groq | Groq SDK | Up to ten `.env` keys; model/key rotation; may fail over to configured OpenRouter |
-| OpenRouter | `_OpenRouterClient` | OpenAI-compatible HTTP/SSE; capped retry/backoff for rate limits |
-| Local | `_LocalOllamaClient` | Local Ollama API; completed output is chunked for the streaming callback contract |
+| Groq | `GroqProvider` | SDK transport, model normalization, GPT-OSS reasoning effort, and JSON Object Mode request shaping |
+| OpenRouter | `OpenRouterProvider` | OpenAI-compatible HTTP/SSE transport and provider-specific HTTP error conversion |
+| Local | `OllamaProvider` | Local Ollama transport; completed output follows the shared streaming callback contract |
+
+`AIEngine` retains Groq key rotation, provider fallback orchestration, bounded
+repair/final publication, and Agetha request, history, and authority semantics.
 
 Provider text passes through `_parse()` before dispatch. The parser:
 
