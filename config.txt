@@ -15,10 +15,10 @@
 
 
 # ── AI Backend ───────────────────────────────────────────────────────────────
-# Priority: local Ollama > Groq / OpenRouter (cloud).
+# Priority: local Ollama > Groq > Gemini > OpenRouter (cloud).
 # With both Groq + OpenRouter enabled, Agetha asks which to use at startup
-# (Yes=Groq, No=OpenRouter). If Groq is chosen, OpenRouter auto-starts when
-# Groq tokens/keys run out.
+# (Yes=Groq, No=OpenRouter). If Groq is chosen, enabled fallbacks are tried
+# in the priority shown above when the current provider becomes unavailable.
 
 # USE_LOCAL_AI — yes = use Ollama on this PC; no = use cloud APIs below.
 USE_LOCAL_AI = no
@@ -26,11 +26,18 @@ USE_LOCAL_AI = no
 # ENABLE_GROQ — yes = allow Groq API (ignored when USE_LOCAL_AI = yes).
 ENABLE_GROQ = yes
 
-# ENABLE_OPENROUTER — yes = enable OpenRouter (fallback after Groq, or solo if Groq off).
+# ENABLE_OPENROUTER — yes = enable OpenRouter (final cloud fallback, or solo).
 # Ignored when USE_LOCAL_AI = yes. Get a key: https://openrouter.ai/keys
 # Put OPENROUTER_API_KEY in .env only (never in this file).
-# Tip: keep ENABLE_GROQ=yes for free tier first; use OpenRouter when Groq is exhausted.
+# Tip: keep ENABLE_GROQ=yes for free tier first; use enabled fallbacks afterward.
 ENABLE_OPENROUTER = no
+
+# ENABLE_GEMINI - yes = enable Google Gemini as a cloud provider/fallback.
+# Put GEMINI_API_KEY in .env only (never in this file).
+ENABLE_GEMINI = no
+
+# GEMINI_MODEL - Gemini model name used when Gemini is selected.
+GEMINI_MODEL = gemini-2.5-flash
 
 # Non-:free models may be billed — keep ENABLE_GROQ=yes to use free Groq first.
 # Recommended for Agetha: deepseek/deepseek-v4-flash-0731
@@ -319,6 +326,10 @@ MOOD_SNAP_WHISPER_SEC = 900
 # ENABLE_SCREEN_READER — no = disable OCR entirely (app still runs).
 ENABLE_SCREEN_READER = yes
 
+# ENABLE_PRINTWINDOW_FALLBACK - use Win32 PrintWindow only when focused MSS
+# capture is a uniform/blank frame. Existing target and exclusion policy remains.
+ENABLE_PRINTWINDOW_FALLBACK = yes
+
 # OCR_MAX_DIMENSION — max screenshot edge in pixels before OCR (640–8192). Lower = faster.
 OCR_MAX_DIMENSION = 2560
 
@@ -426,7 +437,7 @@ CHECK_FOR_UPDATES = yes
 # ── App meta ──────────────────────────────────────────────────────────────────
 
 # APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 5.7
+APP_VERSION = 5.7.5
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest

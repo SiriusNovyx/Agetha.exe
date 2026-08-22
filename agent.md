@@ -3,7 +3,7 @@
 Guidance for humans and coding agents working on this fork.  
 **Priorities (locked):** (1) realism — she feels like a living process on this PC; (2) safety — Command Guard / confirmations / no real harm. Spectacle is optional flavor.
 
-**Version focus:** Overhaul v5.7 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+**Version focus:** Overhaul v5.7.5 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
 **Supported platforms:** Windows 10/11 x64; Windows 11 ARM64/Snapdragon through
 x64 Python under Prism; and Linux desktop environments through the existing
@@ -23,7 +23,8 @@ priorities.
 ## What this project is
 
 Desktop AI companion with a Windows-first Win95-style UI, animated GIF avatar,
-Groq/OpenRouter/Ollama chat, spatial OCR, dual memory, and guarded OS commands.
+Groq/Gemini/OpenRouter/Ollama chat, spatial OCR, dual memory, and guarded OS
+commands.
 Linux uses the existing platform paths and degrades safely when a Windows-only
 integration is unavailable.
 

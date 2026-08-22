@@ -37,6 +37,12 @@ from agetha.core.provider_protocol import (
     provider_response_failed,
 )
 from agetha.providers.groq import GROQ_AVAILABLE, create_groq_client
+from agetha.providers.gemini import (
+    GeminiClient,
+    DEFAULT_GEMINI_MODEL,
+    normalize_gemini_model,
+    wrap_gemini_client,
+)
 from agetha.providers.ollama import (
     LocalOllamaClient as _ProviderOllamaClient,
     wrap_ollama_client,
@@ -794,6 +800,7 @@ class AIEngine:
                 self._fast_profile_active = False
         self._use_local_ai = self._parse_bool(self._config.get("USE_LOCAL_AI", "no"), default=False)
         self._want_openrouter = self._app_settings.enable_openrouter
+        self._want_gemini = bool(getattr(self._app_settings, "enable_gemini", False))
         self._enable_groq = self._parse_bool(self._config.get("ENABLE_GROQ", "yes"), default=True)
         self._openrouter_key = self._app_settings.openrouter_api_key
         self._openrouter_model = (
@@ -802,10 +809,22 @@ class AIEngine:
         self._openrouter_is_free = self._openrouter_model.strip().lower().endswith(":free")
         self._use_openrouter = False
         self._openrouter_as_fallback = False
+        self._gemini_key = str(getattr(self._app_settings, "gemini_api_key", "") or "").strip()
+        try:
+            self._gemini_model = normalize_gemini_model(
+                getattr(self._app_settings, "gemini_model", "")
+                or DEFAULT_GEMINI_MODEL
+            )
+        except ValueError:
+            logger.warning("Invalid GEMINI_MODEL; using the built-in default")
+            self._gemini_model = DEFAULT_GEMINI_MODEL
+        self._use_gemini = False
+        self._gemini_as_fallback = False
 
-        # Priority: local AI > Groq (primary) > OpenRouter (fallback / solo)
+        # Priority: local AI > Groq > Gemini > OpenRouter.
         if self._use_local_ai:
             self._enable_groq = False
+            self._want_gemini = False
             self._want_openrouter = False
 
         self._groq_keys: list[str] = []
@@ -820,7 +839,6 @@ class AIEngine:
         self._groq_model = normalize_groq_model(self._config.get("GROQ_MODEL", ""))
 
         self._groq_exhausted = False
-        self._groq_token_limits = {i: 100000 for i in range(len(self._groq_keys))}
         self._groq_tokens_used = {i: 0 for i in range(len(self._groq_keys))}
         if not self._provider_init_deferred:
             self._ensure_provider_initialized()
@@ -863,18 +881,29 @@ class AIEngine:
     ) -> bool:
         """Apply the existing provider selection and client initialization flow."""
         has_openrouter = bool(self._want_openrouter and self._openrouter_key)
+        has_gemini = bool(self._want_gemini and self._gemini_key)
         has_groq = bool(self._enable_groq and self._groq_keys and GROQ_OK)
+        missing_enabled_key = False
 
         if self._want_openrouter and not self._openrouter_key and not self._use_local_ai:
+            missing_enabled_key = True
             self._emit_error(
                 "ENABLE_OPENROUTER is set to yes but OPENROUTER_API_KEY is empty.",
                 "Add OPENROUTER_API_KEY to .env (not config.txt).",
                 "Get a key at: https://openrouter.ai/keys",
             )
-            self._client = None
-            return True
+        if self._want_gemini and not self._gemini_key and not self._use_local_ai:
+            missing_enabled_key = True
+            self._emit_error(
+                "ENABLE_GEMINI is set to yes but GEMINI_API_KEY is empty.",
+                "Add GEMINI_API_KEY to .env (not config.txt).",
+                "Get a key at: https://aistudio.google.com/apikey",
+            )
 
-        if not self._use_local_ai and not has_groq and not has_openrouter:
+        if not self._use_local_ai and not has_groq and not has_gemini and not has_openrouter:
+            if missing_enabled_key:
+                self._client = None
+                return True
             if self._enable_groq and not GROQ_OK:
                 self._emit_error(
                     "The 'groq' package is not installed.",
@@ -895,8 +924,10 @@ class AIEngine:
             choice = self._ask_provider_choice()
             if choice == "openrouter":
                 self._use_openrouter = True
+                self._use_gemini = False
                 self._enable_groq = False
                 self._openrouter_as_fallback = False
+                self._gemini_as_fallback = False
                 if not self._openrouter_is_free:
                     logger.info(
                         f"User chose OpenRouter with non-free model: {self._openrouter_model}"
@@ -905,11 +936,23 @@ class AIEngine:
                 # Groq first; OpenRouter kept as automatic failover
                 self._use_openrouter = False
                 self._openrouter_as_fallback = True
+                self._use_gemini = False
+                self._gemini_as_fallback = has_gemini
         elif has_groq:
             self._use_openrouter = False
-            self._openrouter_as_fallback = False
+            self._openrouter_as_fallback = has_openrouter
+            self._use_gemini = False
+            self._gemini_as_fallback = has_gemini
+        elif has_gemini:
+            self._use_gemini = True
+            self._gemini_as_fallback = False
+            self._use_openrouter = False
+            self._openrouter_as_fallback = has_openrouter
+            self._enable_groq = False
         elif has_openrouter:
             self._use_openrouter = True
+            self._use_gemini = False
+            self._gemini_as_fallback = False
             self._enable_groq = False
             self._openrouter_as_fallback = False
             # Paid OpenRouter with Groq off → recommend Groq-first setup
@@ -1055,6 +1098,20 @@ class AIEngine:
                 self._show_error_gif = True
             return True
 
+        if getattr(self, "_use_gemini", False):
+            if not self._provider_call_allowed(provider_authorization):
+                return False
+            try:
+                client = GeminiClient(
+                    self._gemini_key, self._gemini_model, timeout=TIMEOUT,
+                )
+                self._client = wrap_gemini_client(client)
+                logger.info(f"Using Gemini model: {self._gemini_model}")
+            except Exception as e:
+                self._emit_error("Failed to initialize Gemini client.", f"Error: {e}")
+                self._client = None
+            return True
+
         if self._use_openrouter:
             if not self._provider_call_allowed(provider_authorization):
                 return False
@@ -1172,7 +1229,9 @@ class AIEngine:
             return False
         if not self._openrouter_key:
             return False
+        was_gemini = getattr(self, "_use_gemini", False)
         self._use_openrouter = True
+        self._use_gemini = False
         self._enable_groq = False
         self._groq_exhausted = True
         initialized = self._init_client(provider_authorization)
@@ -1182,22 +1241,57 @@ class AIEngine:
             or self._client is None
         ):
             self._use_openrouter = False
+            self._use_gemini = was_gemini
             return False
         why = f" ({reason})" if reason else ""
+        source = "Gemini" if was_gemini else "Groq"
         if self._openrouter_is_free:
             warn = (
-                f"Warning: Groq ran out of tokens{why}.\n"
+                f"Warning: {source} became unavailable{why}.\n"
                 f"Automatically switched to OpenRouter ({self._openrouter_model})."
             )
         else:
             warn = (
-                f"Warning: Groq ran out of tokens{why}.\n"
+                f"Warning: {source} became unavailable{why}.\n"
                 "Automatically switched to OpenRouter.\n\n"
                 f"You are using a non-free model: {self._openrouter_model}\n"
                 "OpenRouter may charge for this usage."
             )
         logger.warning(warn.replace("\n", " "))
         self._show_provider_warning(warn, title="Agetha — Provider Switch")
+        return True
+
+    def _switch_to_gemini_fallback(
+        self,
+        reason: str = "",
+        provider_authorization: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Move from exhausted Groq onto configured Gemini."""
+        if not self._provider_call_allowed(provider_authorization):
+            return False
+        if getattr(self, "_use_gemini", False) or not self._gemini_as_fallback:
+            return False
+        if not self._gemini_key:
+            return False
+        self._use_gemini = True
+        self._use_openrouter = False
+        self._enable_groq = False
+        self._groq_exhausted = True
+        initialized = self._init_client(provider_authorization)
+        if (
+            not initialized
+            or not self._provider_call_allowed(provider_authorization)
+            or self._client is None
+        ):
+            self._use_gemini = False
+            return False
+        why = f" ({reason})" if reason else ""
+        warning = (
+            f"Warning: Groq became unavailable{why}.\n"
+            f"Automatically switched to Gemini ({self._gemini_model})."
+        )
+        logger.warning(warning.replace("\n", " "))
+        self._show_provider_warning(warning, title="Agetha - Provider Switch")
         return True
 
     @staticmethod
@@ -1230,7 +1324,7 @@ class AIEngine:
         provider_authorization: Callable[[], bool] | None = None,
     ) -> dict | None:
         """
-        Try OpenRouter failover after Groq is spent.
+        Try Gemini, then OpenRouter, after the current cloud route fails.
         Returns None if failover succeeded (caller should continue).
         Returns a groq_exhausted response dict if failover is unavailable.
         """
@@ -1239,6 +1333,8 @@ class AIEngine:
                 "command": "idle", "mood": "neutral", "segments": [],
                 "shutdown": False,
             }
+        if self._switch_to_gemini_fallback(reason, provider_authorization):
+            return None
         if self._switch_to_openrouter_fallback(reason, provider_authorization):
             return None
         self._groq_exhausted = True
@@ -1797,6 +1893,8 @@ class AIEngine:
             return f"LocalAI/{self._config.get('LOCAL_AI_MODEL', '?')}"
         if self._use_openrouter:
             return f"OpenRouter/{self._openrouter_model}"
+        if getattr(self, "_use_gemini", False):
+            return f"Gemini/{self._gemini_model}"
         return f"Groq/{self._groq_model}"
 
     def _provider_kind(self) -> str:
@@ -1804,6 +1902,8 @@ class AIEngine:
             return "ollama"
         if self._use_openrouter:
             return "openrouter"
+        if getattr(self, "_use_gemini", False):
+            return "gemini"
         return "groq"
 
     def _provider_create(
@@ -1842,23 +1942,21 @@ class AIEngine:
                 "provider": "openrouter",
                 "model": self._openrouter_model,
             }
+        if getattr(self, "_use_gemini", False):
+            return {
+                "using_groq": False,
+                "provider": "gemini",
+                "model": self._gemini_model,
+            }
         if not self._groq_keys:
             return {"using_groq": False, "provider": "local"}
         idx = self._current_groq_key_index
-        limit = self._groq_token_limits.get(idx, 100000)
-        used = self._groq_tokens_used.get(idx, 0)
-        next_request_est = self._estimate_request_tokens()
-        effective_used = used + next_request_est
-        left = max(0, limit - effective_used)
-        pct_left = max(0, int(100.0 * left / limit)) if limit > 0 else 0
         return {
             "using_groq": True,
             "provider": "groq",
+            "model": self._groq_model,
             "key_index": idx + 1,
             "key_count": len(self._groq_keys),
-            "tokens_used": used,
-            "tokens_left": left,
-            "pct_left": pct_left,
         }
 
     def _track_tokens(self, usage_obj) -> None:
@@ -1868,10 +1966,11 @@ class AIEngine:
             total = int(getattr(usage_obj, "total_tokens", 0))
             if total > 0 and self._current_groq_key_index < len(self._groq_keys):
                 self._groq_tokens_used[self._current_groq_key_index] += total
-                limit = self._groq_token_limits.get(self._current_groq_key_index, 100000)
                 used = self._groq_tokens_used[self._current_groq_key_index]
-                pct = max(0, int(100.0 * (limit - used) / limit))
-                logger.info(f"Key {self._current_groq_key_index + 1}: +{total} tokens ({pct}% left)")
+                logger.info(
+                    f"Key {self._current_groq_key_index + 1}: "
+                    f"+{total} tokens ({used} this session)"
+                )
         except Exception:
             pass
 
@@ -2376,6 +2475,8 @@ class AIEngine:
                     current_model = self._config.get("LOCAL_AI_MODEL", "").strip()
                 elif self._use_openrouter:
                     current_model = self._openrouter_model
+                elif getattr(self, "_use_gemini", False):
+                    current_model = self._gemini_model
                 else:
                     current_model = self._groq_model
                 if not self._provider_call_allowed(provider_authorization):
@@ -2457,7 +2558,8 @@ class AIEngine:
                 logger.warning(f"{provider} error: {e}")
                 error_kind = classify_provider_error(e)
 
-                # Rate-limit: OpenRouter backoff retry; Groq rotates keys then OpenRouter failover
+                # Rate-limit: OpenRouter retries; Gemini falls through to its
+                # configured fallback; Groq rotates keys before failover.
                 if error_kind is ProviderErrorKind.RATE_LIMIT:
                     retries = 0
                     if self._use_openrouter:
@@ -2470,6 +2572,12 @@ class AIEngine:
                             time.sleep(wait)
                             continue
                         logger.error("OpenRouter rate-limit retries exhausted.")
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                    if getattr(self, "_use_gemini", False):
+                        if self._switch_to_openrouter_fallback(
+                            "rate limit", provider_authorization,
+                        ):
+                            continue
                         return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     if self._enable_groq and self._rotate_key(provider_authorization):
                         continue
@@ -2484,6 +2592,12 @@ class AIEngine:
                     ProviderErrorKind.PERMANENT_MODEL,
                     ProviderErrorKind.PERMANENT_REQUEST,
                 }:
+                    if getattr(self, "_use_gemini", False):
+                        if self._switch_to_openrouter_fallback(
+                            error_kind.value.replace("_", " "), provider_authorization,
+                        ):
+                            continue
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     if self._use_openrouter or not self._enable_groq:
                         return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     exhausted = self._groq_exhausted_or_failover(
@@ -2494,6 +2608,12 @@ class AIEngine:
                     return exhausted
 
                 if error_kind is ProviderErrorKind.AUTHENTICATION:
+                    if getattr(self, "_use_gemini", False):
+                        if self._switch_to_openrouter_fallback(
+                            "authentication failure", provider_authorization,
+                        ):
+                            continue
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     if self._use_openrouter or not self._enable_groq:
                         return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     if self._rotate_key(provider_authorization):
@@ -2561,9 +2681,14 @@ class AIEngine:
                         logger.warning(f"Local AI non-streaming fallback also failed: {e2}")
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
-                if self._use_openrouter or not self._enable_groq:
+                if self._use_openrouter or getattr(self, "_use_gemini", False) or not self._enable_groq:
                     retries += 1
                     if retries <= MAX_TRANSIENT_RETRIES:
+                        continue
+                    if getattr(self, "_use_gemini", False) and self._switch_to_openrouter_fallback(
+                        "transient failure", provider_authorization,
+                    ):
+                        retries = 0
                         continue
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
 
@@ -2647,6 +2772,7 @@ class AIEngine:
                     self._config.get("LOCAL_AI_MODEL", "").strip()
                     if self._use_local_ai
                     else self._openrouter_model if self._use_openrouter
+                    else self._gemini_model if getattr(self, "_use_gemini", False)
                     else self._groq_model
                 )
                 timeout = int(self._config.get("LOCAL_AI_TIMEOUT", TIMEOUT)) if self._use_local_ai else TIMEOUT
@@ -2725,6 +2851,12 @@ class AIEngine:
                             continue
                         logger.error("OpenRouter rate-limit retries exhausted.")
                         return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
+                    if getattr(self, "_use_gemini", False):
+                        if self._switch_to_openrouter_fallback(
+                            "rate limit", provider_authorization,
+                        ):
+                            continue
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     if self._enable_groq and self._rotate_key(provider_authorization):
                         continue
                     exhausted = self._groq_exhausted_or_failover(
@@ -2737,6 +2869,12 @@ class AIEngine:
                     ProviderErrorKind.PERMANENT_MODEL,
                     ProviderErrorKind.PERMANENT_REQUEST,
                 }:
+                    if getattr(self, "_use_gemini", False):
+                        if self._switch_to_openrouter_fallback(
+                            error_kind.value.replace("_", " "), provider_authorization,
+                        ):
+                            continue
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     if self._use_openrouter or not self._enable_groq:
                         return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     exhausted = self._groq_exhausted_or_failover(
@@ -2746,6 +2884,12 @@ class AIEngine:
                         continue
                     return exhausted
                 if error_kind is ProviderErrorKind.AUTHENTICATION:
+                    if getattr(self, "_use_gemini", False):
+                        if self._switch_to_openrouter_fallback(
+                            "authentication failure", provider_authorization,
+                        ):
+                            continue
+                        return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     if self._use_openrouter or not self._enable_groq:
                         return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                     if self._rotate_key(provider_authorization):
@@ -2756,9 +2900,14 @@ class AIEngine:
                     if exhausted is None:
                         continue
                     return exhausted
-                if self._use_openrouter:
+                if self._use_openrouter or getattr(self, "_use_gemini", False):
                     retries += 1
                     if retries <= MAX_TRANSIENT_RETRIES:
+                        continue
+                    if getattr(self, "_use_gemini", False) and self._switch_to_openrouter_fallback(
+                        "transient failure", provider_authorization,
+                    ):
+                        retries = 0
                         continue
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
                 retries += 1
@@ -2793,7 +2942,9 @@ class AIEngine:
         if cancel_event is not None and cancel_event.is_set():
             return ""
         selected = str(route or "inherit").strip().lower()
-        if selected not in {"inherit", "primary", "ollama", "groq", "openrouter"}:
+        if selected not in {
+            "inherit", "primary", "ollama", "groq", "gemini", "openrouter",
+        }:
             raise ValueError("Unsupported structured-request provider")
         prompt = str(system_prompt or "").strip()[:12_000]
         if not prompt:
@@ -2816,6 +2967,8 @@ class AIEngine:
                 timeout = int(self._config.get("LOCAL_AI_TIMEOUT", TIMEOUT))
             elif self._use_openrouter:
                 selected_model = selected_model or self._openrouter_model
+            elif getattr(self, "_use_gemini", False):
+                selected_model = selected_model or self._gemini_model
             else:
                 selected_model = selected_model or self._groq_model
         elif selected == "ollama":
@@ -2835,6 +2988,15 @@ class AIEngine:
                 self._openrouter_key, selected_model, timeout=TIMEOUT,
             )
             client = wrap_openrouter_client(remote)
+        elif selected == "gemini":
+            provider_kind = "gemini"
+            selected_model = selected_model or self._gemini_model
+            if not self._gemini_key or not selected_model:
+                raise RuntimeError("Gemini is not configured")
+            remote = GeminiClient(
+                self._gemini_key, selected_model, timeout=TIMEOUT,
+            )
+            client = wrap_gemini_client(remote)
         else:
             provider_kind = "groq"
             if not GROQ_OK or not self._groq_keys:

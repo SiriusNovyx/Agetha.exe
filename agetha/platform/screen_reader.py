@@ -890,6 +890,192 @@ def _grab_mss_frame(
         return None
 
 
+def _image_looks_uniform(image: "Image.Image | None") -> bool:
+    """Detect the uniform frames returned by some failed desktop captures."""
+    if image is None or image.width <= 0 or image.height <= 0:
+        return True
+    try:
+        sample = image.convert("RGB")
+        sample.thumbnail((128, 128))
+        return all(high - low <= 2 for low, high in sample.getextrema())
+    except Exception:
+        return False
+
+
+def _grab_printwindow_frame(
+    info: dict,
+    *,
+    crop_frame: CapturedFrame | None = None,
+) -> CapturedFrame | None:
+    """Render one already-approved visible Windows target with PrintWindow.
+
+    This primitive performs no target selection. Callers must retain the normal
+    focused-window, exclusion, capability, generation, and revalidation policy.
+    Minimized/unmapped targets are rejected again here as defense in depth.
+    """
+    if not IS_WINDOWS or not PIL_OK or ctypes is None:
+        return None
+    target, status = _validate_capture_target(info)
+    if target is None or status:
+        return None
+    try:
+        hwnd = int(info.get("hwnd") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    width = int(target["width"])
+    height = int(target["height"])
+    if not hwnd or width * height > 20_000_000:
+        return None
+
+    class _BitmapInfoHeader(ctypes.Structure):
+        _fields_ = [
+            ("biSize", ctypes.wintypes.DWORD),
+            ("biWidth", ctypes.wintypes.LONG),
+            ("biHeight", ctypes.wintypes.LONG),
+            ("biPlanes", ctypes.wintypes.WORD),
+            ("biBitCount", ctypes.wintypes.WORD),
+            ("biCompression", ctypes.wintypes.DWORD),
+            ("biSizeImage", ctypes.wintypes.DWORD),
+            ("biXPelsPerMeter", ctypes.wintypes.LONG),
+            ("biYPelsPerMeter", ctypes.wintypes.LONG),
+            ("biClrUsed", ctypes.wintypes.DWORD),
+            ("biClrImportant", ctypes.wintypes.DWORD),
+        ]
+
+    class _BitmapInfo(ctypes.Structure):
+        _fields_ = [
+            ("bmiHeader", _BitmapInfoHeader),
+            ("bmiColors", ctypes.wintypes.DWORD * 3),
+        ]
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    window_dc = memory_dc = bitmap = previous = None
+    try:
+        user32.GetWindowDC.argtypes = [ctypes.wintypes.HWND]
+        user32.GetWindowDC.restype = ctypes.wintypes.HDC
+        gdi32.CreateCompatibleDC.argtypes = [ctypes.wintypes.HDC]
+        gdi32.CreateCompatibleDC.restype = ctypes.wintypes.HDC
+        gdi32.CreateCompatibleBitmap.argtypes = [
+            ctypes.wintypes.HDC, ctypes.c_int, ctypes.c_int,
+        ]
+        gdi32.CreateCompatibleBitmap.restype = ctypes.wintypes.HBITMAP
+        gdi32.SelectObject.argtypes = [ctypes.wintypes.HDC, ctypes.wintypes.HANDLE]
+        gdi32.SelectObject.restype = ctypes.wintypes.HANDLE
+
+        window_dc = user32.GetWindowDC(hwnd)
+        if not window_dc:
+            return None
+        memory_dc = gdi32.CreateCompatibleDC(window_dc)
+        bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
+        if not memory_dc or not bitmap:
+            return None
+        previous = gdi32.SelectObject(memory_dc, bitmap)
+        if not user32.PrintWindow(hwnd, memory_dc, 2):
+            return None
+
+        info_header = _BitmapInfo()
+        info_header.bmiHeader.biSize = ctypes.sizeof(_BitmapInfoHeader)
+        info_header.bmiHeader.biWidth = width
+        info_header.bmiHeader.biHeight = -height
+        info_header.bmiHeader.biPlanes = 1
+        info_header.bmiHeader.biBitCount = 32
+        buffer = ctypes.create_string_buffer(width * height * 4)
+        rows = gdi32.GetDIBits(
+            memory_dc,
+            bitmap,
+            0,
+            height,
+            buffer,
+            ctypes.byref(info_header),
+            0,
+        )
+        if int(rows) != height:
+            return None
+        image = Image.frombuffer(
+            "RGB", (width, height), buffer, "raw", "BGRX", 0, 1,
+        ).copy()
+        left = int(target["left"])
+        top = int(target["top"])
+        if crop_frame is not None:
+            crop_left = int(crop_frame.left) - left
+            crop_top = int(crop_frame.top) - top
+            crop_right = crop_left + crop_frame.image.width
+            crop_bottom = crop_top + crop_frame.image.height
+            if (
+                crop_left < 0 or crop_top < 0
+                or crop_right > image.width or crop_bottom > image.height
+            ):
+                return None
+            image = image.crop((crop_left, crop_top, crop_right, crop_bottom))
+            left = crop_frame.left
+            top = crop_frame.top
+        return CapturedFrame(
+            image=image,
+            left=left,
+            top=top,
+            title=str(info.get("title") or "")[:120],
+            hwnd=hwnd,
+            scope="focused_window",
+            process_name=str(info.get("process_name") or "")[:120],
+            process_id=(
+                int(info["process_id"])
+                if info.get("process_id") is not None else None
+            ),
+        )
+    except Exception as exc:
+        logger.debug(f"PrintWindow capture failed: {type(exc).__name__}")
+        return None
+    finally:
+        if memory_dc and previous:
+            try:
+                gdi32.SelectObject(memory_dc, previous)
+            except Exception:
+                pass
+        if bitmap:
+            try:
+                gdi32.DeleteObject(bitmap)
+            except Exception:
+                pass
+        if memory_dc:
+            try:
+                gdi32.DeleteDC(memory_dc)
+            except Exception:
+                pass
+        if window_dc:
+            try:
+                user32.ReleaseDC(hwnd, window_dc)
+            except Exception:
+                pass
+
+
+def _grab_focused_windows_frame(
+    info: dict,
+    *,
+    allow_printwindow: bool,
+) -> CapturedFrame | None:
+    """Capture the approved focused target, using PrintWindow only for blank MSS."""
+    target, status = _validate_capture_target(info)
+    if target is None or status:
+        return None
+    frame = _grab_mss_frame(
+        target,
+        title=info.get("title", ""),
+        hwnd=info.get("hwnd"),
+        scope="focused_window",
+        process_name=info.get("process_name", ""),
+        process_id=info.get("process_id"),
+    )
+    if (
+        not allow_printwindow
+        or frame is None
+        or not _image_looks_uniform(frame.image)
+    ):
+        return frame
+    rendered = _grab_printwindow_frame(info, crop_frame=frame)
+    return rendered if rendered is not None else frame
+
+
 def _grab_mss(monitor_dict: dict | None = None) -> "Image.Image | None":
     """Backward-compatible image-only wrapper used by older callers/tests."""
     frame = _grab_mss_frame(monitor_dict)
@@ -1059,6 +1245,9 @@ class ScreenReader:
         self._low_confidence_confirm_scans = _cfg.ocr_low_confidence_confirm_scans
         self._pattern_clear_scans = _cfg.ocr_pattern_clear_scans
         self._redact_sensitive_context = _cfg.ocr_redact_sensitive_text
+        self._enable_printwindow_fallback = bool(
+            getattr(_cfg, "enable_printwindow_fallback", True)
+        )
         self._excluded_apps = parse_csv_values(_cfg.ocr_excluded_apps)
         self._title_exclusions = compile_title_exclusions(
             _cfg.ocr_excluded_title_patterns,
@@ -1504,19 +1693,27 @@ class ScreenReader:
                     return None
             if focused_only and win is not None:
                 hwnd = win.get("hwnd")
-                frame = _grab_mss_frame(
-                    {
-                        "left": int(win["left"]),
-                        "top": int(win["top"]),
-                        "width": int(win["width"]),
-                        "height": int(win["height"]),
-                    },
-                    title=win.get("title", ""),
-                    hwnd=hwnd,
-                    scope="focused_window",
-                    process_name=win.get("process_name", ""),
-                    process_id=win.get("process_id"),
-                )
+                if self._system == "Windows":
+                    frame = _grab_focused_windows_frame(
+                        win,
+                        allow_printwindow=bool(getattr(
+                            self, "_enable_printwindow_fallback", True,
+                        )),
+                    )
+                else:
+                    frame = _grab_mss_frame(
+                        {
+                            "left": int(win["left"]),
+                            "top": int(win["top"]),
+                            "width": int(win["width"]),
+                            "height": int(win["height"]),
+                        },
+                        title=win.get("title", ""),
+                        hwnd=hwnd,
+                        scope="focused_window",
+                        process_name=win.get("process_name", ""),
+                        process_id=win.get("process_id"),
+                    )
                 if frame is not None:
                     self.last_monitor_status = "captured_focused_window"
                     return frame

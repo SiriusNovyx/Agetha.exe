@@ -27,6 +27,9 @@ class SettingSpecTests(unittest.TestCase):
         from agetha.ui.dashboard import _SETTING_SECTIONS
 
         expected = {
+            "ENABLE_GEMINI": True,
+            "GEMINI_MODEL": True,
+            "ENABLE_PRINTWINDOW_FALLBACK": True,
             "AI_MAX_TOKENS": True,
             "HISTORY_LIMIT": True,
             "MEMORY_CHARS": True,

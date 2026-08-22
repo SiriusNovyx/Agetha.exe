@@ -7,9 +7,11 @@ from enum import Enum
 
 
 class SettingKind(str, Enum):
+    BOOL = "bool"
     INT = "int"
     FLOAT = "float"
     ENUM = "enum"
+    STRING = "string"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,18 @@ def _build_setting_specs(specs: tuple[SettingSpec, ...]) -> dict[str, SettingSpe
 
 
 SETTING_SPECS = _build_setting_specs((
+    SettingSpec(
+        "ENABLE_GEMINI", "no", SettingKind.BOOL, "provider",
+        restart_required=True,
+    ),
+    SettingSpec(
+        "GEMINI_MODEL", "gemini-2.5-flash", SettingKind.STRING, "provider",
+        restart_required=True,
+    ),
+    SettingSpec(
+        "ENABLE_PRINTWINDOW_FALLBACK", "yes", SettingKind.BOOL, "screen",
+        restart_required=True,
+    ),
     SettingSpec(
         "AI_MAX_TOKENS", "400", SettingKind.INT, "ai", 64, 8192,
         restart_required=True,

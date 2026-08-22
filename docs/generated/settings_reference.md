@@ -11,7 +11,10 @@ transactional, secret, or security semantics remain explicitly implemented.
 | `AI_MAX_TOKENS` | `400` | int | 64 .. 8192 | ai | yes |
 | `AI_TEMPERATURE` | `0.85` | float | 0.0 .. 2.0 | ai | yes |
 | `AI_TOP_P` | `0.95` | float | 0.0 .. 1.0 | ai | yes |
+| `ENABLE_GEMINI` | `no` | bool | - | provider | yes |
+| `ENABLE_PRINTWINDOW_FALLBACK` | `yes` | bool | - | screen | yes |
 | `EPISODIC_PROMPT_LIMIT` | `10` | int | 0 .. 50 | memory | yes |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | string | - | provider | yes |
 | `HISTORY_LIMIT` | `6` | int | 1 .. 20 | memory | yes |
 | `MEMORY_CHARS` | `600` | int | 100 .. 5000 | memory | yes |
 | `OCR_FORCE_REFRESH_SECONDS` | `20` | float | 1.0 .. 3600.0 | screen | yes |

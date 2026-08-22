@@ -1680,14 +1680,17 @@ class CompanionApp:
             status = self._ai.get_token_status()
             if not status.get("using_groq"):
                 if status.get("provider") == "openrouter":
-                    return "OpenRouter  •  type here..."
+                    model = status.get("model", "")
+                    return f"OpenRouter {model}  •  type here...".replace("  ", " ")
+                if status.get("provider") == "gemini":
+                    model = status.get("model", "")
+                    return f"Gemini {model}  •  type here...".replace("  ", " ")
                 if status.get("provider") == "local":
                     return "local AI  •  type here..."
                 return "type here..."
             idx = status.get("key_index", 1)
             total = status.get("key_count", 1)
-            pct = status.get("pct_left", 100)
-            return f"type here...  •  key {idx}/{total}  •  {pct}% tokens left"
+            return f"Groq  •  key {idx}/{total}  •  type here..."
         except Exception:
             return "type here..."
 
@@ -1975,8 +1978,16 @@ class CompanionApp:
             status = self._ai.get_token_status()
             if status.get("using_groq"):
                 key_info = f"Key {status['key_index']}/{status['key_count']}"
-                pct = status.get("pct_left", 0)
-                self._status_var.set(f"{key_info} | {pct}% left")
+                self._status_var.set(f"Groq | {key_info}")
+            elif status.get("provider") in {"gemini", "openrouter"}:
+                provider = {
+                    "gemini": "Gemini",
+                    "openrouter": "OpenRouter",
+                }[status["provider"]]
+                model = str(status.get("model", "") or "").strip()
+                self._status_var.set(
+                    f"{provider} | {model}" if model else provider
+                )
             self._update_placeholder()
         except Exception as exc:
             logger.debug(f"Token status update failed: {exc}")
@@ -6767,10 +6778,11 @@ def _warn_if_no_api_key():
     if s.bool("USE_LOCAL_AI"):
         if s.get("LOCAL_AI_MODEL", "").strip():
             return
-    elif s.enable_openrouter:
-        if s.openrouter_api_key:
-            return
     else:
+        if s.enable_gemini and s.gemini_api_key:
+            return
+        if s.enable_openrouter and s.openrouter_api_key:
+            return
         has_key = bool(s.get("GROQ_API_KEY", "").strip())
         if not has_key and ENV_PATH.exists():
             for line in ENV_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -6787,8 +6799,8 @@ def _warn_if_no_api_key():
     except Exception:
         pass
     msg = (
-        "No Groq API key or Ollama model found.\n\n"
-        "Add GROQ_API_KEY_1 to .env (not config.txt),\n"
+        "No cloud API key or Ollama model found.\n\n"
+        "Add GROQ_API_KEY_1 or GEMINI_API_KEY to .env,\n"
         "or set USE_LOCAL_AI=yes and LOCAL_AI_MODEL.\n\n"
         "Optional: TESSERACT_PATH for screen reading."
     )
@@ -6803,9 +6815,15 @@ def _early_config_check():
     """
     Ensure config.txt exists; always continue with defaults if missing or invalid.
     """
-    from agetha.app_config import ensure_config_file, get_settings, CONFIG_PATH
+    from agetha.app_config import (
+        CONFIG_PATH,
+        ensure_config_file,
+        get_settings,
+        migrate_missing_setting_specs,
+    )
 
     ensure_config_file(CONFIG_PATH, write_if_missing=True)
+    migrate_missing_setting_specs(CONFIG_PATH)
     get_settings(reload=True)
     refresh_config_constants()
     # Config warnings are already emitted via app_config._log_config (no secret names).
