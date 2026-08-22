@@ -48,6 +48,12 @@ jobs:
       - name: Compile shared modules
         run: python -m compileall agetha main.py
 
+      - name: Check generated command matrix
+        run: python -m agetha.commands.generate_command_matrix --check
+
+      - name: Check generated settings reference
+        run: python -m agetha.config.generate_settings_reference --check
+
       - name: Run full unit suite
         run: python -m unittest discover -s tests -v
 

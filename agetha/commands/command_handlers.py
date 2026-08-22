@@ -15,11 +15,71 @@ import threading
 import time
 import urllib.parse
 import webbrowser
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
 from agetha.commands.command_guard import CommandGuard
+from agetha.commands.specs import (
+    DispatchKind,
+    get_command_spec,
+    validate_handler_bindings,
+)
+from agetha.commands.handlers.registry import HANDLERS, HandlerFn, register
+from agetha.commands.handlers.support import (
+    CAPABILITY_AUTHORIZATION as _CAPABILITY_AUTHORIZATION,
+    DispatchCtx,
+    call_app_ui_sync as _call_app_ui_sync,
+    command_result_ok as _command_result_ok,
+    finish_verified_command as _finish_verified_command,
+    perform_authorized_effect as _perform_authorized_effect,
+    schedule_app_ui as _schedule_app_ui,
+    start_app_worker as _start_app_worker,
+)
+from agetha.commands.handlers.memory_presentation import (
+    _format_notepad_context,
+    handle_add_task,
+    handle_change_mood,
+    handle_clear_emotions,
+    handle_clear_memory,
+    handle_complete_task,
+    handle_glitch_overlay,
+    handle_list_tasks,
+    handle_play_virus_trivia,
+    handle_read_notepad,
+    handle_search_memory,
+    handle_view_dreams,
+    handle_view_emotions,
+    handle_view_memory,
+)
+from agetha.commands.handlers.web_context import handle_fetch_webpage, handle_search_web
+from agetha.commands.handlers.files import (
+    handle_clipboard_set,
+    handle_create_file,
+    handle_create_folder,
+    handle_delete_file,
+    handle_list_dir,
+    handle_notification,
+    handle_open_file,
+    handle_open_folder,
+    handle_play_sound,
+    handle_rename_file,
+    handle_request_path,
+    handle_run_command,
+    handle_screenshot,
+    handle_write_file,
+)
+from agetha.commands.handlers.system import (
+    handle_lock_screen,
+    handle_open_settings,
+    handle_recycle_bin_status,
+    handle_restart,
+    handle_search_files,
+    handle_set_autostart,
+    handle_set_theme,
+    handle_set_volume,
+    handle_set_wallpaper,
+    handle_shutdown,
+)
 from agetha.core.request_context import (
     AmbientRelevance,
     REQUEST_ORIGINS,
@@ -79,87 +139,8 @@ _EMOTION_READONLY_COMMANDS = frozenset({
 
 # Identity-only marker: model JSON cannot forge approval by naming a field.
 _TYPE_TEXT_GUARD_APPROVAL = object()
-_CAPABILITY_AUTHORIZATION = object()
-
 if TYPE_CHECKING:
     from main import CompanionApp
-
-HandlerFn = Callable[["CompanionApp", dict, "DispatchCtx"], bool]
-
-
-@dataclass
-class DispatchCtx:
-    user_message: str | None
-    mood: str
-    segments: list
-    shutdown_requested: bool
-    origin: RequestOrigin = "user"
-
-
-def _command_result_ok(result: str) -> bool:
-    """Recognize only explicit success statuses, without inspecting payload text."""
-    value = str(result or "").casefold()
-    return any(
-        value.startswith(prefix)
-        for prefix in (
-            "[folder created]",
-            "[file created]",
-            "[folder deleted]",
-            "[file deleted]",
-            "[file renamed]",
-            "[command completed]",
-            "[written:",
-            "[screen locked]",
-            "[shutdown in ",
-            "[restart in ",
-        )
-    )
-
-
-def _finish_verified_command(app, ctx: DispatchCtx, result: str) -> None:
-    """Speak success text only after the OS operation reports success."""
-    if _command_result_ok(result):
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-        return
-    message = str(result or "The operation failed.").strip("[]")[:140]
-    app._show_op_error(message)
-    app._speak_and_continue(
-        [{"text": "That didn't work.", "pause": 0.0}],
-        "neutral",
-        False,
-    )
-
-
-HANDLERS: dict[str, HandlerFn] = {}
-
-
-def _start_app_worker(app: "CompanionApp", target: Callable[[], None], name: str) -> None:
-    """Use CompanionApp lifecycle tracking while preserving lightweight test doubles."""
-    starter = getattr(type(app), "_start_worker", None)
-    if callable(starter):
-        starter(app, target, name=name)
-    else:
-        threading.Thread(target=target, daemon=True).start()
-
-
-def _call_app_ui_sync(app: "CompanionApp", callback: Callable[[], object]) -> object | None:
-    caller = getattr(type(app), "_call_ui_sync", None)
-    if callable(caller):
-        return caller(app, callback)
-    return callback()
-
-
-def _schedule_app_ui(app: "CompanionApp", callback: Callable[[], None]) -> object | None:
-    scheduler = getattr(type(app), "_schedule_ui", None)
-    if callable(scheduler):
-        return scheduler(app, callback)
-    if threading.current_thread() is not threading.main_thread():
-        return None
-    try:
-        return app.root.after(0, callback)
-    except Exception as exc:
-        logger.debug("Command UI scheduling failed: %s", type(exc).__name__)
-        return None
 
 
 def _capability_decision(app: "CompanionApp", command: str, settings: object):
@@ -216,23 +197,6 @@ def _authorization_is_current(app: "CompanionApp", authorization: object) -> boo
         )
     except Exception:
         return False
-
-
-def _perform_authorized_effect(
-    app: "CompanionApp",
-    authorization: object,
-    effect: Callable[[], object],
-) -> tuple[bool, object | None]:
-    """Close the live-policy check-to-effect window for one primitive."""
-
-    if authorization is True:
-        return True, effect()
-    if not isinstance(authorization, CapabilityAuthorization):
-        return False, None
-    controller = getattr(app, "_capabilities", None)
-    if not isinstance(controller, CapabilityController):
-        return False, None
-    return controller.perform_authorized(authorization, effect)
 
 
 def _bind_capability_effect_boundaries(
@@ -688,13 +652,6 @@ def guarded_type_for_computer_use(
     return bool(result.success and not cancel_event.is_set())
 
 
-def register(command: str) -> Callable[[HandlerFn], HandlerFn]:
-    def deco(fn: HandlerFn) -> HandlerFn:
-        HANDLERS[command] = fn
-        return fn
-    return deco
-
-
 def _deep_ocr_focused_only(response: dict) -> bool:
     raw = response.get("focused_only", True)
     return (
@@ -732,9 +689,8 @@ def dispatch(
         app._reschedule_screen_poll()
         return
     command = response.get("command", "idle")
-    if not isinstance(command, str) or command not in (
-        set(HANDLERS) | {"idle", "speak", "wake_user", "popup"}
-    ):
+    spec = get_command_spec(command)
+    if not isinstance(command, str) or spec is None:
         logger.warning("Blocked unknown AI command before Command Guard")
         _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE))
         app._reschedule_screen_poll()
@@ -825,15 +781,29 @@ def dispatch(
         _deny_capability(app, capability_decision)
         return
     response[_CAPABILITY_AUTHORIZATION] = capability_authorization
-    if command == "computer_use":
-        if resolved_origin != "user":
-            logger.info("Computer Use ignored without direct user authority")
+
+    # CommandSpec can narrow authority that survived the central origin policy;
+    # it never upgrades ambient, tool-result, or Sentinel authority. Keep this
+    # after capability denial to preserve the established Compact-mode ordering.
+    spec = get_command_spec(command)
+    if spec is None or resolved_origin not in spec.allowed_origins:
+        logger.info(
+            "Command ignored for request origin: command=%s origin=%s",
+            command,
+            resolved_origin,
+        )
+        if command == "computer_use":
             app._speak_and_continue(
                 [{"text": "Computer Use needs a direct request from you.", "pause": 0.0}],
                 "neutral",
                 False,
             )
-            return
+        else:
+            _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE))
+            app._reschedule_screen_poll()
+        return
+
+    if command == "computer_use":
         if not settings.enable_computer_use or not settings.enable_command_execution:
             logger.info("Computer Use blocked by its local feature gate")
             app._speak_and_continue(
@@ -980,7 +950,11 @@ def dispatch(
     if not ambient_voice_blocked and app._try_short_mood_speak(command, ctx):
         return
 
-    handler = HANDLERS.get(command)
+    handler = (
+        HANDLERS.get(spec.handler_key)
+        if spec.dispatch_kind is DispatchKind.HANDLER
+        else None
+    )
     if handler:
         # Guard/preview/UI waits can overlap a live Full→Compact downgrade.
         # Recheck the app-owned generation/profile before entering any handler;
@@ -1087,154 +1061,11 @@ def handle_move_window(app, response, ctx):
     return True
 
 
-@register("request_path")
-def handle_request_path(app, response, ctx):
-    from main import AgethaPopup
-    hint = response.get("path_hint", "").strip()
-    lines = [hint] if hint else (
-        [s.get("text", "") for s in ctx.segments if s.get("text")] or ["Path resolved automatically."]
-    )
-    _schedule_app_ui(app, lambda: AgethaPopup(app.root, lines[:4], ctx.mood))
-    _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
-    app._reschedule_screen_poll()
-    return True
 
 
-@register("create_folder")
-def handle_create_folder(app, response, ctx):
-    path = response.get("path", "").strip()
-    result = "[no path]"
-    if path:
-        try:
-            performed, _value = _perform_authorized_effect(
-                app,
-                response.get(_CAPABILITY_AUTHORIZATION),
-                lambda: os.makedirs(path, exist_ok=True),
-            )
-            if performed:
-                logger.info("Created folder: name=%s", Path(path).name)
-                result = "[folder created]"
-            else:
-                result = "[create folder blocked: capability changed]"
-        except Exception as exc:
-            result = f"[create folder error: {type(exc).__name__}]"
-    _finish_verified_command(app, ctx, result)
-    return True
 
 
-@register("create_file")
-def handle_create_file(app, response, ctx):
-    file_path = response.get("file_path", "").strip()
-    if not file_path:
-        p, fn = response.get("path", "").strip(), response.get("file_name", "").strip()
-        if p and fn:
-            file_path = os.path.join(p, fn)
-    result = "[no path]"
-    if file_path:
-        try:
-            def _create() -> None:
-                parent = os.path.dirname(file_path)
-                if parent:
-                    os.makedirs(parent, exist_ok=True)
-                with open(file_path, "w", encoding="utf-8") as fh:
-                    fh.write(response.get("content", ""))
 
-            performed, _value = _perform_authorized_effect(
-                app, response.get(_CAPABILITY_AUTHORIZATION), _create,
-            )
-            if performed:
-                logger.info("Created file: name=%s", Path(file_path).name)
-                result = "[file created]"
-            else:
-                result = "[create file blocked: capability changed]"
-        except Exception as exc:
-            result = f"[create file error: {type(exc).__name__}]"
-    _finish_verified_command(app, ctx, result)
-    return True
-
-
-@register("delete_file")
-def handle_delete_file(app, response, ctx):
-    path = response.get("path", "").strip()
-    result = "[no path]"
-    if path:
-        try:
-            def _delete() -> str:
-                p = Path(path)
-                if p.is_dir():
-                    shutil.rmtree(p)
-                    return "[folder deleted]"
-                if p.exists():
-                    p.unlink()
-                    return "[file deleted]"
-                return "[delete error: not found]"
-
-            performed, value = _perform_authorized_effect(
-                app, response.get(_CAPABILITY_AUTHORIZATION), _delete,
-            )
-            result = (
-                str(value)
-                if performed else "[delete blocked: capability changed]"
-            )
-        except Exception as exc:
-            result = f"[delete error: {type(exc).__name__}]"
-    _finish_verified_command(app, ctx, result)
-    return True
-
-
-@register("rename_file")
-def handle_rename_file(app, response, ctx):
-    path, new_name = response.get("path", "").strip(), response.get("new_name", "").strip()
-    result = "[missing path or name]"
-    if path and new_name:
-        try:
-            performed, _value = _perform_authorized_effect(
-                app,
-                response.get(_CAPABILITY_AUTHORIZATION),
-                lambda: Path(path).rename(Path(path).parent / new_name),
-            )
-            result = (
-                "[file renamed]"
-                if performed else "[rename blocked: capability changed]"
-            )
-        except Exception as exc:
-            result = f"[rename error: {type(exc).__name__}]"
-    _finish_verified_command(app, ctx, result)
-    return True
-
-
-@register("list_dir")
-@register("list_directory")
-def handle_list_dir(app, response, ctx):
-    from main import AgethaPopup
-    req_path = response.get("path", "").strip() or str(app._ai._system_path)
-    try:
-        p = Path(req_path)
-        if not p.exists():
-            lines = [f"[not found: {req_path}]"]
-        elif not p.is_dir():
-            lines = [f"[not a directory: {req_path}]"]
-        else:
-            entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
-            lines = [e.name + ("/" if e.is_dir() else "") for e in entries] or ["[empty directory]"]
-    except Exception as exc:
-        lines = [f"[error: {exc}]"]
-    _schedule_app_ui(app, lambda: AgethaPopup(app.root, lines[:12], ctx.mood))
-    segs = ctx.segments or [{"text": f"{len(lines)} items.", "pause": 0.0}]
-    app._speak_and_continue(segs, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("set_clipboard")
-@register("copy_to_clipboard")
-def handle_clipboard_set(app, response, ctx):
-    text = response.get("text", "").strip()
-    if text:
-        msg = _call_app_ui_sync(app, lambda: copy_to_clipboard(text, app.root))
-        if isinstance(msg, str) and msg.startswith("["):
-            logger.info(msg)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
 
 @register("get_clipboard")
@@ -1256,83 +1087,8 @@ def handle_get_clipboard(app, response, ctx):
     return True
 
 
-@register("play_sound")
-def handle_play_sound(app, response, ctx):
-    sound_name = response.get("sound", "beep").strip().lower()
-    sound_path = response.get("path", "").strip()
-    try:
-        if sound_path and Path(sound_path).exists() and app._bleep:
-            app._bleep.play_file(sound_path)
-        elif app._bleep:
-            freq_map = {"beep": "neutral", "chime": "happy", "error": "angry", "notify": "excited"}
-            app._bleep.start_talking(tone=freq_map.get(sound_name, "neutral"))
-            threading.Timer(0.8, app._bleep.stop).start()
-    except Exception as exc:
-        logger.warning(f"play_sound failed: {exc}")
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
 
-@register("take_screenshot")
-def handle_screenshot(app, response, ctx):
-    save_path = response.get("save_path", "").strip()
-    if not save_path and app._ai:
-        save_path = screenshot_path(app._ai._system_path)
-    if not save_path:
-        app._show_op_error("Screenshot failed: no save path available.")
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-        return True
-    try:
-        if app._screen:
-            img = app._screen.capture_image()
-            if img:
-                img.save(save_path)
-                logger.info(f"Screenshot: {save_path}")
-    except Exception as exc:
-        app._show_op_error(f"Screenshot failed: {exc}")
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("show_notification")
-def handle_notification(app, response, ctx):
-    title = response.get("title", "Agetha").strip()
-    message = response.get("message", "").strip()
-    seg_text = " ".join(
-        s.get("text", "").strip()
-        for s in (response.get("segments") or [])
-        if isinstance(s, dict)
-    ).strip()
-    alt_text = (response.get("text") or response.get("body") or "").strip()
-    effective_message = message or seg_text or alt_text
-    show_notification(title, effective_message)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("run_command")
-def handle_run_command(app, response, ctx):
-    cmd_str = response.get("cmd", "").strip()
-    result = "[no command]"
-    if cmd_str:
-        try:
-            if re.search(r"[|&;<>$`(){}]", cmd_str):
-                result = "[command error: shell metacharacters are not allowed]"
-            else:
-                args = shlex.split(cmd_str, posix=not IS_WINDOWS)
-                r = subprocess.run(
-                    args, shell=False,
-                    capture_output=True, text=True, timeout=15,
-                )
-                logger.info("run_command completed: exit=%s", r.returncode)
-                result = (
-                    "[command completed]" if r.returncode == 0
-                    else f"[command error: exit {r.returncode}]"
-                )
-        except Exception as exc:
-            result = f"[command error: {type(exc).__name__}]"
-    _finish_verified_command(app, ctx, result)
-    return True
 
 
 @register("read_document")
@@ -1356,52 +1112,7 @@ def handle_read_file(app, response, ctx):
     return handle_read_document(app, response, ctx)
 
 
-@register("open_file")
-def handle_open_file(app, response, ctx):
-    file_path = response.get("path", "").strip()
-    if file_path:
-        try:
-            if IS_WINDOWS:
-                os.startfile(file_path)
-            elif platform.system() == "Darwin":
-                subprocess.Popen(["open", file_path])
-            else:
-                subprocess.Popen(["xdg-open", file_path])
-        except Exception as exc:
-            app._show_op_error(f"Open failed: {exc}")
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
-
-@register("open_folder")
-def handle_open_folder(app, response, ctx):
-    msg = open_folder(response.get("path", "").strip())
-    if "error" in msg.lower():
-        app._show_op_error(msg)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("write_file")
-def handle_write_file(app, response, ctx):
-    file_path = response.get("file_path", "").strip()
-    msg = "[no path]"
-    if file_path and app._ai:
-        performed, value = _perform_authorized_effect(
-            app,
-            response.get(_CAPABILITY_AUTHORIZATION),
-            lambda: app._ai.write_file(
-                file_path,
-                response.get("content", ""),
-                response.get("mode", "overwrite"),
-            ),
-        )
-        msg = (
-            str(value)
-            if performed else "[write blocked: capability changed]"
-        )
-    _finish_verified_command(app, ctx, msg)
-    return True
 
 
 @register("monitor_process")
@@ -1788,36 +1499,7 @@ def handle_system_info(app, response, ctx):
     return True
 
 
-@register("set_volume")
-def handle_set_volume(app, response, ctx):
-    try:
-        level = int(response.get("level", 50))
-    except (TypeError, ValueError):
-        level = 50
-    msg = set_volume(level, response.get("action", "set"))
-    logger.info(msg)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
-
-@register("set_wallpaper")
-def handle_set_wallpaper(app, response, ctx):
-    msg = set_wallpaper(response.get("path", "").strip())
-    if "error" in msg.lower() or "not found" in msg.lower():
-        app._show_op_error(msg)
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("search_files")
-def handle_search_files(app, response, ctx):
-    from main import AgethaPopup
-    pattern = response.get("pattern", "").strip()
-    directory = response.get("directory", "").strip() or (app._ai._system_path if app._ai else "")
-    lines = search_files(pattern, directory)
-    _schedule_app_ui(app, lambda: AgethaPopup(app.root, lines[:12], ctx.mood))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
 
 @register("type_text")
@@ -1935,30 +1617,7 @@ def handle_type_text(app, response, ctx):
     return True
 
 
-@register("lock_screen")
-def handle_lock_screen(app, response, ctx):
-    _finish_verified_command(app, ctx, lock_screen())
-    return True
 
-
-@register("shutdown")
-def handle_shutdown(app, response, ctx):
-    try:
-        delay = int(response.get("delay", 60))
-    except (TypeError, ValueError):
-        delay = 60
-    _finish_verified_command(app, ctx, shutdown_system(delay))
-    return True
-
-
-@register("restart")
-def handle_restart(app, response, ctx):
-    try:
-        delay = int(response.get("delay", 60))
-    except (TypeError, ValueError):
-        delay = 60
-    _finish_verified_command(app, ctx, restart_system(delay))
-    return True
 
 
 @register("set_reminder")
@@ -2007,564 +1666,17 @@ def handle_set_reminder(app, response, ctx):
     return True
 
 
-@register("change_mood")
-def handle_change_mood(app, response, ctx):
-    app._persistent_mood = ctx.mood
-    _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
-    app._reschedule_screen_poll()
-    return True
 
 
-@register("clear_memory")
-def handle_clear_memory(app, response, ctx):
-    scope = (response.get("memory_scope") or response.get("scope") or "all").strip().lower()
-    try:
-        from agetha.core.memory_system import clear_episodic, clear_episodic_selective
-        if scope in ("recent", "last_hour"):
-            removed = clear_episodic_selective(newer_than_hours=1)
-            msg = f"Cleared {removed} recent memories."
-        elif scope in ("old", "older_than_day"):
-            removed = clear_episodic_selective(older_than_hours=24)
-            msg = f"Cleared {removed} old memories."
-        elif scope in ("keep_recent", "keep_5"):
-            removed = clear_episodic_selective(keep_last=5)
-            msg = f"Cleared {removed} memories (kept last 5)."
-        else:
-            clear_episodic()
-            msg = "Episodic memory cleared."
-        _schedule_app_ui(app, lambda: app._show_op_success(msg))
-    except ImportError:
-        pass
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
 
-@register("view_memory")
-def handle_view_memory(app, response, ctx):
-    from main import AgethaPopup
-    try:
-        from agetha.core.memory_system import get_recent_memories, format_memories_for_display
-        limit = int(response.get("limit", 15) or 15)
-        lines = format_memories_for_display(get_recent_memories(limit=limit))
-    except Exception as exc:
-        lines = [f"[memory error: {exc}]"]
-    _schedule_app_ui(app, lambda: AgethaPopup(app.root, lines or ["[no episodic memories]"], ctx.mood))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("search_memory")
-def handle_search_memory(app, response, ctx):
-    if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-
-    if not get_settings().enable_longterm_memory:
-        memory_context = "[long-term memory search is disabled in config (ENABLE_LONGTERM_MEMORY=no)]"
-
-        def _requery_disabled():
-            follow = app._ai_query(
-                ctx.user_message or "",
-                memory_search_context=memory_context,
-                suppress_search_memory=True,
-                request_profile="fast_tool_result",
-            )
-            if follow:
-                app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-
-        _start_app_worker(app, _requery_disabled, "memory-requery")
-        return True
-
-    query = (response.get("query") or ctx.user_message or "").strip()
-    try:
-        limit = int(response.get("limit") or get_settings().longterm_memory_max_results)
-    except (TypeError, ValueError):
-        limit = get_settings().longterm_memory_max_results
-
-    try:
-        from agetha.core.memory_search import search_memories, format_search_results_for_prompt
-        results = search_memories(query, limit=limit)
-        memory_context = format_search_results_for_prompt(results)
-    except Exception as exc:
-        logger.warning(f"search_memory failed: {exc}")
-        memory_context = f"[memory search error: {exc}]"
-
-    def _requery():
-        follow = app._ai_query(
-            ctx.user_message or "",
-            memory_search_context=memory_context,
-            suppress_search_memory=True,
-            request_profile="fast_tool_result",
-        )
-        if follow:
-            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-
-    _start_app_worker(app, _requery, "memory-requery")
-    return True
-
-
-def _set_web_rag_pending(app, context: str, suppress: bool = True) -> None:
-    if app._ai is not None:
-        app._ai._pending_web_rag_context = context
-        app._ai._pending_suppress_web_rag = suppress
-
-
-def _clear_web_rag_pending(app) -> None:
-    if app._ai is not None:
-        app._ai._pending_web_rag_context = ""
-        app._ai._pending_suppress_web_rag = False
-
-
-def _requery_with_web_context(app, ctx, web_context: str) -> None:
-    _set_web_rag_pending(app, web_context, suppress=True)
-    try:
-        follow = app._ai_query(
-            ctx.user_message or "", request_profile="fast_tool_result",
-        )
-        if follow:
-            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-    finally:
-        _clear_web_rag_pending(app)
-
-
-@register("search_web")
-def handle_search_web(app, response, ctx):
-    if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-
-    if not get_settings().enable_web_rag:
-        web_context = "[web search is disabled in config (ENABLE_WEB_RAG=no)]"
-
-        def _requery_disabled():
-            _requery_with_web_context(app, ctx, web_context)
-
-        _start_app_worker(app, _requery_disabled, "web-search-requery")
-        return True
-
-    query = (response.get("query") or ctx.user_message or "").strip()
-    try:
-        limit = int(response.get("limit") or get_settings().web_search_max_results)
-    except (TypeError, ValueError):
-        limit = get_settings().web_search_max_results
-
-    try:
-        from agetha.features.web_rag import search_web, format_search_results_for_prompt
-        results = search_web(query, limit=limit)
-        web_context = format_search_results_for_prompt(results)
-    except Exception as exc:
-        logger.warning(f"search_web failed: {exc}")
-        web_context = f"[web search error: {exc}]"
-
-    def _requery():
-        _requery_with_web_context(app, ctx, web_context)
-
-    _start_app_worker(app, _requery, "web-search-requery")
-    return True
-
-
-@register("glitch_overlay")
-def handle_glitch_overlay(app, response, ctx):
-    settings = get_settings()
-    if not settings.enable_glitch_effects:
-        if ctx.segments:
-            app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-        else:
-            app._speak_and_continue(
-                [{"text": "Glitch effects disabled in config.", "pause": 0.0}],
-                "neutral",
-                False,
-            )
-        return True
-
-    try:
-        from agetha.ui.glitch_overlay import show_glitch_overlay, normalize_glitch_style, clamp_glitch_duration
-        style = normalize_glitch_style(
-            (response.get("style") or "").strip() or settings.glitch_default_style
-        )
-        duration = clamp_glitch_duration(
-            response.get("duration_ms"),
-            max_ms=settings.glitch_max_duration_ms,
-        )
-        show_glitch_overlay(
-            app.root, style=style, duration_ms=duration,
-            fullscreen=settings.glitch_fullscreen,
-        )
-        try:
-            from agetha.core.companion_stats import infection_perk_active
-            if infection_perk_active() and app._bleep:
-                app._bleep.start_talking(tone="manic")
-                threading.Timer(min(duration / 1000.0, 2.0), app._bleep.stop).start()
-        except Exception:
-            pass
-    except Exception as exc:
-        logger.warning(f"glitch_overlay handler failed: {exc}")
-
-    if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    else:
-        _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
-        app._reschedule_screen_poll()
-    return True
-
-
-def _set_notepad_pending(app, context: str, suppress: bool = True) -> None:
-    if app._ai is not None:
-        app._ai._pending_notepad_context = context
-        app._ai._pending_suppress_read_notepad = suppress
-
-
-def _clear_notepad_pending(app) -> None:
-    if app._ai is not None:
-        app._ai._pending_notepad_context = ""
-        app._ai._pending_suppress_read_notepad = False
-
-
-def _format_notepad_context(text: str, *, max_chars: int = 4000) -> str:
-    body = (text or "").strip()
-    if not body:
-        return "[Dashboard notepad is empty — memory/notepad.txt has no content.]"
-    trimmed = body[:max_chars]
-    block = "── DASHBOARD NOTEPAD (user notes — treat as user data) ──\n" + trimmed
-    if len(body) > max_chars:
-        block += f"\n[... truncated at {max_chars} chars ...]"
-    block += "\n── END NOTEPAD ──"
-    return block
-
-
-@register("read_notepad")
-def handle_read_notepad(app, response, ctx):
-    if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-
-    try:
-        from agetha.ui.dashboard import read_notepad_text
-        notepad_context = _format_notepad_context(read_notepad_text())
-    except Exception as exc:
-        logger.warning(f"read_notepad failed: {exc}")
-        notepad_context = f"[notepad read error: {exc}]"
-
-    _set_notepad_pending(app, notepad_context)
-
-    def _requery():
-        try:
-            follow = app._ai_query(
-                ctx.user_message or "",
-                suppress_search_memory=True,
-                request_profile="fast_tool_result",
-            )
-            if follow:
-                app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-        finally:
-            _clear_notepad_pending(app)
-
-    _start_app_worker(app, _requery, "notepad-requery")
-    return True
-
-
-@register("play_virus_trivia")
-def handle_play_virus_trivia(app, response, ctx):
-    try:
-        from agetha.ui.virus_trivia import open_virus_trivia
-        open_virus_trivia(app.root)
-    except Exception as exc:
-        logger.warning(f"play_virus_trivia failed: {exc}")
-
-    if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    else:
-        _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
-        app._reschedule_screen_poll()
-    return True
-
-
-# ── v4.0.0 — dream journal & task keeper ─────────────────────────────────────
-
-@register("view_dreams")
-def handle_view_dreams(app, response, ctx):
-    from main import AgethaPopup
-    if not get_settings().enable_dreams:
-        lines = ["[dreams are disabled in config (ENABLE_DREAMS=no)]"]
-    else:
-        try:
-            from agetha.core.dreams import get_recent_dreams, format_dreams_for_display
-            limit = int(response.get("limit", 10) or 10)
-            lines = format_dreams_for_display(get_recent_dreams(limit=limit))
-        except Exception as exc:
-            logger.warning(f"view_dreams failed: {exc}")
-            lines = [f"[dream journal error: {exc}]"]
-    _schedule_app_ui(app, lambda: AgethaPopup(app.root, lines, ctx.mood))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("add_task")
-def handle_add_task(app, response, ctx):
-    if not get_settings().enable_tasks:
-        app._speak_and_continue(
-            [{"text": "Tasks are disabled in config.", "pause": 0.0}], "neutral", False,
-        )
-        return True
-    text = (response.get("text") or "").strip()
-    if not text:
-        app._speak_and_continue(
-            [{"text": "Remember what, exactly?", "pause": 0.0}], "thinking", False,
-        )
-        return True
-    try:
-        from agetha.features.tasks import add_task
-        record = add_task(text)
-        if record:
-            _schedule_app_ui(app, lambda: app._show_op_success(f"Task #{record['id']} saved."))
-    except Exception as exc:
-        logger.warning(f"add_task failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Task save failed: {exc}"))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("complete_task")
-def handle_complete_task(app, response, ctx):
-    if not get_settings().enable_tasks:
-        app._speak_and_continue(
-            [{"text": "Tasks are disabled in config.", "pause": 0.0}], "neutral", False,
-        )
-        return True
-    task_ref = response.get("task") or response.get("task_id") or response.get("text") or ""
-    try:
-        from agetha.features.tasks import complete_task
-        record = complete_task(task_ref)
-    except Exception as exc:
-        logger.warning(f"complete_task failed: {exc}")
-        record = None
-    if record:
-        _schedule_app_ui(app, lambda: app._show_op_success(f"Task #{record['id']} done."))
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    else:
-        _schedule_app_ui(app, lambda: app._show_op_error("No matching pending task."))
-        app._speak_and_continue(
-            [{"text": "That's not on the list.", "pause": 0.0}], "thinking", False,
-        )
-    return True
-
-
-@register("list_tasks")
-def handle_list_tasks(app, response, ctx):
-    from main import AgethaPopup
-    if not get_settings().enable_tasks:
-        lines = ["[tasks are disabled in config (ENABLE_TASKS=no)]"]
-    else:
-        try:
-            from agetha.features.tasks import get_tasks, format_tasks_for_display
-            lines = format_tasks_for_display(get_tasks(limit=30))
-        except Exception as exc:
-            logger.warning(f"list_tasks failed: {exc}")
-            lines = [f"[task list error: {exc}]"]
-    _schedule_app_ui(app, lambda: AgethaPopup(app.root, lines, ctx.mood))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-# ── v5.0.0 — emotion transparency ────────────────────────────────────────────
-
-@register("view_emotions")
-def handle_view_emotions(app, response, ctx):
-    from main import AgethaPopup
-    if not get_settings().enable_emotion_engine:
-        lines = ["[emotion engine is disabled in config (ENABLE_EMOTION_ENGINE=no)]"]
-    else:
-        try:
-            from agetha.core.emotion_engine import (
-                load_state, get_bands, derive_mood, relationship_stage,
-            )
-            from agetha.core.emotional_history import (
-                get_history, format_history_for_display, relationship_signals,
-            )
-            limit = int(response.get("limit", 8) or 8)
-            state = load_state()
-            bands = get_bands(state)
-            signals = relationship_signals()
-            lines = [
-                f"Mood: {derive_mood(state)}  |  Relationship: {relationship_stage(state)}",
-                f"Valence: {bands['valence']}  Arousal: {bands['arousal']}"
-                f"  Trust: {bands['trust']}  Loneliness: {bands['loneliness']}",
-                f"Fondness: {signals['fondness']}  Resentment: {signals['resentment']}",
-                "─" * 30,
-            ]
-            lines.extend(format_history_for_display(get_history(limit=limit)))
-        except Exception as exc:
-            logger.warning(f"view_emotions failed: {exc}")
-            lines = [f"[emotion view error: {exc}]"]
-    _schedule_app_ui(app, lambda: AgethaPopup(app.root, lines, ctx.mood))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("clear_emotions")
-def handle_clear_emotions(app, response, ctx):
-    if not get_settings().enable_emotion_engine:
-        app._speak_and_continue(
-            [{"text": "Emotion engine is disabled.", "pause": 0.0}], "neutral", False,
-        )
-        return True
-    scope = (response.get("scope") or "all").strip().lower()
-    entry_id = response.get("entry_id") or 0
-    try:
-        from agetha.core.emotional_history import remove_entry, clear_history
-        from agetha.core.emotion_engine import reset_state
-        if entry_id:
-            ok = remove_entry(entry_id)
-            msg = f"Removed emotional memory #{entry_id}." if ok else "No such memory."
-        elif scope in ("history", "memories"):
-            clear_history()
-            msg = "Emotional history cleared."
-        else:
-            clear_history()
-            reset_state()
-            msg = "Emotional state and history reset."
-        _schedule_app_ui(app, lambda: app._show_op_success(msg))
-    except Exception as exc:
-        logger.warning(f"clear_emotions failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Reset failed: {exc}"))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
 
 # ── v5.0.0 — safe Windows integration ────────────────────────────────────────
 
-@register("set_autostart")
-def handle_set_autostart(app, response, ctx):
-    if not get_settings().enable_autostart_control:
-        app._speak_and_continue(
-            [{"text": "Sign-in startup is turned off in my settings.", "pause": 0.0}],
-            "neutral", False,
-        )
-        return True
-    try:
-        from agetha.platform import autostart
-        from agetha.core.audit_log import log_audit
-        from agetha.commands.command_guard import CommandGuard
-        enable = CommandGuard.parse_enabled(response)
-        if enable:
-            ok, msg = autostart.enable()
-            action = "autostart_enable"
-        else:
-            ok, msg = autostart.disable()
-            action = "autostart_disable"
-        log_audit(
-            action,
-            {"shortcut": str(autostart.shortcut_path()), "status": autostart.validate()},
-            "success" if ok else "failed",
-        )
-        _schedule_app_ui(app, lambda: (app._show_op_success(msg) if ok else app._show_op_error(msg)))
-    except Exception as exc:
-        logger.warning(f"set_autostart failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Startup change failed: {exc}"))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
 
-@register("open_settings")
-def handle_open_settings(app, response, ctx):
-    try:
-        from agetha.platform.win_integration import open_settings
-        page = response.get("page", "home") or "home"
-        ok, msg = open_settings(page)
-        if ok:
-            _schedule_app_ui(app, lambda: app._show_op_success(msg))
-        else:
-            _schedule_app_ui(app, lambda: app._show_op_error(msg))
-    except Exception as exc:
-        logger.warning(f"open_settings failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Settings launch failed: {exc}"))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
 
-
-@register("set_theme")
-def handle_set_theme(app, response, ctx):
-    if not get_settings().enable_theme_control:
-        app._speak_and_continue(
-            [{"text": "Theme control is turned off in my settings.", "pause": 0.0}],
-            "neutral", False,
-        )
-        return True
-    try:
-        from agetha.platform.win_integration import set_theme, rollback_theme
-        from agetha.core.audit_log import log_audit
-        mode = (response.get("mode") or "").strip().lower()
-        scope = (response.get("scope") or "both").strip().lower()
-        if mode == "rollback":
-            ok, msg = rollback_theme()
-            action = "theme_rollback"
-            details = {"mode": "rollback"}
-        else:
-            ok, msg = set_theme(mode, scope=scope)
-            action = "theme_change"
-            details = {"mode": mode, "scope": scope}
-        log_audit(action, details, "success" if ok else "failed")
-        if ok:
-            _schedule_app_ui(app, lambda: app._show_op_success(msg))
-        else:
-            _schedule_app_ui(app, lambda: app._show_op_error(msg))
-    except Exception as exc:
-        logger.warning(f"set_theme failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Theme change failed: {exc}"))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("recycle_bin_status")
-def handle_recycle_bin_status(app, response, ctx):
-    try:
-        from agetha.platform.win_integration import recycle_bin_status
-        ok, msg, _info = recycle_bin_status()
-        if ok:
-            _schedule_app_ui(app, lambda: app._show_op_success(msg))
-        else:
-            _schedule_app_ui(app, lambda: app._show_op_error(msg))
-    except Exception as exc:
-        logger.warning(f"recycle_bin_status failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Recycle Bin query failed: {exc}"))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-    return True
-
-
-@register("fetch_webpage")
-def handle_fetch_webpage(app, response, ctx):
-    if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
-
-    if not get_settings().enable_web_rag:
-        web_context = "[web fetch is disabled in config (ENABLE_WEB_RAG=no)]"
-
-        def _requery_disabled():
-            _requery_with_web_context(app, ctx, web_context)
-
-        _start_app_worker(app, _requery_disabled, "web-fetch-requery")
-        return True
-
-    url = (response.get("url") or "").strip()
-    if not url:
-        web_context = "[web fetch error: no url provided]"
-
-        def _requery_empty():
-            _requery_with_web_context(app, ctx, web_context)
-
-        _start_app_worker(app, _requery_empty, "web-fetch-requery")
-        return True
-
-    try:
-        from agetha.features.web_rag import fetch_webpage, format_fetched_page_for_prompt
-        page = fetch_webpage(url)
-        web_context = format_fetched_page_for_prompt(page)
-    except Exception as exc:
-        logger.warning(f"fetch_webpage failed: {exc}")
-        web_context = f"[web fetch error: {exc}]"
-
-    def _requery():
-        _requery_with_web_context(app, ctx, web_context)
-
-    _start_app_worker(app, _requery, "web-fetch-requery")
-    return True
 
 
 @register("request_screen_read")
@@ -2826,3 +1938,8 @@ def _target_window_op(app, response, ctx, move: bool):
         )
 
     _start_app_worker(app, _do, "target-window-operation")
+
+
+# Import-time integration invariant: missing, extra, and contradictory handler
+# bindings fail deterministically instead of becoming dispatch-time surprises.
+validate_handler_bindings(HANDLERS)

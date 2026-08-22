@@ -72,13 +72,16 @@ class TestDisabledHandler(unittest.TestCase):
         ctx.shutdown_requested = False
         response = {"command": "glitch_overlay", "style": "static"}
 
-        with patch("agetha.commands.command_handlers.get_settings") as mock_settings:
+        with patch(
+            "agetha.commands.handlers.memory_presentation.get_settings"
+        ) as mock_settings:
             mock_settings.return_value.enable_glitch_effects = False
             with patch("agetha.ui.glitch_overlay.show_glitch_overlay") as mock_show:
                 ok = handle_glitch_overlay(app, response, ctx)
                 self.assertTrue(ok)
                 mock_show.assert_not_called()
                 app._speak_and_continue.assert_called_once()
+                mock_settings.assert_called()
 
 
 class TestParseGate(unittest.TestCase):

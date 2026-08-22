@@ -60,12 +60,15 @@ class TestDisabledPath(unittest.TestCase):
         ctx.shutdown_requested = False
         response = {"query": "news", "command": "search_web"}
 
-        with patch("agetha.commands.command_handlers.get_settings") as mock_settings:
+        with patch(
+            "agetha.commands.handlers.web_context.get_settings"
+        ) as mock_settings:
             mock_settings.return_value.enable_web_rag = False
             with patch("agetha.features.web_rag.search_web") as mock_search:
                 ok = handle_search_web(app, response, ctx)
                 self.assertTrue(ok)
                 mock_search.assert_not_called()
+                mock_settings.assert_called()
 
         threading.Event().wait(0.05)
 

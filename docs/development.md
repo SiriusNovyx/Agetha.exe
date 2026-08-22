@@ -147,48 +147,32 @@ changing this path.
 
 ### Adding a setting
 
-1. Add the documented default to `app_config.DEFAULT_CONFIG`.
-2. Add the key to the relevant boolean/integer/float validation set.
-3. Add or update one `AppSettings` property with enum validation and a sensible
+1. For a stable machine-validated setting, add one `SettingSpec` with its
+   default, type, range or enum, group, and restart state. Keep transactional,
+   secret, and security decisions out of the registry.
+2. Add the documented key and comment to `app_config.DEFAULT_CONFIG`. Tests
+   require canonical SettingSpec defaults to match the human template.
+3. For settings outside the canonical subset, add the key to the relevant
+   boolean/integer/float validation set.
+4. Add or update one `AppSettings` property with enum validation and a sensible
    clamp. Missing/invalid input must not break startup.
-4. Consume the typed property in the owning module.
-5. Add the dashboard control only if user editing is useful; label restart
+5. Consume the typed property in the owning module.
+6. Add the dashboard control only if user editing is useful; label restart
    behavior honestly.
-6. Update `.env.example` only for a new secret. Ordinary settings belong in the
+7. Update `.env.example` only for a new secret. Ordinary settings belong in the
    config template and user documentation.
-7. Add default, invalid-input, and clamp tests in the closest suite.
-8. Update the configuration group above and root README if user-facing.
+8. Add default, invalid-input, and clamp tests in the closest suite.
+9. Update the configuration group above and root README if user-facing.
+10. If the key has a SettingSpec, regenerate
+    `docs/generated/settings_reference.md`.
 
 ## Command and safety model
 
-The tiers below are the current policy snapshot. `CommandGuard.TIER_MAP` is the
-runtime source of truth.
-
-### Safe
-
-`add_task`, `change_animation_speed`, `change_mood`, `complete_task`,
-`get_active_app`, `get_clipboard`, `glitch_overlay`, `idle`, `list_running_apps`,
-`list_tasks`, `monitor_process`,
-`move_window`, `open_browser`, `open_folder`, `open_url`, `play_emotion_sound`,
-`play_virus_trivia`, `read_document`, `read_notepad`, `recycle_bin_status`,
-`request_path`, `request_screen_read`, `search_memory`, `set_reminder`,
-`show_error_gif`, `show_notification`, `snap_to_center`, `speak`, `system_info`,
-`take_screenshot`, `view_dreams`, `view_emotions`, `view_memory`, `wake_user`.
-
-### Caution
-
-`analyze_screen_deep`, `clear_emotions`, `clear_memory`, `computer_use`, `copy_to_clipboard`,
-`fetch_webpage`, `list_dir`, `list_directory`, `open_app`, `open_file`,
-`open_settings`, `play_sound`, `read_file`, `search_files`, `search_web`,
-`set_clipboard`, `set_volume`, `set_wallpaper`, `show_dialog`,
-`target_window_close`, `target_window_move`, `target_window_resize`, and
-`type_text`.
-
-### Danger
-
-`create_file`, `create_folder`, `delete_file`, `force_close`, `lock_screen`,
-`rename_file`, `restart`, `run_command`, `set_autostart`, `set_theme`, `shutdown`,
-and `write_file`.
+`agetha.commands.specs.COMMAND_SPECS` is the canonical static policy registry.
+The [generated command matrix](generated/command_matrix.md) lists each command's
+base risk, capability, execution requirement, allowed origins, dispatch kind,
+handler, and command-specific feature gates. CI regenerates it in memory and
+fails if the checked-in reference has drifted.
 
 Confirmations deny after timeout. Unknown commands are Danger. Protected
 processes include built-in critical Windows names plus Python and Agetha;
@@ -199,26 +183,31 @@ decision path, not a way around confirmation or feature gates.
 
 ### Adding an AI command
 
-A command is incomplete until all relevant steps agree:
+A normal handler-backed command requires:
 
-1. Add the name to `ai_engine.VALID_COMMANDS`.
-2. Update the system prompt JSON/command contract and few shots only as needed.
-3. Teach `AIEngine._parse()` which fields are accepted, normalized, bounded, and
-   gated. Never pass an arbitrary model dictionary straight to an OS helper.
-4. Register exactly one handler in `command_handlers.py`.
+1. Add one explicit `CommandSpec` with intentional base risk, capability,
+   allowed origins, handler dispatch, and any mechanical command-specific
+   feature gates.
+2. Register exactly one handler with the matching key. Duplicate, unknown, and
+   core-command registrations fail during import.
+3. Teach `AIEngine._parse()` which payload fields are accepted, normalized,
+   bounded, and gated when the command needs new fields. Never pass an arbitrary
+   model dictionary straight to an OS helper.
+4. Update human-authored prompt descriptions/few shots only when needed.
 5. Use a focused function in `system_commands`, `platform`, `features`, or
    `core`; do not embed a reusable subsystem in the handler or `main.py`.
-6. Assign an explicit `CommandGuard` tier. If omitted, it will be Danger, but an
-   intentional entry documents policy.
-7. Apply `ENABLE_COMMAND_EXECUTION` and any feature-specific switch. Window
+6. Apply `ENABLE_COMMAND_EXECUTION` and any feature-specific switch. Window
    commands also require `ENABLE_WINDOW_CONTROL`.
-8. Keep Agetha/self/protected target checks and ambiguity picking intact.
-9. For Tk work, schedule the UI portion with `root.after()`. Put blocking work in
+7. Keep Agetha/self/protected target checks and ambiguity picking intact.
+8. For Tk work, schedule the UI portion with `root.after()`. Put blocking work in
    a worker and provide cancellation/close checks.
-10. For a context-producing command, use the bounded pending-context/deferred
+9. For a context-producing command, use the bounded pending-context/deferred
     re-query pattern and an anti-recursion flag.
-11. Add registration, parser/gate, guard-tier, denial, and handler tests.
-12. Update README command tables and this tier snapshot.
+10. Add registry, parser/gate, denial, dynamic-policy, handler, and effect-time
+    authorization tests as applicable.
+11. Regenerate the mechanical reference with
+    `python -m agetha.commands.generate_command_matrix` and update user-facing
+    command documentation only when behavior changed.
 
 Do not make mood, affection, infection level, or emotional history influence
 command authorization.

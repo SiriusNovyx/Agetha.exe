@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Callable
 
+from agetha.commands.specs import BASE_RISK_BY_COMMAND
 from agetha.utils import IS_WINDOWS, apply_window_icon, logger, native_message_box
 from agetha.app_config import get_settings
 from agetha.platform.window_control import is_self_process_target
@@ -48,45 +49,8 @@ class CommandGuard:
         "agetha.exe", "python.exe", "pythonw.exe",
     })
 
-    TIER_MAP: dict[str, str] = {
-        "speak": SAFE, "idle": SAFE, "change_mood": SAFE,
-        "change_animation_speed": SAFE, "open_url": SAFE, "open_browser": SAFE,
-        "system_info": SAFE, "take_screenshot": SAFE, "set_reminder": SAFE,
-        "show_notification": SAFE, "snap_to_center": SAFE, "move_window": SAFE,
-        "request_screen_read": SAFE, "request_path": SAFE, "show_error_gif": SAFE,
-        "analyze_screen_deep": CAUTION,
-        "wake_user": SAFE, "play_emotion_sound": SAFE, "monitor_process": SAFE,
-        "get_active_app": SAFE, "list_running_apps": SAFE,
-        "view_memory": SAFE, "search_memory": SAFE,
-        "glitch_overlay": SAFE,
-        "read_notepad": SAFE, "play_virus_trivia": SAFE,
-        # v4.0.0 — dreams & tasks live only in the app's memory/ folder
-        "view_dreams": SAFE, "add_task": SAFE, "complete_task": SAFE,
-        "list_tasks": SAFE,
-        # v5.0.0 — emotion transparency (memory/ only). Reset is confirmed.
-        "view_emotions": SAFE, "clear_emotions": CAUTION,
-        # v5.0.0 — sign-in startup: changes a visible Startup-folder shortcut.
-        "set_autostart": DANGER,
-        # v5.0.0 — safe Windows integration
-        "open_settings": CAUTION,        # allowlisted ms-settings pages only
-        "set_theme": DANGER,             # HKCU registry write (reversible)
-        "recycle_bin_status": SAFE,      # aggregate read only
-        "search_web": CAUTION, "fetch_webpage": CAUTION,
-        "computer_use": CAUTION,
-        "read_document": SAFE, "get_clipboard": SAFE, "open_folder": SAFE,
-        "clear_memory": CAUTION,
-        "read_file": CAUTION, "open_file": CAUTION, "open_app": CAUTION,
-        "copy_to_clipboard": CAUTION, "set_clipboard": CAUTION,
-        "search_files": CAUTION, "play_sound": CAUTION, "set_volume": CAUTION,
-        "set_wallpaper": CAUTION, "type_text": CAUTION,
-        "list_dir": CAUTION, "list_directory": CAUTION, "show_dialog": CAUTION,
-        "run_command": DANGER, "delete_file": DANGER, "force_close": DANGER,
-        "create_file": DANGER, "write_file": DANGER, "rename_file": DANGER,
-        "create_folder": DANGER, "lock_screen": DANGER,
-        "shutdown": DANGER, "restart": DANGER,
-        "target_window_move": CAUTION, "target_window_resize": CAUTION,
-        "target_window_close": CAUTION,
-    }
+    # Compatibility view. Dynamic target-sensitive risk stays in _resolve_tier().
+    TIER_MAP = BASE_RISK_BY_COMMAND
 
     TIER_TITLES = {
         CAUTION: "Agetha — Confirm Action",

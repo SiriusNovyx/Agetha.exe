@@ -13,9 +13,9 @@ import threading
 import platform
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Callable
 
+from agetha.commands.specs import COMMAND_NAMES
 from agetha.utils import IS_WINDOWS, IS_LINUX, apply_window_icon, native_error_popup, native_message_box, logger
 from agetha.app_config import get_settings, parse_config_file, DEFAULT_CONFIG, ensure_config_file, BASE_DIR
 from agetha.platform.window_control import is_self_window_target, is_self_process_target
@@ -33,16 +33,22 @@ from agetha.core.provider_protocol import (
     ProviderHTTPError,
     ProviderResponseStatus,
     classify_provider_error,
-    groq_request_options,
     normalize_groq_model,
     provider_response_failed,
 )
+from agetha.providers.groq import GROQ_AVAILABLE, create_groq_client
+from agetha.providers.ollama import (
+    LocalOllamaClient as _ProviderOllamaClient,
+    wrap_ollama_client,
+)
+from agetha.providers.openrouter import (
+    OpenRouterClient as _ProviderOpenRouterClient,
+    DEFAULT_OPENROUTER_MODEL,
+    wrap_openrouter_client,
+)
+from agetha.providers.router import ProviderRouter
 
-try:
-    from groq import Groq
-    GROQ_OK = True
-except ImportError:
-    GROQ_OK = False
+GROQ_OK = GROQ_AVAILABLE
 
 # ── Dual-layer memory subsystem ───────────────────────────────────────────────
 # Standard-library only (os, json, datetime, threading) — no binary dependencies.
@@ -65,239 +71,11 @@ except ImportError:
 # native_error_popup is now imported from utils.py
 
 
-class _LocalOllamaClient:
-    """Minimal Ollama REST client with compatible .chat.completions.create interface."""
-    OLLAMA_URL = "http://localhost:11434/api/chat"
-    TAGS_URL = "http://localhost:11434/api/tags"
-
-    def __init__(self, model: str, timeout: int = 30):
-        self.model = model
-        self.timeout = timeout
-
-    @staticmethod
-    def list_models() -> set[str]:
-        import json as _j
-        import urllib.request
-        try:
-            with urllib.request.urlopen(_LocalOllamaClient.TAGS_URL, timeout=5) as resp:
-                data = _j.loads(resp.read().decode("utf-8", errors="replace"))
-        except Exception:
-            return set()
-        names: set[str] = set()
-        for item in data.get("models", []):
-            name = (item.get("name") or "").strip()
-            if not name:
-                continue
-            names.add(name)
-            names.add(name.split(":")[0])
-        return names
-
-    @staticmethod
-    def validate_model(model: str) -> tuple[bool, str]:
-        model = model.strip()
-        if not model:
-            return False, "LOCAL_AI_MODEL is empty."
-        available = _LocalOllamaClient.list_models()
-        if not available:
-            return True, ""  # ping already verified Ollama is up
-        if model in available:
-            return True, ""
-        base = model.split(":")[0]
-        if base in available:
-            return True, ""
-        sample = ", ".join(sorted(available)[:8])
-        return False, f"Model '{model}' not in Ollama. Installed: {sample or '(none listed)'}"
-
-    def _generate(
-        self,
-        messages: list,
-        *,
-        temperature: float = 0.7,
-        max_tokens: int = 400,
-        top_p: float = 0.95,
-    ) -> str:
-        import urllib.request, json as _j
-        payload = _j.dumps({
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": float(temperature),
-                "num_predict": max(1, int(max_tokens)),
-                "top_p": float(top_p),
-            },
-        }).encode()
-        req = urllib.request.Request(self.OLLAMA_URL, data=payload,
-                                     headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            raw_bytes = resp.read()
-        text = raw_bytes.decode("utf-8", errors="replace").strip()
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                j = _j.loads(line)
-                content = (j.get("message", {}).get("content") or j.get("response") or "").strip()
-                if content:
-                    return content
-            except Exception:
-                continue
-        return text
-
-    def _prepare_messages(self, messages) -> list:
-        return [
-            {
-                "role": (m.get("role") if isinstance(m, dict) else getattr(m, "role", "user")),
-                "content": (m.get("content") if isinstance(m, dict) else getattr(m, "content", "")),
-            }
-            for m in (messages or [])
-        ]
-
-    def _generate_sync(self, model=None, messages=None, temperature=0.7,
-                       max_tokens=400, top_p=0.95, timeout=None):
-        msgs = self._prepare_messages(messages)
-        raw = self._generate(
-            msgs,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-        ) or ""
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=raw))]
-        )
-
-    def _generate_stream(self, model=None, messages=None, temperature=0.7,
-                         max_tokens=400, top_p=0.95, timeout=None):
-        msgs = self._prepare_messages(messages)
-        raw = self._generate(
-            msgs,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-        ) or ""
-        for ch in ([raw[i:i + 120] for i in range(0, len(raw), 120)] or [raw]):
-            yield SimpleNamespace(
-                choices=[SimpleNamespace(delta=SimpleNamespace(content=ch))]
-            )
-
-    def chat_completions_create(self, model=None, messages=None, temperature=0.7,
-                                max_tokens=400, top_p=0.95, timeout=None, stream=False):
-        if stream:
-            return self._generate_stream(
-                model=model, messages=messages, temperature=temperature,
-                max_tokens=max_tokens, top_p=top_p, timeout=timeout,
-            )
-        return self._generate_sync(
-            model=model, messages=messages, temperature=temperature,
-            max_tokens=max_tokens, top_p=top_p, timeout=timeout,
-        )
-
-
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
-
-
-class _OpenRouterClient:
-    """Minimal OpenRouter chat-completions client (OpenAI-compatible subset)."""
-
-    def __init__(self, api_key: str, model: str, timeout: int = 30):
-        self.api_key = api_key
-        self.model = model
-        self.timeout = timeout
-
-    def chat_completions_create(
-        self, model=None, messages=None, temperature=0.7,
-        max_tokens=400, top_p=0.95, timeout=None, stream=False,
-    ):
-        import urllib.request
-        import json as _j
-
-        msgs = [
-            {
-                "role": (m.get("role") if isinstance(m, dict) else getattr(m, "role", "user")),
-                "content": (m.get("content") if isinstance(m, dict) else getattr(m, "content", "")),
-            }
-            for m in (messages or [])
-        ]
-        payload = {
-            "model": model or self.model,
-            "messages": msgs,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "top_p": top_p,
-            "stream": stream,
-        }
-        req = urllib.request.Request(
-            OPENROUTER_API_URL,
-            data=_j.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
-        )
-        to = timeout or self.timeout
-
-        def _reraise_http(exc: BaseException) -> None:
-            import urllib.error as _ue
-            if not isinstance(exc, _ue.HTTPError):
-                raise
-            code = getattr(exc, "code", None)
-            body = ""
-            try:
-                body = exc.read().decode("utf-8", errors="replace")[:400]
-            except Exception:
-                body = ""
-            detail = str(exc)
-            if body:
-                try:
-                    err_obj = _j.loads(body)
-                    api_msg = ((err_obj.get("error") or {}).get("message") or "").strip()
-                    if api_msg:
-                        detail = f"HTTP Error {code}: {api_msg}"
-                except Exception:
-                    pass
-            raise ProviderHTTPError(code or 0, detail) from exc
-
-        if stream:
-            def _gen():
-                try:
-                    with urllib.request.urlopen(req, timeout=to) as resp:
-                        for line_bytes in resp:
-                            line = line_bytes.decode("utf-8", errors="replace").strip()
-                            if not line or not line.startswith("data:"):
-                                continue
-                            data_str = line[len("data:"):].strip()
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                chunk = _j.loads(data_str)
-                            except Exception:
-                                continue
-                            choices = chunk.get("choices") or [{}]
-                            delta = (choices[0] or {}).get("delta") or {}
-                            content = delta.get("content") or ""
-                            usage_obj = chunk.get("usage")
-                            ns_usage = (
-                                SimpleNamespace(**usage_obj) if isinstance(usage_obj, dict) else None
-                            )
-                            yield SimpleNamespace(
-                                choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
-                                usage=ns_usage,
-                            )
-                except Exception as exc:
-                    _reraise_http(exc)
-            return _gen()
-
-        try:
-            with urllib.request.urlopen(req, timeout=to) as resp:
-                raw_bytes = resp.read()
-        except Exception as exc:
-            _reraise_http(exc)
-        obj = _j.loads(raw_bytes.decode("utf-8", errors="replace"))
-        content = ((obj.get("choices") or [{}])[0].get("message") or {}).get("content", "")
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+# Compatibility names remain available while transport ownership lives under
+# agetha.providers. Existing callers and tests must not grow new dependencies on
+# these private aliases.
+_LocalOllamaClient = _ProviderOllamaClient
+_OpenRouterClient = _ProviderOpenRouterClient
 
 
 CONFIG_FILE_NAME = "config.txt"
@@ -310,50 +88,7 @@ VALID_MOODS = {
 }
 
 # ── EXPANDED command set ──────────────────────────────────────────────────────
-VALID_COMMANDS = {
-    # Core
-    "idle", "speak", "popup", "open_app", "open_browser",
-    "request_screen_read", "analyze_screen_deep", "wake_user", "request_path",
-    # File system
-    "create_folder", "create_file", "delete_file", "rename_file",
-    "read_document", "read_file", "list_dir", "list_directory", "write_file",
-    # OS / Process
-    "set_clipboard", "take_screenshot", "show_notification",
-    "run_command", "force_close", "monitor_process", "get_active_app",
-    "list_running_apps", "computer_use",
-    # UI
-    "play_sound", "show_error_gif", "move_window",
-    # Dialogs & emotion sounds
-    "show_dialog", "play_emotion_sound", "open_file",
-    # Phase 2 — external window control & attention snapping
-    "target_window_move", "target_window_resize", "snap_to_center",
-    # Phase 3 — new utility commands
-    "open_url", "copy_to_clipboard", "system_info", "set_volume",
-    "set_wallpaper", "search_files", "type_text", "lock_screen",
-    "shutdown", "restart", "set_reminder",
-    # Phase 4 — additional commands
-    "get_clipboard", "open_folder", "target_window_close", "change_mood", "clear_memory",
-    "view_memory",
-    "search_memory",
-    "search_web",
-    "fetch_webpage",
-    "glitch_overlay",
-    "read_notepad",
-    "play_virus_trivia",
-    # Phase 5 (v4.0.0) — dreams & tasks
-    "view_dreams",
-    "add_task",
-    "complete_task",
-    "list_tasks",
-    # Phase 6 (v5.0.0) — emotion transparency
-    "view_emotions",
-    "clear_emotions",
-    # Phase 6 (v5.0.0) — safe Windows integration
-    "set_autostart",
-    "open_settings",
-    "set_theme",
-    "recycle_bin_status",
-}
+VALID_COMMANDS = COMMAND_NAMES
 
 # ── SYSTEM PROMPT — Agetha's Soul (Phase 2) ──────────────────────────────────
 SYSTEM_PROMPT = """\
@@ -1306,9 +1041,7 @@ class AIEngine:
                 ok_model, model_msg = _LocalOllamaClient.validate_model(local_model)
                 if not ok_model:
                     raise RuntimeError(model_msg)
-                class _Wrap:
-                    def __init__(self, c): self.chat = SimpleNamespace(completions=SimpleNamespace(create=c.chat_completions_create))
-                self._client = _Wrap(client)
+                self._client = wrap_ollama_client(client)
                 logger.info(f"Using local Ollama model: {local_model}")
             except Exception as e:
                 self._emit_error(
@@ -1329,12 +1062,7 @@ class AIEngine:
                 client = _OpenRouterClient(
                     self._openrouter_key, self._openrouter_model, timeout=TIMEOUT,
                 )
-                class _Wrap:
-                    def __init__(self, c):
-                        self.chat = SimpleNamespace(
-                            completions=SimpleNamespace(create=c.chat_completions_create)
-                        )
-                self._client = _Wrap(client)
+                self._client = wrap_openrouter_client(client)
                 logger.info(f"Using OpenRouter model: {self._openrouter_model}")
             except Exception as e:
                 self._emit_error("Failed to initialize OpenRouter client.", f"Error: {e}")
@@ -1344,7 +1072,9 @@ class AIEngine:
         if self._enable_groq and self._groq_keys:
             if not self._provider_call_allowed(provider_authorization):
                 return False
-            self._client = Groq(api_key=self._groq_keys[self._current_groq_key_index])
+            self._client = create_groq_client(
+                self._groq_keys[self._current_groq_key_index]
+            )
             logger.info(f"Using Groq/{self._groq_model} (Key {self._current_groq_key_index+1}/{len(self._groq_keys)})")
         else:
             self._client = None
@@ -2069,6 +1799,40 @@ class AIEngine:
             return f"OpenRouter/{self._openrouter_model}"
         return f"Groq/{self._groq_model}"
 
+    def _provider_kind(self) -> str:
+        if self._use_local_ai:
+            return "ollama"
+        if self._use_openrouter:
+            return "openrouter"
+        return "groq"
+
+    def _provider_create(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        profile_name: str,
+        temperature: float,
+        max_tokens: int,
+        top_p: float,
+        timeout: int,
+        stream: bool,
+    ):
+        router = ProviderRouter.for_existing_client(
+            kind=self._provider_kind(),
+            client=self._client,
+            model=model,
+        )
+        return router.create(
+            messages=messages,
+            profile_name=profile_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            timeout=timeout,
+            stream=stream,
+        )
+
     def get_token_status(self) -> dict:
         if self._use_local_ai:
             return {"using_groq": False, "provider": "local"}
@@ -2614,21 +2378,17 @@ class AIEngine:
                     current_model = self._openrouter_model
                 else:
                     current_model = self._groq_model
-                request_options = (
-                    {}
-                    if self._use_local_ai or self._use_openrouter
-                    else groq_request_options(current_model, profile.name)
-                )
                 if not self._provider_call_allowed(provider_authorization):
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
-                stream = self._client.chat.completions.create(
+                stream = self._provider_create(
                     model=current_model,
                     messages=[{"role": "system", "content": system}] + messages,
+                    profile_name=profile.name,
                     temperature=self._app_settings.ai_temperature,
                     max_tokens=output_limit,
                     top_p=self._app_settings.ai_top_p,
-                    timeout=TIMEOUT, stream=True,
-                    **request_options,
+                    timeout=TIMEOUT,
+                    stream=True,
                 )
                 for chunk in stream:
                     if not self._provider_call_allowed(provider_authorization):
@@ -2751,9 +2511,10 @@ class AIEngine:
                         local_model = self._config.get("LOCAL_AI_MODEL", "").strip()
                         if not self._provider_call_allowed(provider_authorization):
                             return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
-                        resp = self._client.chat.completions.create(
+                        resp = self._provider_create(
                             model=local_model,
                             messages=[{"role": "system", "content": system}] + messages,
+                            profile_name=profile.name,
                             temperature=self._app_settings.ai_temperature,
                             max_tokens=output_limit,
                             top_p=self._app_settings.ai_top_p,
@@ -2889,21 +2650,17 @@ class AIEngine:
                     else self._groq_model
                 )
                 timeout = int(self._config.get("LOCAL_AI_TIMEOUT", TIMEOUT)) if self._use_local_ai else TIMEOUT
-                request_options = (
-                    {}
-                    if self._use_local_ai or self._use_openrouter
-                    else groq_request_options(current_model, profile.name)
-                )
                 if not self._provider_call_allowed(provider_authorization):
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
-                resp = self._client.chat.completions.create(
+                resp = self._provider_create(
                     model=current_model,
                     messages=[{"role": "system", "content": system}] + messages,
+                    profile_name=profile.name,
                     temperature=self._app_settings.ai_temperature,
                     max_tokens=output_limit,
                     top_p=self._app_settings.ai_top_p,
                     timeout=timeout,
-                    **request_options,
+                    stream=False,
                 )
                 if not self._provider_call_allowed(provider_authorization):
                     return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
@@ -3051,7 +2808,7 @@ class AIEngine:
         client = None
         selected_model = str(model or "").strip()[:300]
         timeout = TIMEOUT
-        provider_is_groq = False
+        provider_kind = self._provider_kind()
         if selected in {"inherit", "primary"}:
             client = self._client
             if self._use_local_ai:
@@ -3061,56 +2818,50 @@ class AIEngine:
                 selected_model = selected_model or self._openrouter_model
             else:
                 selected_model = selected_model or self._groq_model
-                provider_is_groq = True
         elif selected == "ollama":
+            provider_kind = "ollama"
             selected_model = selected_model or self._config.get("LOCAL_AI_MODEL", "").strip()
             if not selected_model:
                 raise RuntimeError("No Ollama model is configured")
             timeout = int(self._config.get("LOCAL_AI_TIMEOUT", TIMEOUT))
             local = _LocalOllamaClient(selected_model, timeout=timeout)
-            client = SimpleNamespace(
-                chat=SimpleNamespace(
-                    completions=SimpleNamespace(create=local.chat_completions_create),
-                ),
-            )
+            client = wrap_ollama_client(local)
         elif selected == "openrouter":
+            provider_kind = "openrouter"
             selected_model = selected_model or self._openrouter_model
             if not self._openrouter_key or not selected_model:
                 raise RuntimeError("OpenRouter is not configured")
             remote = _OpenRouterClient(
                 self._openrouter_key, selected_model, timeout=TIMEOUT,
             )
-            client = SimpleNamespace(
-                chat=SimpleNamespace(
-                    completions=SimpleNamespace(create=remote.chat_completions_create),
-                ),
-            )
+            client = wrap_openrouter_client(remote)
         else:
+            provider_kind = "groq"
             if not GROQ_OK or not self._groq_keys:
                 raise RuntimeError("Groq is not configured")
             selected_model = selected_model or self._groq_model
-            client = Groq(api_key=self._groq_keys[self._current_groq_key_index])
-            provider_is_groq = True
+            client = create_groq_client(
+                self._groq_keys[self._current_groq_key_index]
+            )
 
         if client is None or not selected_model:
             raise RuntimeError("Structured-request provider is unavailable")
-        request_options = (
-            groq_request_options(selected_model, "normal")
-            if provider_is_groq
-            else {}
-        )
-        response = client.chat.completions.create(
+        router = ProviderRouter.for_existing_client(
+            kind=provider_kind,
+            client=client,
             model=selected_model,
+        )
+        response = router.create(
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": user_payload},
             ],
+            profile_name="normal",
             temperature=0.1,
             max_tokens=output_limit,
             top_p=0.9,
             timeout=timeout,
             stream=False,
-            **request_options,
         )
         if cancel_event is not None and cancel_event.is_set():
             return ""

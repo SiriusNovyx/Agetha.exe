@@ -71,62 +71,15 @@ _FEATURE_GATES: Mapping[Capability, tuple[str, ...]] = MappingProxyType({
     Capability.ADVANCED_OS_INTEGRATION: ("ENABLE_COMMAND_EXECUTION",),
 })
 
-_COMMAND_CAPABILITIES: Mapping[str, Capability] = MappingProxyType({
-    # Core passive presentation.
-    "idle": Capability.CHAT,
-    "speak": Capability.CHAT,
-    "wake_user": Capability.CHAT,
-    "popup": Capability.CHAT,
-    "change_mood": Capability.EMOTION_PERSONALITY,
-    "view_emotions": Capability.EMOTION_PERSONALITY,
-    "clear_emotions": Capability.EMOTION_PERSONALITY,
-    "view_memory": Capability.MEMORY,
-    "search_memory": Capability.MEMORY,
-    "clear_memory": Capability.MEMORY,
-    "view_dreams": Capability.MEMORY,
-    "list_tasks": Capability.MEMORY,
-    "add_task": Capability.MEMORY,
-    "complete_task": Capability.MEMORY,
-    "read_notepad": Capability.MEMORY,
-    "search_web": Capability.WEB_RAG,
-    "fetch_webpage": Capability.WEB_RAG,
-    "read_document": Capability.READ_ONLY_CONTINUATION,
-    "read_file": Capability.READ_ONLY_CONTINUATION,
-    "list_dir": Capability.READ_ONLY_CONTINUATION,
-    "list_directory": Capability.READ_ONLY_CONTINUATION,
-    "system_info": Capability.READ_ONLY_CONTINUATION,
-    "recycle_bin_status": Capability.READ_ONLY_CONTINUATION,
-    # Full-only effects and observation.
-    "computer_use": Capability.COMPUTER_USE,
-    "type_text": Capability.OS_TYPING,
-    "monitor_process": Capability.PROCESS_AWARENESS,
-    "get_active_app": Capability.PROCESS_AWARENESS,
-    "list_running_apps": Capability.PROCESS_AWARENESS,
-    "open_app": Capability.APP_CONTROL,
-    "force_close": Capability.APP_CONTROL,
-    "target_window_move": Capability.APP_CONTROL,
-    "target_window_resize": Capability.APP_CONTROL,
-    "target_window_close": Capability.APP_CONTROL,
-})
-
-_ADVANCED_OS_COMMANDS = frozenset({
-    "request_path", "create_folder", "create_file", "delete_file",
-    "rename_file", "write_file", "set_clipboard", "copy_to_clipboard",
-    "get_clipboard", "take_screenshot", "show_notification", "run_command",
-    "open_file", "open_folder", "show_dialog", "open_browser", "open_url",
-    "set_volume", "set_wallpaper", "search_files", "lock_screen", "shutdown",
-    "restart", "set_reminder", "set_autostart", "open_settings", "set_theme",
-    "request_screen_read", "analyze_screen_deep",
-})
-
-
 def capability_for_command(command: object) -> Capability:
     """Classify one model/handler command at the central policy boundary."""
-    name = str(command or "").strip().casefold()
-    if name in _COMMAND_CAPABILITIES:
-        return _COMMAND_CAPABILITIES[name]
-    if name in _ADVANCED_OS_COMMANDS:
-        return Capability.ADVANCED_OS_INTEGRATION
+    # Lazy import keeps Capability as the enum owner while CommandSpec refers
+    # to enum members without creating an import cycle.
+    from agetha.commands.specs import get_command_spec
+
+    spec = get_command_spec(command)
+    if spec is not None:
+        return spec.capability
     # Unknown commands already fail before dispatch.  Classifying them as an
     # advanced integration keeps any future direct caller fail-closed.
     return Capability.ADVANCED_OS_INTEGRATION

@@ -110,10 +110,11 @@ thread.
 
 ## Configuration architecture
 
-[app_config.py](../agetha/app_config.py) is the only canonical configuration
-model. `DEFAULT_CONFIG` contains the distributable defaults and comments;
-`AppSettings` exposes typed properties with safe fallbacks and clamps. The
-loader:
+[app_config.py](../agetha/app_config.py) remains the public compatibility facade
+and transaction coordinator. `DEFAULT_CONFIG` contains the distributable
+defaults and comments; `AppSettings` exposes typed properties with safe
+fallbacks and clamps. `agetha.config.io` owns durable atomic replacement, and
+`agetha.config.transactions` owns pure structural document edits. The loader:
 
 1. starts from built-in defaults;
 2. parses `config.txt` as user overrides;
@@ -127,6 +128,13 @@ this settings system instead of maintaining a second configuration model. Some
 settings are live-readable; settings marked with `*` in the dashboard require
 restart. Consult typed properties rather than parsing strings independently in
 a feature module.
+
+`agetha.config.schema.SETTING_SPECS` contains the canonical machine facts for a
+small stable subset of typed settings. Runtime defaults, strict ranges, and enum
+choices for those keys derive from the registry. The checked-in
+[settings reference](generated/settings_reference.md) is downstream output.
+Compact, Fast Mode, secrets, and other settings with special behavior remain in
+procedural code.
 
 `COMPACT_MODE=yes` is the default for a missing/fresh key. It is typed and
 persisted through the same structural atomic patch, but is deliberately absent
@@ -195,12 +203,19 @@ and presentation complete only behind the already active deny boundary. See
 
 ## AI engine and prompt composition
 
-[ai_engine.py](../agetha/core/ai_engine.py) supports three provider modes behind
-one `AIEngine` interface:
+[ai_engine.py](../agetha/core/ai_engine.py) owns prompt, parser, repair,
+history, and Agetha request semantics. A small `ProviderRouter` delegates
+request transport and provider request shape to three adapters:
 
 - Groq, with configured key rotation and token-limit handling;
 - OpenRouter, through its OpenAI-compatible HTTP endpoint;
 - local Ollama, through the local API and configured model.
+
+Groq model normalization, GPT-OSS reasoning options, JSON Object Mode, and SDK
+construction live in `agetha.providers.groq`. OpenRouter and Ollama own their
+HTTP request, stream, usage, and error conversion details. AIEngine retains key
+and provider fallback because those loops also own authorization, UI exhaustion,
+repair, and final publication semantics.
 
 Both `query()` and `query_streaming()` build the same logical request and pass
 the returned text through `_parse()`. Provider choice must not fork command
@@ -234,7 +249,8 @@ values in `type_text` and does not strip words, whitespace, combining marks, or
 other user-provided data from commands, quotations, documents, or code.
 
 The parser extracts or repairs the expected JSON object, normalizes mood and
-segments, validates commands against `VALID_COMMANDS`, copies command-specific
+segments, validates commands against the `COMMAND_SPECS`-derived
+`VALID_COMMANDS` compatibility view, copies command-specific
 fields into the result, applies feature gates, and records permitted memory.
 Parsed model output is still untrusted: execution policy belongs to the command
 layer.
@@ -249,12 +265,22 @@ the normal character prompt.
 
 ## Command execution and safety
 
-The command path has three synchronized registries:
+`agetha.commands.specs.COMMAND_SPECS` is the canonical machine-readable source
+for command names, base risks, capabilities, origin eligibility, core/handler
+dispatch ownership, and command-specific static feature gates.
+`AIEngine.VALID_COMMANDS` and `CommandGuard.TIER_MAP` remain compatibility views
+derived from it, while `capability_for_command()` resolves the same
+specification. Unknown names remain unsupported and receive the fail-closed
+Danger/advanced-integration fallbacks at guard and capability boundaries.
 
-1. `AIEngine.VALID_COMMANDS` defines what parsed model output may name.
-2. `command_handlers.HANDLERS` maps names to implementations via `@register`.
-3. `CommandGuard.TIER_MAP` assigns confirmation policy; an unknown name is
-   treated as dangerous rather than safe.
+Implementations remain separate in the validated handler registry. File,
+system, web-context, and memory/presentation handlers live in domain modules
+under `commands.handlers`. `command_handlers.py` retains dispatch recursion and
+the window, typing, and continuation flows whose security ordering depends on
+shared app state. Registration rejects unknown, core-only, and duplicate names,
+and the completed module validates handler/spec bindings bidirectionally. Core commands (`idle`,
+`speak`, `wake_user`, and `popup`) retain explicit central behavior rather than
+fake handlers. See the mechanical [generated command matrix](generated/command_matrix.md).
 
 `command_handlers.dispatch()` builds a `DispatchCtx`, applies ambient/deep-OCR
 restrictions and feature gates, performs optional dry-run handling, asks the
@@ -264,8 +290,9 @@ effects. They report success/failure through `CompanionApp` UI helpers and hand
 speech/state control back to the application.
 
 Never call a handler directly to avoid confirmation. A new command is incomplete
-until all three registries, prompt/schema fields, configuration gates, and tests
-agree. See [Adding an AI command](development.md#adding-an-ai-command).
+until its specification, implementation, prompt/schema fields when needed,
+configuration gates, and tests agree. See
+[Adding an AI command](development.md#adding-an-ai-command).
 
 `type_text` is a specialized Caution path layered on the same rules. Its parser
 accepts exact `text`, `mode`, `speed`, and `restore_clipboard`; both the master

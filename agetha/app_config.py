@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import stat
 import sys
 import tempfile
 import math
@@ -22,6 +21,17 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+from agetha.config.io import (
+    AtomicWriteError,
+    fsync_parent_directory as _fsync_parent_directory,
+    write_atomic_config as _write_atomic_config_impl,
+)
+from agetha.config.schema import SETTING_SPECS, SettingKind
+from agetha.config.transactions import (
+    normalise_config_updates as _normalise_document_updates,
+    render_config_document as _render_config_document,
+)
 
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
@@ -35,62 +45,14 @@ COMPACT_MODE_FAIL_CLOSED_MARKER = ".agetha_compact_mode_required"
 _CONFIG_WRITE_LOCK = threading.RLock()
 
 
-class AtomicWriteError(OSError):
-    """Report whether an atomic replacement may already be visible on disk."""
-
-    def __init__(self, state: str, message: str) -> None:
-        super().__init__(message)
-        self.state = state
-        self.write_applied = state == "write_applied_verification_failed"
-
-
-def _fsync_parent_directory(path: Path) -> None:
-    """Persist a completed rename on POSIX; Windows has no portable equivalent."""
-    if os.name == "nt":
-        return
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    directory_fd = os.open(path.parent, flags)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
-
-
 def _write_atomic_config(path: Path, content: str) -> None:
-    """Durably replace a text file using an exclusive same-directory temp file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_name: str | None = None
-    replaced = False
-    try:
-        fd, temp_name = tempfile.mkstemp(
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-        )
-        try:
-            os.chmod(temp_name, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            # mkstemp is 0600 on POSIX. Windows files inherit the ACL of the
-            # per-user application directory; chmod is not an ACL boundary.
-            pass
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-        replaced = True
-        _fsync_parent_directory(path)
-    except Exception as exc:
-        if temp_name is not None and not replaced:
-            try:
-                os.unlink(temp_name)
-            except OSError:
-                pass
-        state = (
-            "write_applied_verification_failed" if replaced else "write_not_applied"
-        )
-        raise AtomicWriteError(state, f"atomic write failed during {state}") from exc
+    """Compatibility seam around the canonical durable writer."""
+    _write_atomic_config_impl(
+        path,
+        content,
+        mkstemp=tempfile.mkstemp,
+        fsync_parent=_fsync_parent_directory,
+    )
 
 
 def compact_mode_fail_closed_path(config_path: Path | None = None) -> Path:
@@ -823,15 +785,9 @@ _VALID_BOOLS = frozenset({"1", "yes", "true", "on", "0", "no", "false", "off"})
 # than merely be accepted and clamped by a runtime property. Fast Mode uses
 # these limits before saving restoration metadata.
 _CONFIG_VALUE_RANGES: dict[str, tuple[float, float]] = {
-    "AI_MAX_TOKENS": (64, 8192),
-    "HISTORY_LIMIT": (1, 20),
-    "MEMORY_CHARS": (100, 5000),
-    "EPISODIC_PROMPT_LIMIT": (0, 50),
-    "AI_TEMPERATURE": (0.0, 2.0),
-    "AI_TOP_P": (0.0, 1.0),
-    "SCREEN_POLL_INTERVAL_SEC": (15, 3600),
-    "OCR_MAX_DIMENSION": (640, 8192),
-    "OCR_FORCE_REFRESH_SECONDS": (1.0, 3600.0),
+    key: (spec.minimum, spec.maximum)
+    for key, spec in SETTING_SPECS.items()
+    if spec.minimum is not None and spec.maximum is not None
 }
 
 
@@ -878,6 +834,7 @@ def _parse_config_text(text: str) -> tuple[dict[str, str], int]:
 def default_config_dict() -> dict[str, str]:
     """Built-in defaults parsed from DEFAULT_CONFIG template."""
     cfg, _ = _parse_config_text(DEFAULT_CONFIG)
+    cfg.update({key: spec.default for key, spec in SETTING_SPECS.items()})
     return cfg
 
 
@@ -908,6 +865,17 @@ def validate_config_value(
     raw = str(value)
     if "\r" in raw or "\n" in raw:
         return False
+    spec = SETTING_SPECS.get(normalized)
+    if spec is not None:
+        if spec.kind is SettingKind.ENUM:
+            return raw.strip().lower() in spec.choices
+        as_float = spec.kind is SettingKind.FLOAT
+        if not _is_valid_number(raw, as_float=as_float):
+            return False
+        if enforce_range:
+            number = float(raw.strip()) if as_float else int(raw.strip())
+            return spec.minimum <= number <= spec.maximum
+        return True
     if normalized in _BOOL_KEYS:
         return _is_valid_bool(raw)
     if normalized in _INT_KEYS:
@@ -924,10 +892,6 @@ def validate_config_value(
             limits = _CONFIG_VALUE_RANGES.get(normalized)
             return limits is not None and limits[0] <= float(raw.strip()) <= limits[1]
         return True
-    if normalized == "OCR_PREPROCESSING":
-        return raw.strip().lower() in {"basic", "auto"}
-    if normalized == "UNICODE_TYPING_MODE":
-        return raw.strip().lower() in _UNICODE_TYPING_MODES
     # Strict persisted profiles may contain only settings with an explicit
     # typed or enum validator. General config parsing remains permissive.
     return not enforce_range
@@ -1902,34 +1866,17 @@ class AppSettings:
         return items
 
 
-_CONFIG_DOCUMENT_LINE_RE = re.compile(
-    r"^(?P<prefix>\s*)(?P<key>[A-Za-z0-9_]+)(?P<separator>\s*=\s*)(?P<value>.*)$"
-)
-
-
 def _normalise_config_updates(
     updates: Mapping[str, object],
 ) -> tuple[dict[str, str], list[str]]:
     """Validate structural config updates without parsing or normalising values."""
-    clean: dict[str, str] = {}
-    failed: list[str] = []
-    for raw_key, raw_value in updates.items():
-        key = str(raw_key).strip().upper()
-        if not key or not key.replace("_", "").isalnum():
-            failed.append(key or "<empty>")
-            continue
-        if _is_secret_key(key):
-            _log_config("Refused to write an API key to config.txt — use .env")
-            failed.append(key)
-            continue
-        value = str(raw_value)
-        if "\r" in value or "\n" in value:
-            # Config values are deliberately one-line. Refusing embedded lines
-            # also prevents a value from injecting an unrelated setting.
-            failed.append(key)
-            continue
-        clean[key] = value
-    return clean, failed
+    return _normalise_document_updates(
+        updates,
+        is_secret_key=_is_secret_key,
+        on_secret_rejected=lambda _key: _log_config(
+            "Refused to write an API key to config.txt — use .env"
+        ),
+    )
 
 
 def read_config_document(path: Path | None = None) -> tuple[str, dict[str, str]]:
@@ -1978,52 +1925,15 @@ def render_config_document(
     make Python and Medic observe different effective values. Removed keys are
     removed at every occurrence. Missing updates are appended in caller order.
     """
-    clean, failed = _normalise_config_updates(updates or {})
-    if failed:
-        raise ValueError(f"Invalid or forbidden config keys: {', '.join(failed)}")
-
-    removals: set[str] = set()
-    for raw_key in remove_keys:
-        key = str(raw_key).strip().upper()
-        if not key or not key.replace("_", "").isalnum():
-            raise ValueError(f"Invalid config key for removal: {raw_key!r}")
-        removals.add(key)
-    # An explicit update wins if a caller accidentally supplies both.
-    removals.difference_update(clean)
-
-    newline = "\r\n" if "\r\n" in text else "\n"
-    seen: set[str] = set()
-    output: list[str] = []
-    for line in text.splitlines(keepends=True):
-        if line.endswith("\r\n"):
-            body, ending = line[:-2], "\r\n"
-        elif line.endswith(("\n", "\r")):
-            body, ending = line[:-1], line[-1]
-        else:
-            body, ending = line, ""
-        match = _CONFIG_DOCUMENT_LINE_RE.match(body)
-        if not match:
-            output.append(line)
-            continue
-        key = match.group("key").upper()
-        if key in removals:
-            continue
-        if key not in clean:
-            output.append(line)
-            continue
-        output.append(
-            f"{match.group('prefix')}{match.group('key')}"
-            f"{match.group('separator')}{clean[key]}{ending}"
-        )
-        seen.add(key)
-
-    rendered = "".join(output)
-    missing = [(key, value) for key, value in clean.items() if key not in seen]
-    if missing:
-        if rendered and not rendered.endswith(("\n", "\r")):
-            rendered += newline
-        rendered += "".join(f"{key} = {value}{newline}" for key, value in missing)
-    return rendered
+    return _render_config_document(
+        text,
+        updates,
+        remove_keys,
+        is_secret_key=_is_secret_key,
+        on_secret_rejected=lambda _key: _log_config(
+            "Refused to write an API key to config.txt — use .env"
+        ),
+    )
 
 
 def write_config_document(path: Path, content: str) -> None:
