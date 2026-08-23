@@ -57,6 +57,49 @@ class GeminiMedicTests(unittest.TestCase):
                 self.assertEqual(_output(medic_helper.cmd_env_status), "GEMINI")
                 self.assertEqual(_output(medic_helper.cmd_config_status), "GEMINI")
 
+    def test_provider_status_accepts_every_documented_truthy_spelling(self) -> None:
+        cases = (
+            ("ENABLE_GROQ", "GROQ_API_KEY_1=groq-key-long-enough-for-medic", "SET"),
+            ("ENABLE_GEMINI", "GEMINI_API_KEY=gemini-key-long-enough-for-medic", "GEMINI"),
+            (
+                "ENABLE_OPENROUTER",
+                "OPENROUTER_API_KEY=openrouter-key-long-enough-for-medic",
+                "OPENROUTER",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(medic_helper, "_MEDIC_DIR", root):
+                for key, env_line, expected in cases:
+                    for value in ("true", "1", "on"):
+                        with self.subTest(key=key, value=value):
+                            flags = {
+                                "ENABLE_GROQ": "off",
+                                "ENABLE_GEMINI": "off",
+                                "ENABLE_OPENROUTER": "off",
+                            }
+                            flags[key] = value
+                            (root / ".env").write_text(
+                                env_line + "\n",
+                                encoding="utf-8",
+                            )
+                            (root / "config.txt").write_text(
+                                "USE_LOCAL_AI = no\n"
+                                f"ENABLE_GROQ = {flags['ENABLE_GROQ']}\n"
+                                f"ENABLE_GEMINI = {flags['ENABLE_GEMINI']}\n"
+                                f"ENABLE_OPENROUTER = {flags['ENABLE_OPENROUTER']}\n",
+                                encoding="utf-8",
+                            )
+
+                            self.assertEqual(
+                                _output(medic_helper.cmd_env_status),
+                                expected,
+                            )
+                            self.assertEqual(
+                                _output(medic_helper.cmd_config_status),
+                                expected,
+                            )
+
     def test_gemini_secret_in_config_is_reported_for_removal(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

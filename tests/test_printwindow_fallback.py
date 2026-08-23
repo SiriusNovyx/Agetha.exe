@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes
 import threading
 import unittest
 from unittest.mock import patch
@@ -59,9 +61,10 @@ class PrintWindowFallbackTests(unittest.TestCase):
         class _User32:
             SendMessageTimeoutW = _Call()
 
-        result = screen_reader._send_wm_print_with_timeout(
-            _User32(), 123, 456, timeout_ms=37,
-        )
+        with patch.object(screen_reader, "ctypes", ctypes):
+            result = screen_reader._send_wm_print_with_timeout(
+                _User32(), 123, 456, timeout_ms=37,
+            )
 
         self.assertFalse(result)
         args = _User32.SendMessageTimeoutW.args

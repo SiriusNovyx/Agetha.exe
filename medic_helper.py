@@ -165,27 +165,29 @@ def _env_api_key_status() -> tuple[str, str, str]:
 
 def cmd_config_status() -> None:
     """Report AI backend status. API keys are read from .env only (not config.txt)."""
+    from agetha.app_config import AppSettings, parse_config_document
+
     path = _MEDIC_DIR / "config.txt"
     if not path.is_file():
         print("MISSING")
         return
     text = path.read_text(encoding="utf-8", errors="replace")
-    local = re.search(r"USE_LOCAL_AI\s*=\s*(\S+)", text)
-    model = re.search(r"LOCAL_AI_MODEL\s*=\s*(\S+)", text)
-    groq = re.search(r"ENABLE_GROQ\s*=\s*(\S+)", text)
-    gemini = re.search(r"ENABLE_GEMINI\s*=\s*(\S+)", text)
-    openrouter = re.search(r"ENABLE_OPENROUTER\s*=\s*(\S+)", text)
+    settings = AppSettings(parse_config_document(text))
+    local_enabled = settings.bool("USE_LOCAL_AI", False)
+    model = settings.get("LOCAL_AI_MODEL", "").strip()
+    groq_enabled = settings.bool("ENABLE_GROQ", True)
+    gemini_enabled = settings.bool("ENABLE_GEMINI", False)
+    openrouter_enabled = settings.bool("ENABLE_OPENROUTER", False)
     or_val, gemini_val, groq_ready = _env_api_key_status()
-    groq_enabled = not groq or groq.group(1).lower() == "yes"
-    if local and local.group(1).lower() == "yes" and model and model.group(1).strip():
+    if local_enabled and model:
         print("LOCAL")
-    elif local and local.group(1).lower() == "yes":
+    elif local_enabled:
         print("LOCAL_NO_MODEL")
     elif groq_enabled and groq_ready:
         print("SET")
-    elif gemini and gemini.group(1).lower() == "yes" and len(gemini_val) > 10:
+    elif gemini_enabled and len(gemini_val) > 10:
         print("GEMINI")
-    elif openrouter and openrouter.group(1).lower() == "yes" and len(or_val) > 10:
+    elif openrouter_enabled and len(or_val) > 10:
         print("OPENROUTER")
     else:
         print("EMPTY")
