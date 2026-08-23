@@ -80,9 +80,10 @@ as authoritative remaining capacity.
 - Config insertion uses the existing path validation, lock, same-directory
   atomic replace, flush/fsync, and duplicate semantics.
 - PrintWindow remains a one-attempt Windows-only fallback after a uniform MSS
-  focused-window frame. It performs no target selection and remains behind the
-  existing sensitivity, minimized-window, exclusion, generation, and stale
-  result checks.
+  focused-window frame. Its external-window render uses a bounded
+  `SendMessageTimeoutW(WM_PRINT)` call, performs no target selection, and
+  remains behind the existing sensitivity, minimized-window, exclusion,
+  generation, and stale-result checks.
 - Tests use deterministic fake transports and no paid/live API calls.
 
 ## PrintWindow benchmark decision

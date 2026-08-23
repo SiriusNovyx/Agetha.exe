@@ -115,6 +115,11 @@ def cmd_env_status() -> None:
     if not path.is_file():
         print("EMPTY")
         return
+    if (_MEDIC_DIR / "config.txt").is_file():
+        # Provider keys are readiness inputs, not provider selection. Honor
+        # the same enable flags as the runtime whenever configuration exists.
+        cmd_config_status()
+        return
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -167,19 +172,21 @@ def cmd_config_status() -> None:
     text = path.read_text(encoding="utf-8", errors="replace")
     local = re.search(r"USE_LOCAL_AI\s*=\s*(\S+)", text)
     model = re.search(r"LOCAL_AI_MODEL\s*=\s*(\S+)", text)
+    groq = re.search(r"ENABLE_GROQ\s*=\s*(\S+)", text)
     gemini = re.search(r"ENABLE_GEMINI\s*=\s*(\S+)", text)
     openrouter = re.search(r"ENABLE_OPENROUTER\s*=\s*(\S+)", text)
     or_val, gemini_val, groq_ready = _env_api_key_status()
+    groq_enabled = not groq or groq.group(1).lower() == "yes"
     if local and local.group(1).lower() == "yes" and model and model.group(1).strip():
         print("LOCAL")
     elif local and local.group(1).lower() == "yes":
         print("LOCAL_NO_MODEL")
-    elif openrouter and openrouter.group(1).lower() == "yes" and len(or_val) > 10:
-        print("OPENROUTER")
+    elif groq_enabled and groq_ready:
+        print("SET")
     elif gemini and gemini.group(1).lower() == "yes" and len(gemini_val) > 10:
         print("GEMINI")
-    elif groq_ready:
-        print("SET")
+    elif openrouter and openrouter.group(1).lower() == "yes" and len(or_val) > 10:
+        print("OPENROUTER")
     else:
         print("EMPTY")
 

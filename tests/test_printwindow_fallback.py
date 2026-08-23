@@ -41,6 +41,36 @@ def _frame(color: str, *, scope: str = "focused_window") -> CapturedFrame:
 
 
 class PrintWindowFallbackTests(unittest.TestCase):
+    def test_window_render_uses_bounded_wm_print_message(self) -> None:
+        from agetha.platform import screen_reader
+
+        self.assertTrue(hasattr(screen_reader, "_send_wm_print_with_timeout"))
+
+        class _Call:
+            def __init__(self) -> None:
+                self.argtypes = None
+                self.restype = None
+                self.args = None
+
+            def __call__(self, *args):
+                self.args = args
+                return 0
+
+        class _User32:
+            SendMessageTimeoutW = _Call()
+
+        result = screen_reader._send_wm_print_with_timeout(
+            _User32(), 123, 456, timeout_ms=37,
+        )
+
+        self.assertFalse(result)
+        args = _User32.SendMessageTimeoutW.args
+        self.assertEqual(args[0], 123)
+        self.assertEqual(args[1], 0x0317)
+        self.assertEqual(args[2], 456)
+        self.assertTrue(args[4] & 0x0002)
+        self.assertEqual(args[5], 37)
+
     def test_uniform_frame_detection_does_not_treat_visible_detail_as_blank(self) -> None:
         from agetha.platform.screen_reader import _image_looks_uniform
 

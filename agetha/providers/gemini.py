@@ -141,15 +141,21 @@ class GeminiClient:
     ):
         selected_model = normalize_gemini_model(model or self.model)
         system_instruction, contents = self.convert_messages(messages)
+        generation_config: dict[str, object] = {
+            "temperature": float(temperature),
+            "maxOutputTokens": int(max_tokens),
+            "topP": float(top_p),
+            "responseMimeType": "application/json",
+        }
         payload: dict[str, object] = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": float(temperature),
-                "maxOutputTokens": int(max_tokens),
-                "topP": float(top_p),
-                "responseMimeType": "application/json",
-            },
+            "generationConfig": generation_config,
         }
+        if selected_model.lower().startswith("gemini-2.5-flash"):
+            # Agetha's provider-neutral token limit is reserved for the JSON
+            # envelope. Gemini 2.5 Flash otherwise spends from that same limit
+            # on dynamic thinking and can return MAX_TOKENS before any JSON.
+            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
         if system_instruction is not None:
             payload["systemInstruction"] = system_instruction
         request = self._request(

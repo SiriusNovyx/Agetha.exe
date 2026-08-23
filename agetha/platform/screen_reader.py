@@ -902,12 +902,50 @@ def _image_looks_uniform(image: "Image.Image | None") -> bool:
         return False
 
 
+_WM_PRINT = 0x0317
+_PRF_PRINT_ALL = 0x001F
+_SMTO_BOUNDED = 0x0001 | 0x0002 | 0x0020
+_PRINTWINDOW_TIMEOUT_MS = 750
+
+
+def _send_wm_print_with_timeout(
+    user32,
+    hwnd: int,
+    memory_dc,
+    *,
+    timeout_ms: int = _PRINTWINDOW_TIMEOUT_MS,
+) -> bool:
+    """Ask one external window to render, with a strict wait bound."""
+    timeout = max(1, min(int(timeout_ms), 5_000))
+    message_result = ctypes.c_size_t()
+    send_message_timeout = user32.SendMessageTimeoutW
+    send_message_timeout.argtypes = [
+        ctypes.wintypes.HWND,
+        ctypes.wintypes.UINT,
+        ctypes.wintypes.WPARAM,
+        ctypes.wintypes.LPARAM,
+        ctypes.wintypes.UINT,
+        ctypes.wintypes.UINT,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    send_message_timeout.restype = ctypes.wintypes.LPARAM
+    return bool(send_message_timeout(
+        hwnd,
+        _WM_PRINT,
+        memory_dc,
+        _PRF_PRINT_ALL,
+        _SMTO_BOUNDED,
+        timeout,
+        ctypes.byref(message_result),
+    ))
+
+
 def _grab_printwindow_frame(
     info: dict,
     *,
     crop_frame: CapturedFrame | None = None,
 ) -> CapturedFrame | None:
-    """Render one already-approved visible Windows target with PrintWindow.
+    """Render one approved visible Windows target with bounded ``WM_PRINT``.
 
     This primitive performs no target selection. Callers must retain the normal
     focused-window, exclusion, capability, generation, and revalidation policy.
@@ -971,7 +1009,7 @@ def _grab_printwindow_frame(
         if not memory_dc or not bitmap:
             return None
         previous = gdi32.SelectObject(memory_dc, bitmap)
-        if not user32.PrintWindow(hwnd, memory_dc, 2):
+        if not _send_wm_print_with_timeout(user32, hwnd, memory_dc):
             return None
 
         info_header = _BitmapInfo()

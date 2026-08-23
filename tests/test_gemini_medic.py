@@ -37,6 +37,26 @@ class GeminiMedicTests(unittest.TestCase):
                 self.assertEqual(_output(medic_helper.cmd_env_status), "GEMINI")
                 self.assertEqual(_output(medic_helper.cmd_config_status), "GEMINI")
 
+    def test_disabled_stale_openrouter_key_does_not_hide_enabled_gemini(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".env").write_text(
+                "OPENROUTER_API_KEY=old-openrouter-key-long-enough\n"
+                "GEMINI_API_KEY=gemini-key-long-enough-for-medic\n",
+                encoding="utf-8",
+            )
+            (root / "config.txt").write_text(
+                "USE_LOCAL_AI = no\n"
+                "ENABLE_GROQ = no\n"
+                "ENABLE_GEMINI = yes\n"
+                "ENABLE_OPENROUTER = no\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(medic_helper, "_MEDIC_DIR", root):
+                self.assertEqual(_output(medic_helper.cmd_env_status), "GEMINI")
+                self.assertEqual(_output(medic_helper.cmd_config_status), "GEMINI")
+
     def test_gemini_secret_in_config_is_reported_for_removal(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

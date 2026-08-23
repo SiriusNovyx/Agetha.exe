@@ -94,6 +94,10 @@ class GeminiProviderTests(unittest.TestCase):
         self.assertEqual(payload["systemInstruction"]["parts"][0]["text"], "Return JSON.")
         self.assertEqual(payload["generationConfig"]["responseMimeType"], "application/json")
         self.assertEqual(payload["generationConfig"]["maxOutputTokens"], 123)
+        self.assertEqual(
+            payload["generationConfig"]["thinkingConfig"],
+            {"thinkingBudget": 0},
+        )
         self.assertEqual(result.choices[0].message.content, '{"command":"idle"}')
         self.assertEqual(result.choices[0].finish_reason, "STOP")
         self.assertEqual(result.usage.prompt_tokens, 11)

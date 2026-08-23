@@ -356,9 +356,10 @@ remain, but macOS is retired and unsupported as of v5.5.5.
 
 On Windows, focused capture starts with MSS. When that exact approved frame is
 uniform/blank and `ENABLE_PRINTWINDOW_FALLBACK=yes`, a bounded local
-`PrintWindow(PW_RENDERFULLCONTENT)` render may replace it. The fallback cannot
-select a target, is never used for minimized/unmapped/excluded/Agetha windows,
-and preserves the MSS crop and physical origin for partially visible windows.
+`WM_PRINT` render sent through `SendMessageTimeoutW` may replace it. The
+fallback cannot select a target, is never used for
+minimized/unmapped/excluded/Agetha windows, and preserves the MSS crop and
+physical origin for partially visible windows.
 
 ## Local observation and presence
 
