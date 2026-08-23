@@ -42,7 +42,7 @@ sequenceDiagram
     Entry->>Entry: Windows AUMID/shortcut, if supported
     Entry->>Tk: CompanionApp()
     Tk->>Tk: DPI awareness, scale, shell widgets
-    Tk->>Tk: construct core owners; leave Compact-denied advanced owners inactive
+    Tk->>Tk: construct core owners — leave Compact-denied advanced owners inactive
     Tk->>Init: start _init_background daemon
     Tk->>Tk: enter mainloop()
     Init->>Init: bleep, ScreenReader, AIEngine
