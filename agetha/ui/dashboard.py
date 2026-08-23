@@ -343,6 +343,8 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
         (
             ("USE_LOCAL_AI", "bool", True, ()),
             ("ENABLE_GROQ", "bool", True, ()),
+            ("ENABLE_GEMINI", "bool", True, ()),
+            ("GEMINI_MODEL", "text", True, ()),
             ("ENABLE_OPENROUTER", "bool", True, ()),
             ("OPENROUTER_MODEL", "text", True, ()),
             ("GROQ_MODEL", "text", True, ()),
@@ -404,7 +406,7 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
             ("COMPUTER_USE_MAX_STEPS", "text", True, ()),
             ("COMPUTER_USE_TIMEOUT_SEC", "text", True, ()),
             ("COMPUTER_USE_PLANNER_PROVIDER", "choice", True, (
-                "inherit", "ollama", "groq", "openrouter",
+                "inherit", "ollama", "groq", "gemini", "openrouter",
             )),
             ("COMPUTER_USE_PLANNER_MODEL", "text", True, ()),
             ("COMPUTER_USE_PLANNER_CONFIDENCE_MIN", "text", True, ()),
@@ -488,6 +490,7 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
         "Screen / OCR — restart required",
         (
             ("ENABLE_SCREEN_READER", "bool", True, ()),
+            ("ENABLE_PRINTWINDOW_FALLBACK", "bool", True, ()),
             ("OCR_MAX_DIMENSION", "text", True, ()),
             ("OCR_FOCUSED_WINDOW_ONLY", "bool", True, ()),
             ("OCR_CHANGE_DETECTION", "bool", True, ()),
@@ -537,7 +540,6 @@ _SETTING_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, bool, tuple[str, ...]]
             ("ENABLE_MOOD_MOTION", "bool", True, ()),
             ("MOOD_MOTION_COOLDOWN_SECONDS", "text", True, ()),
             ("ENABLE_FILE_DRAG_DROP", "bool", True, ()),
-            ("APP_VERSION", "text", True, ()),
             ("GITHUB_RELEASES_URL", "text", True, ()),
         ),
     ),

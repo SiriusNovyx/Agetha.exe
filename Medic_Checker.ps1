@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v5.7)
+  Agetha startup health check and launcher (Overhaul Edition v5.7.5)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
@@ -40,9 +40,15 @@ function Get-ConfigValue {
 }
 
 function Get-AppVersion {
-    $v = Get-ConfigValue -Key 'APP_VERSION' -Default '5.7'
-    if ($v) { return $v }
-    return '5.7'
+    $metadataPath = Join-Path $Script:Root 'agetha\__init__.py'
+    if (Test-Path -LiteralPath $metadataPath) {
+        foreach ($line in Get-Content -LiteralPath $metadataPath) {
+            if ($line -match '^\s*__version__\s*=\s*"([^"]+)"\s*$') {
+                return $Matches[1]
+            }
+        }
+    }
+    return '5.7.5'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -60,7 +66,7 @@ try {
     $script:AppVersion = Get-AppVersion
     $Host.UI.RawUI.WindowTitle = "Agetha.exe  -  Health Check  |  v$script:AppVersion"
 } catch {
-    $script:AppVersion = '5.7'
+    $script:AppVersion = '5.7.5'
 }
 
 function Test-GitHubUpdate {
@@ -783,8 +789,8 @@ function Get-ConfigStatus {
 
     if (Test-Path -LiteralPath (Join-Path $Script:Root '.env')) {
         $envStatus = Invoke-PythonHelper -PythonExe $py -Command 'env'
-        # medic_helper env prints SET (Groq) or OPENROUTER — both mean a usable key
-        if ($envStatus -eq 'SET' -or $envStatus -eq 'OPENROUTER') { return $envStatus }
+        # medic_helper reports one usable Groq, Gemini, or OpenRouter key.
+        if ($envStatus -in @('SET', 'GEMINI', 'OPENROUTER')) { return $envStatus }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Script:Root 'config.txt'))) {
         return 'NO_CONFIG'
@@ -1267,6 +1273,7 @@ function Invoke-StandardChecks {
             Write-Ok '.env - Groq API key configured.'
         }
         'LOCAL'       { Write-Ok 'config.txt - Local AI (Ollama) mode active.' }
+        'GEMINI'      { Write-Ok '.env - Gemini API key configured.' }
         'OPENROUTER'  { Write-Ok '.env - OpenRouter API key configured.' }
         'LOCAL_NO_MODEL' {
             Write-Warn 'USE_LOCAL_AI=yes but LOCAL_AI_MODEL is blank.'
@@ -1394,7 +1401,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (v5.7 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (v5.7.5 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut

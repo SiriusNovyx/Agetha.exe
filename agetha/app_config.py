@@ -4,7 +4,8 @@ app_config.py — Central config.txt loader for Agetha Mod.
 Parses config.txt once, merges .env overrides, exposes typed settings.
 Missing, unreadable, or invalid config.txt always falls back to DEFAULT_CONFIG.
 
-API keys (GROQ_API_KEY*, OPENROUTER_API_KEY, UNLIMITED_OCR_API_KEY) are loaded from .env only —
+API keys (GROQ_API_KEY*, GEMINI_API_KEY, OPENROUTER_API_KEY,
+UNLIMITED_OCR_API_KEY) are loaded from .env only —
 values in config.txt are ignored.
 """
 
@@ -22,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from agetha import __version__
 from agetha.config.io import (
     AtomicWriteError,
     fsync_parent_directory as _fsync_parent_directory,
@@ -122,7 +124,7 @@ DEFAULT_CONFIG = """# ==========================================================
 #   • Booleans: yes / no  (also: true, false, 1, 0, on, off)
 #   • If a line is missing, corrupt, or has an invalid value → built-in default
 #   • Secrets: API keys go in .env ONLY (copy .env.example → .env)
-#             Never put GROQ_API_KEY* or OPENROUTER_API_KEY in this file
+#             Never put GROQ_API_KEY*, GEMINI_API_KEY, or OPENROUTER_API_KEY here
 #
 # After editing, restart Agetha (or re-run Medic_Checker.bat).
 # =============================================================================
@@ -135,10 +137,10 @@ COMPACT_MODE = yes
 
 
 # ── AI Backend ───────────────────────────────────────────────────────────────
-# Priority: local Ollama > Groq / OpenRouter (cloud).
+# Priority: local Ollama > Groq > Gemini > OpenRouter (cloud).
 # With both Groq + OpenRouter enabled, Agetha asks which to use at startup
-# (Yes=Groq, No=OpenRouter). If Groq is chosen, OpenRouter auto-starts when
-# Groq tokens/keys run out.
+# (Yes=Groq, No=OpenRouter). If Groq is chosen, enabled fallbacks are tried
+# in the priority shown above when the current provider becomes unavailable.
 
 # USE_LOCAL_AI — yes = use Ollama on this PC; no = use cloud APIs below.
 USE_LOCAL_AI = no
@@ -146,11 +148,18 @@ USE_LOCAL_AI = no
 # ENABLE_GROQ — yes = allow Groq API (ignored when USE_LOCAL_AI = yes).
 ENABLE_GROQ = yes
 
-# ENABLE_OPENROUTER — yes = enable OpenRouter (fallback after Groq, or solo if Groq off).
+# ENABLE_OPENROUTER — yes = enable OpenRouter (final cloud fallback, or solo).
 # Ignored when USE_LOCAL_AI = yes. Get a key: https://openrouter.ai/keys
 # Put OPENROUTER_API_KEY in .env only (never in this file).
-# Tip: keep ENABLE_GROQ=yes for free tier first; use OpenRouter when Groq is exhausted.
+# Tip: keep ENABLE_GROQ=yes for free tier first; use enabled fallbacks afterward.
 ENABLE_OPENROUTER = no
+
+# ENABLE_GEMINI - yes = enable Google Gemini as a cloud provider/fallback.
+# Put GEMINI_API_KEY in .env only (never in this file).
+ENABLE_GEMINI = no
+
+# GEMINI_MODEL - Gemini model name used when Gemini is selected.
+GEMINI_MODEL = gemini-2.5-flash
 
 # OPENROUTER_MODEL — model slug from openrouter.ai/models
 # Use exact IDs from https://openrouter.ai/models (many ":free" variants are retired).
@@ -484,6 +493,10 @@ MOOD_SNAP_WHISPER_SEC = 900
 # ENABLE_SCREEN_READER — no = disable OCR entirely (app still runs).
 ENABLE_SCREEN_READER = yes
 
+# ENABLE_PRINTWINDOW_FALLBACK - use Win32 PrintWindow only when focused MSS
+# capture is a uniform/blank frame. Existing target and exclusion policy remains.
+ENABLE_PRINTWINDOW_FALLBACK = yes
+
 # OCR_MAX_DIMENSION — max screenshot edge in pixels before OCR (640–8192). Lower = faster.
 OCR_MAX_DIMENSION = 2560
 
@@ -592,14 +605,11 @@ AUTO_PIP_INSTALL = yes
 # CREATE_DESKTOP_SHORTCUT — yes = create Desktop\\Agetha.lnk on each Medic_Checker run.
 CREATE_DESKTOP_SHORTCUT = no
 
-# CHECK_FOR_UPDATES — yes = compare APP_VERSION to GITHUB_RELEASES_URL (needs URL below).
+# CHECK_FOR_UPDATES — yes = compare the source build version to GITHUB_RELEASES_URL.
 CHECK_FOR_UPDATES = yes
 
 
 # ── App meta ──────────────────────────────────────────────────────────────────
-
-# APP_VERSION — shown in window title and Medic_Checker banner.
-APP_VERSION = 5.7
 
 # GITHUB_RELEASES_URL — GitHub API URL for latest release (leave empty to skip).
 # Example: https://api.github.com/repos/YOUR_USER/YOUR_REPO/releases/latest
@@ -674,6 +684,7 @@ TTS_VOICE_NAME =
 _SECRET_KEYS = frozenset(
     {
         "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
         "GROQ_API_KEY",
         "UNLIMITED_OCR_API_KEY",
         *(f"GROQ_API_KEY_{i}" for i in range(1, 11)),
@@ -699,13 +710,15 @@ FAST_MODE_OVERRIDES: dict[str, str] = {
 }
 
 _BOOL_KEYS = frozenset({
-    "COMPACT_MODE", "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER", "FASTER_MODE",
+    "COMPACT_MODE", "USE_LOCAL_AI", "ENABLE_GROQ", "ENABLE_OPENROUTER",
+    "ENABLE_GEMINI", "FASTER_MODE",
     "ENABLE_VOICE", "USE_LOCAL_STT", "ENABLE_FILE_DRAG_DROP",
     "ENABLE_STREAMING", "ENABLE_AMBIENT_POLLS",
     "ENABLE_DATETIME_CONTEXT", "DATETIME_INCLUDE_SECONDS", "DATETIME_INCLUDE_TIMEZONE",
     "ENABLE_COMMAND_EXECUTION", "ENABLE_WINDOW_CONTROL", "ENABLE_COMMAND_CONFIRMATIONS",
     "ENABLE_UNICODE_TYPING", "UNICODE_TYPING_RESTORE_CLIPBOARD",
     "FORCE_CLOSE_AUTO_ALLOW", "ENABLE_ATTENTION_SNAP", "ENABLE_SCREEN_READER",
+    "ENABLE_PRINTWINDOW_FALLBACK",
     "OCR_FOCUSED_WINDOW_ONLY", "OCR_CHANGE_DETECTION",
     "OCR_REDACT_SENSITIVE_TEXT", "INCLUDE_WINDOW_TITLE_IN_CONTEXT", "WINDOW_TOPMOST",
     "UNLIMITED_OCR_ALLOW_REMOTE",
@@ -774,7 +787,9 @@ _VOICE_OUTPUT_MODES = frozenset({"bleeps_only", "tts_only", "both"})
 _VOICE_TTS_ENGINES = frozenset({"pyttsx3", "edge_tts", "kokoro"})
 _UNICODE_TYPING_MODES = frozenset({"auto", "unicode", "paste", "preview", "paced"})
 _PROCESS_CONTEXT_MODES = frozenset({"off", "foreground_only", "visible_apps", "all_processes"})
-_COMPUTER_USE_PLANNER_PROVIDERS = frozenset({"inherit", "ollama", "groq", "openrouter"})
+_COMPUTER_USE_PLANNER_PROVIDERS = frozenset({
+    "inherit", "ollama", "groq", "gemini", "openrouter",
+})
 _GLITCH_STYLES = frozenset({
     "scanlines", "static", "rgb_split", "flicker", "bsod", "matrix", "tear",
 })
@@ -867,6 +882,10 @@ def validate_config_value(
         return False
     spec = SETTING_SPECS.get(normalized)
     if spec is not None:
+        if spec.kind is SettingKind.BOOL:
+            return _is_valid_bool(raw)
+        if spec.kind is SettingKind.STRING:
+            return bool(raw.strip())
         if spec.kind is SettingKind.ENUM:
             return raw.strip().lower() in spec.choices
         as_float = spec.kind is SettingKind.FLOAT
@@ -903,6 +922,9 @@ def _merge_with_defaults(file_config: dict[str, str]) -> tuple[dict[str, str], l
     merged = dict(defaults)
     invalid_keys: list[str] = []
     for key, val in file_config.items():
+        if key in SETTING_SPECS and not validate_config_value(key, val):
+            invalid_keys.append(key)
+            continue
         if key in _BOOL_KEYS and not _is_valid_bool(val):
             invalid_keys.append(key)
             continue
@@ -939,6 +961,7 @@ def _load_env_overrides(config: dict[str, str]) -> None:
     # Ensure secret slots exist (empty) so callers can .get() them safely.
     for key in (
         "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
         "GROQ_API_KEY",
         "UNLIMITED_OCR_API_KEY",
         *(f"GROQ_API_KEY_{i}" for i in range(2, 11)),
@@ -1184,6 +1207,18 @@ class AppSettings:
     @property
     def enable_openrouter(self) -> bool:
         return self.bool("ENABLE_OPENROUTER", False)
+
+    @property
+    def enable_gemini(self) -> bool:
+        return self.bool("ENABLE_GEMINI", False)
+
+    @property
+    def gemini_api_key(self) -> str:
+        return self.get("GEMINI_API_KEY", "").strip()
+
+    @property
+    def gemini_model(self) -> str:
+        return self.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
     @property
     def openrouter_api_key(self) -> str:
@@ -1603,6 +1638,10 @@ class AppSettings:
         return self.bool("ENABLE_SCREEN_READER", True)
 
     @property
+    def enable_printwindow_fallback(self) -> bool:
+        return self.bool("ENABLE_PRINTWINDOW_FALLBACK", True)
+
+    @property
     def ocr_max_dimension(self) -> int:
         return self.int("OCR_MAX_DIMENSION", 2560, 640, 8192)
 
@@ -1805,7 +1844,7 @@ class AppSettings:
 
     @property
     def app_version(self) -> str:
-        return self.get("APP_VERSION", "5.7").strip() or "5.7"
+        return __version__
 
     @property
     def github_releases_url(self) -> str:
@@ -1940,6 +1979,38 @@ def write_config_document(path: Path, content: str) -> None:
     """Atomically replace one config document; callers coordinate transactions."""
     with _CONFIG_WRITE_LOCK:
         _write_atomic_config(Path(path), content)
+
+
+def migrate_missing_setting_specs(
+    path: Path | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Append missing canonical non-secret settings without rewriting existing lines.
+
+    This startup migration is intentionally limited to stable ``SettingSpec``
+    facts. It never owns Fast Mode, Compact markers, secrets, or validation of
+    values the user already has on disk.
+    """
+    target = Path(path or CONFIG_PATH)
+    try:
+        with _CONFIG_WRITE_LOCK:
+            ensure_config_file(target, write_if_missing=True)
+            text = target.read_text(encoding="utf-8", errors="replace")
+            present = parse_config_document(text)
+            missing = tuple(
+                key for key in SETTING_SPECS
+                if key not in present and not _is_secret_key(key)
+            )
+            if not missing:
+                return True, ()
+            rendered = render_config_document(
+                text,
+                {key: SETTING_SPECS[key].default for key in missing},
+            )
+            _write_atomic_config(target, rendered)
+        return True, missing
+    except Exception as exc:
+        _log_config(f"Could not add newly available settings: {exc}")
+        return False, ()
 
 
 def patch_config_keys(updates: dict[str, str]) -> tuple[bool, list[str]]:

@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from agetha import __version__
 from agetha.app_config import (
     AtomicWriteError,
     CONFIG_PATH,
@@ -709,11 +710,10 @@ def _write_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
 
 
 def _new_snapshot(raw_config: Mapping[str, str]) -> dict[str, Any]:
-    app_version = default_config_dict().get("APP_VERSION", "unknown")
     return {
         "schema_version": FAST_MODE_SCHEMA_VERSION,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "app_version": app_version,
+        "app_version": __version__,
         "profile_version": FAST_MODE_PROFILE_VERSION,
         "active": True,
         "managed_keys": {

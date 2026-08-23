@@ -66,7 +66,7 @@ must not be described as tested or supported.
 
 - Python 3.10-3.14; Medic currently recommends Python 3.13.
 - The separately supplied `assets/` pack. It is ignored by Git in this checkout.
-- At least one provider: Groq/OpenRouter credentials in `.env`, or a configured
+- At least one provider: Groq/Gemini/OpenRouter credentials in `.env`, or a configured
   local Ollama model.
 - Native Tesseract for standard screen reading unless that feature/check is
   intentionally disabled.
@@ -91,7 +91,7 @@ Rules:
 
 - Use `get_settings()`; do not parse `config.txt` from each feature.
 - Treat `config.txt` as active user state, not documentation of defaults.
-- Put `GROQ_API_KEY_*`, `OPENROUTER_API_KEY`, and
+- Put `GROQ_API_KEY_*`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, and
   `UNLIMITED_OCR_API_KEY` only in `.env`.
 - Boolean syntax accepts `yes`, `true`, `1`, or `on` and the corresponding
   disabled forms.
@@ -115,7 +115,7 @@ dashboard.
 | Group | Keys |
 |---|---|
 | Capability profile | `COMPACT_MODE` |
-| Provider and generation | `USE_LOCAL_AI`, `ENABLE_GROQ`, `ENABLE_OPENROUTER`, `OPENROUTER_MODEL`, `FASTER_MODE`, `GROQ_MODEL`, `LOCAL_AI_MODEL`, `LOCAL_AI_TIMEOUT`, `AI_TEMPERATURE`, `AI_MAX_TOKENS`, `AI_TOP_P`, `ENABLE_STREAMING`, `ENABLE_AMBIENT_POLLS` |
+| Provider and generation | `USE_LOCAL_AI`, `ENABLE_GROQ`, `ENABLE_GEMINI`, `GEMINI_MODEL`, `ENABLE_OPENROUTER`, `OPENROUTER_MODEL`, `FASTER_MODE`, `GROQ_MODEL`, `LOCAL_AI_MODEL`, `LOCAL_AI_TIMEOUT`, `AI_TEMPERATURE`, `AI_MAX_TOKENS`, `AI_TOP_P`, `ENABLE_STREAMING`, `ENABLE_AMBIENT_POLLS` |
 | Datetime context | `ENABLE_DATETIME_CONTEXT`, `DATETIME_INCLUDE_SECONDS`, `DATETIME_INCLUDE_TIMEZONE` |
 | Agent continuation | `ENABLE_AGENT_CONTINUATION`, `AGENT_MAX_STEPS`, `AGENT_MAX_DURATION_SEC`, `AGENT_MAX_TOOL_RESULT_CHARS` |
 | Process awareness | `ENABLE_PROCESS_AWARENESS`, `PROCESS_CONTEXT_MODE`, `PROCESS_MAX_VISIBLE_APPS`, `PROCESS_CONTEXT_EXCLUDED_APPS` |
@@ -131,11 +131,11 @@ dashboard.
 | Presence and attention | `SCREEN_POLL_INTERVAL_SEC`, `TOUCH_COOLDOWN_SEC`, `WAKE_DELAY_SEC`, `LOAF_TIMER_MIN`, `ENABLE_ATTENTION_SNAP`, all `MOOD_SNAP_*_SEC` keys |
 | Presence Etiquette | `ENABLE_PRESENCE_ETIQUETTE`, `PRESENCE_FULLSCREEN_SILENT`, `PRESENCE_DISMISS_COOLDOWN_SEC`, `PRESENCE_RAPID_TYPING_COOLDOWN_SEC`, `QUIET_HOURS_START`, `QUIET_HOURS_END` |
 | Terminal Sentinel | `ENABLE_TERMINAL_SENTINEL`, `TERMINAL_SENTINEL_APPS`, `TERMINAL_SENTINEL_TITLE_PATTERNS`, `TERMINAL_SENTINEL_COOLDOWN_SEC` |
-| Standard OCR | `ENABLE_SCREEN_READER`, `OCR_MAX_DIMENSION`, `OCR_FOCUSED_WINDOW_ONLY`, `OCR_CHANGE_DETECTION`, `OCR_CHANGE_THRESHOLD`, `OCR_FORCE_REFRESH_SECONDS`, `OCR_STATE_EXPIRY_SECONDS`, confirmation/cooldown/confidence keys, `OCR_PREPROCESSING`, `OCR_LANGUAGES`, `OCR_PSM`, exclusions/redaction, `INCLUDE_WINDOW_TITLE_IN_CONTEXT`, `TESSERACT_PATH`, `OCR_CUSTOM_PATTERNS`, `OCR_PAUSE_WHILE_TYPING_SEC` |
+| Standard OCR | `ENABLE_SCREEN_READER`, `ENABLE_PRINTWINDOW_FALLBACK`, `OCR_MAX_DIMENSION`, `OCR_FOCUSED_WINDOW_ONLY`, `OCR_CHANGE_DETECTION`, `OCR_CHANGE_THRESHOLD`, `OCR_FORCE_REFRESH_SECONDS`, `OCR_STATE_EXPIRY_SECONDS`, confirmation/cooldown/confidence keys, `OCR_PREPROCESSING`, `OCR_LANGUAGES`, `OCR_PSM`, exclusions/redaction, `INCLUDE_WINDOW_TITLE_IN_CONTEXT`, `TESSERACT_PATH`, `OCR_CUSTOM_PATTERNS`, `OCR_PAUSE_WHILE_TYPING_SEC` |
 | Explicit deep OCR | `DEEP_OCR_BACKEND`, `UNLIMITED_OCR_SERVER_URL`, `UNLIMITED_OCR_MODEL`, `UNLIMITED_OCR_TIMEOUT_SECONDS`, `UNLIMITED_OCR_ALLOW_REMOTE`, `DEEP_OCR_MAX_OUTPUT_CHARS` |
 | Window/UI | `WINDOW_TOPMOST`, `UI_SCALE`, `WINDOW_START_X`, `WINDOW_START_Y`, `SUBTITLE_CHAR_DELAY`, `ANIMATION_SPEED`, `WINDOW_MOVE_SMOOTH`, `WINDOW_MOVE_DURATION_MS`, `ENABLE_SENSES_PANEL` |
 | Close/glow/motion | `ENABLE_CRT_CLOSE_ANIMATION`, `REDUCED_MOTION`, `ENABLE_MOOD_GLOW`, `MOOD_GLOW_ANIMATED`, `MOOD_GLOW_INTERVAL_MS`, `ENABLE_MOOD_MOTION`, `MOOD_MOTION_COOLDOWN_SECONDS` |
-| Medic/project metadata | `SKIP_TESSERACT_CHECK`, `SKIP_ASSET_CHECK`, `AUTO_PIP_INSTALL`, `CREATE_DESKTOP_SHORTCUT`, `CHECK_FOR_UPDATES`, `APP_VERSION`, `GITHUB_RELEASES_URL` |
+| Medic/project metadata | `SKIP_TESSERACT_CHECK`, `SKIP_ASSET_CHECK`, `AUTO_PIP_INSTALL`, `CREATE_DESKTOP_SHORTCUT`, `CHECK_FOR_UPDATES`, `GITHUB_RELEASES_URL` |
 | External window control | `TARGET_APP_ALIASES`, `WINDOW_PICKER_ON_AMBIGUOUS` |
 | Input/speech | `ENABLE_VOICE`, `USE_LOCAL_STT`, `ENABLE_FILE_DRAG_DROP`, `VOICE_OUTPUT_MODE`, `VOICE_TTS_ENGINE`, `TTS_RATE`, `TTS_VOLUME`, `TTS_VOICE_NAME` |
 
@@ -165,6 +165,21 @@ changing this path.
 9. Update the configuration group above and root README if user-facing.
 10. If the key has a SettingSpec, regenerate
     `docs/generated/settings_reference.md`.
+
+At normal startup, missing non-secret `SettingSpec` keys are appended through
+the structural atomic writer. This makes new stable settings discoverable
+without overwriting existing values or involving Fast Mode/Compact state.
+
+### Adding a provider
+
+1. Add one explicit adapter/transport under `agetha/providers/` that implements
+   the existing provider-neutral `create(...)` contract.
+2. Register the kind in `ProviderRouter`.
+3. Add non-secret typed settings and an `.env.example` secret name as needed.
+4. Wire selection/fallback and isolated `request_structured()` construction in
+   AIEngine without moving prompt, repair, history, origin, or command policy.
+5. Add deterministic transport, error, fallback, repair-boundary, planner, and
+   authority-neutrality tests. Never use a live paid endpoint in tests.
 
 ## Command and safety model
 
@@ -654,12 +669,13 @@ Automated tests mock provider, OS, and Tk boundaries. Before a release, cover th
 paths relevant to the change:
 
 1. Launch with optional visual/voice/tray/web/status/deep-OCR features disabled.
-2. Verify direct Groq, OpenRouter, and local Ollama modes that are actually
+2. Verify direct Groq, Gemini, OpenRouter, and local Ollama modes that are actually
    configured; do not expose keys in logs/screenshots.
 3. Inspect direct and ambient prompts for compact datetime and redacted screen
    context.
-4. Exercise focused capture, unchanged-frame suppression, excluded/Agetha
-   windows, and a focus change during OCR.
+4. Exercise focused capture, blank-frame PrintWindow fallback on Windows,
+   unchanged-frame suppression, excluded/Agetha windows, and a focus change
+   during OCR.
 5. Confirm deep OCR is never ambient and asks before transmission.
 6. Test dashboard tabs and config apply at automatic and manual scale, including
    a 2880x1920/high-DPI Windows display when available.

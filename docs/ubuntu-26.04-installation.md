@@ -91,8 +91,9 @@ For the default Groq backend, add at least one key:
 GROQ_API_KEY_1=gsk_your_actual_key
 ```
 
-OpenRouter and local Ollama are alternatives. Match the selected provider with
-`ENABLE_GROQ`, `ENABLE_OPENROUTER`, and `USE_LOCAL_AI` in `config.txt`. Never put
+Gemini, OpenRouter, and local Ollama are alternatives. Match the selected
+provider with `ENABLE_GROQ`, `ENABLE_GEMINI`, `ENABLE_OPENROUTER`, and
+`USE_LOCAL_AI` in `config.txt`. Never put
 API keys in `config.txt`, commit `.env`, or paste real keys into logs.
 
 Confirm that the separately supplied `assets/` directory is present before

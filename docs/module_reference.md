@@ -16,7 +16,7 @@ reproduced here.
 | [agent.md](../agent.md) | Maintainer intent, character visual identity, all 19 avatar GIFs, mood/state mapping, safety invariants, known asset caveats, and quick checks. Some inventory/version prose may lag code; runtime maps remain in `main.py`. |
 | [README.md](../README.md) | User-facing installation, configuration, features, commands, troubleshooting, credits, and support links. Do not use its historical module/test counts as a code-generation source. |
 | [config.txt](../config.txt) | User-editable active/sample settings. It is not the canonical defaults file and may contain locally enabled features. Canonical defaults and clamps are in `app_config.DEFAULT_CONFIG`. |
-| [.env.example](../.env.example) | Secret-name template for Groq keys 1-10, OpenRouter, and optional Unlimited-OCR authorization. Actual `.env` is private. |
+| [.env.example](../.env.example) | Secret-name template for Groq keys 1-10, Gemini, OpenRouter, and optional Unlimited-OCR authorization. Actual `.env` is private. |
 | [.gitignore](../.gitignore) | Excludes secrets, runtime state, conversations, assets, virtual environments, caches, and editor data. Assets therefore require separate distribution/licensing care. |
 | [requirements.txt](../requirements.txt) | Python package pins for UI/image/OCR/network/system features and installed voice/DnD stack; some TTS engines remain commented optional dependencies. Feature flags can still make an installed package runtime-optional. |
 | [Medic_Checker.bat](../Medic_Checker.bat) | PowerShell 5.1 wrapper that invokes `Medic_Checker.ps1` with execution-policy bypass and pauses on failure. |
@@ -42,7 +42,7 @@ then launch the app. Its architecture selection must stay synchronized with
 | File | Responsibility and important symbols |
 |---|---|
 | [agetha/__init__.py](../agetha/__init__.py) | Package marker and package `__version__`. Do not bump it merely to mirror an unrelated upstream release. |
-| [agetha/app_config.py](../agetha/app_config.py) | Compatibility facade and transaction coordinator for `DEFAULT_CONFIG`, `FAST_MODE_OVERRIDES`, parser diagnostics, `AppSettings`, cached overlays, secret filtering, type validation, and clamps. |
+| [agetha/app_config.py](../agetha/app_config.py) | Compatibility facade and transaction coordinator for `DEFAULT_CONFIG`, `FAST_MODE_OVERRIDES`, parser diagnostics, startup insertion of missing canonical settings, `AppSettings`, cached overlays, secret filtering, type validation, and clamps. |
 | [agetha/utils.py](../agetha/utils.py) | Logging, `write_atomic()`, icon/native dialog helpers, simple env loading, compatibility config creation, platform flags, and refreshable legacy timing/window constants. |
 
 ### Configuration symbols
@@ -125,7 +125,8 @@ model output.
 - `request_structured(...)` is the isolated JSON boundary used by the cheap
   Computer Planner and primary recovery. It adds no character/history context
   and does not mutate the primary provider configuration.
-- `get_token_status()` supplies the placeholder/status estimate.
+- `get_token_status()` supplies truthful provider/model identity and Groq key
+  index/count for the placeholder and status line; it does not estimate quota.
 - `read_document()`, `write_file()`, and `monitor_process()` remain compatibility
   helpers used by handlers.
 - `_build_prompt()` is the single place to add bounded AI context.
@@ -142,6 +143,7 @@ serialization.
 | [providers/base.py](../agetha/providers/base.py) | Small adapter contract and provider HTTP/error classification. |
 | [providers/router.py](../agetha/providers/router.py) | Explicit adapter selection and request delegation. It owns no prompt, history, repair, UI, or command policy. |
 | [providers/groq.py](../agetha/providers/groq.py) | Groq SDK construction, model normalization, GPT-OSS reasoning profiles, JSON Object Mode, and request shaping. |
+| [providers/gemini.py](../agetha/providers/gemini.py) | Gemini REST/SSE transport, system and role conversion, structured JSON request mode, usage mapping, and HTTP error conversion. |
 | [providers/openrouter.py](../agetha/providers/openrouter.py) | OpenRouter HTTP and SSE transport, usage extraction, and HTTP error conversion. |
 | [providers/ollama.py](../agetha/providers/ollama.py) | Local Ollama request and streaming transport. |
 

@@ -115,6 +115,11 @@ def cmd_env_status() -> None:
     if not path.is_file():
         print("EMPTY")
         return
+    if (_MEDIC_DIR / "config.txt").is_file():
+        # Provider keys are readiness inputs, not provider selection. Honor
+        # the same enable flags as the runtime whenever configuration exists.
+        cmd_config_status()
+        return
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -129,48 +134,61 @@ def cmd_env_status() -> None:
     if or_key and len(or_key.group(1).strip()) > 10:
         print("OPENROUTER")
         return
+    gemini_key = re.search(r"^GEMINI_API_KEY\s*=\s*(.+)$", text, re.M)
+    if gemini_key and len(gemini_key.group(1).strip()) > 10:
+        print("GEMINI")
+        return
     print("SET" if any(len(k) > 20 for k in keys) else "EMPTY")
 
 
-def _env_api_key_status() -> tuple[str, str]:
-    """Return (or_val, groq_ready) from .env only. groq_ready is 'yes' or ''."""
+def _env_api_key_status() -> tuple[str, str, str]:
+    """Return OpenRouter, Gemini, and Groq readiness from ``.env`` only."""
     env_path = _MEDIC_DIR / ".env"
     if not env_path.is_file():
-        return "", ""
+        return "", "", ""
     try:
         env_text = env_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return "", ""
+        return "", "", ""
     or_key = re.search(r"^OPENROUTER_API_KEY\s*=\s*(.+)$", env_text, re.M)
     or_val = or_key.group(1).strip() if or_key else ""
+    gemini_key = re.search(r"^GEMINI_API_KEY\s*=\s*(.+)$", env_text, re.M)
+    gemini_val = gemini_key.group(1).strip() if gemini_key else ""
     groq_keys = [
         m.group(1).strip()
         for m in re.finditer(r"^GROQ_API_KEY(?:_\d+)?\s*=\s*(.+)$", env_text, re.M)
         if m.group(1).strip() and m.group(1).strip() not in ("", "YOUR_KEY_HERE")
     ]
     groq_ready = "yes" if any(len(k) > 20 for k in groq_keys) else ""
-    return or_val, groq_ready
+    return or_val, gemini_val, groq_ready
 
 
 def cmd_config_status() -> None:
     """Report AI backend status. API keys are read from .env only (not config.txt)."""
+    from agetha.app_config import AppSettings, parse_config_document
+
     path = _MEDIC_DIR / "config.txt"
     if not path.is_file():
         print("MISSING")
         return
     text = path.read_text(encoding="utf-8", errors="replace")
-    local = re.search(r"USE_LOCAL_AI\s*=\s*(\S+)", text)
-    model = re.search(r"LOCAL_AI_MODEL\s*=\s*(\S+)", text)
-    openrouter = re.search(r"ENABLE_OPENROUTER\s*=\s*(\S+)", text)
-    or_val, groq_ready = _env_api_key_status()
-    if local and local.group(1).lower() == "yes" and model and model.group(1).strip():
+    settings = AppSettings(parse_config_document(text))
+    local_enabled = settings.bool("USE_LOCAL_AI", False)
+    model = settings.get("LOCAL_AI_MODEL", "").strip()
+    groq_enabled = settings.bool("ENABLE_GROQ", True)
+    gemini_enabled = settings.bool("ENABLE_GEMINI", False)
+    openrouter_enabled = settings.bool("ENABLE_OPENROUTER", False)
+    or_val, gemini_val, groq_ready = _env_api_key_status()
+    if local_enabled and model:
         print("LOCAL")
-    elif local and local.group(1).lower() == "yes":
+    elif local_enabled:
         print("LOCAL_NO_MODEL")
-    elif openrouter and openrouter.group(1).lower() == "yes" and len(or_val) > 10:
-        print("OPENROUTER")
-    elif groq_ready:
+    elif groq_enabled and groq_ready:
         print("SET")
+    elif gemini_enabled and len(gemini_val) > 10:
+        print("GEMINI")
+    elif openrouter_enabled and len(or_val) > 10:
+        print("OPENROUTER")
     else:
         print("EMPTY")
 
@@ -189,7 +207,7 @@ def cmd_config_secrets() -> None:
     found = [
         m.group(1).upper()
         for m in re.finditer(
-            r"^(GROQ_API_KEY(?:_\d+)?|OPENROUTER_API_KEY)\s*=\s*(\S+)",
+            r"^(GROQ_API_KEY(?:_\d+)?|GEMINI_API_KEY|OPENROUTER_API_KEY)\s*=\s*(\S+)",
             text,
             re.M | re.I,
         )
@@ -278,6 +296,7 @@ def cmd_feature_modules() -> None:
         "agetha.core.emotional_history",
         "agetha.core.audit_log",
         "agetha.core.fast_mode_profile",
+        "agetha.providers.gemini",
         "agetha.platform.autostart",
         "agetha.platform.win_integration",
         "agetha.platform.ocr_backends",

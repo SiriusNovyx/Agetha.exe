@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import ProviderAdapter
+from .gemini import GeminiProvider
 from .groq import GroqProvider
 from .ollama import OllamaProvider
 from .openrouter import OpenRouterProvider
@@ -18,6 +19,7 @@ class ProviderRouter:
     def for_existing_client(cls, *, kind: str, client: object,
                             model: str) -> "ProviderRouter":
         providers = {
+            "gemini": GeminiProvider,
             "groq": GroqProvider,
             "openrouter": OpenRouterProvider,
             "ollama": OllamaProvider,

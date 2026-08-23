@@ -113,7 +113,8 @@ architecture.
     Ignore Pattern.
 
 17. [ ] **Explain is the provider boundary — NOT PERFORMED.** Before clicking
-    Explain, confirm the notification caused no Groq/OpenRouter/Ollama request.
+    Explain, confirm the notification caused no Groq/Gemini/OpenRouter/Ollama
+    request.
     Click Explain and confirm exactly then a bounded, redacted request with
     origin `terminal_sentinel` may begin. Confirm its response can explain but
     cannot execute a model-suggested command or modify a file.

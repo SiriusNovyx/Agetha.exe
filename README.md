@@ -3,7 +3,7 @@
 > A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 > Check out my agetha website! https://agethasirius.wasmer.app/
 
-**Version:** Overhaul v5.7 · **Medic_Checker:** v5.7 · **Original author:** @tomiszivacs
+**Version:** Overhaul v5.7.5 · **Medic_Checker:** v5.7.5 · **Original author:** @tomiszivacs
 
 > **Asset notice:** The bundled files in [`assets/`](assets/) are provided so a
 > normal clone or source download runs with the complete UI. They are not
@@ -132,7 +132,7 @@ after both matching Tesseract language-data packages are installed locally.
 ### Polyglot Presence
 
 The current tree adds a local-first Polyglot Presence foundation without
-changing the public v5.7 release label:
+changing the public v5.7.5 release label:
 
 - **Language-neutral multilingual voice** — Agetha mirrors the user's current
   language and approximate conversational register without inventing
@@ -182,7 +182,8 @@ Roadmap features A–O are design-only and **planned / not implemented**.
   locked to PID/name/creation-time/HWND/bounds and the allowed app. Exact text
   stays behind a local payload reference and reuses guarded Unicode typing.
 - **Cost-aware planning** — a small isolated planner can use an existing
-  Groq/OpenRouter/Ollama route. Local verification avoids unnecessary calls;
+  Groq/Gemini/OpenRouter/Ollama route. Local verification avoids unnecessary
+  calls;
   repeated ambiguity may use a bounded primary-model recovery call.
 - **Immediate stop** — a non-activating Win95 status window provides STOP, and
   Escape cancels the same session generation. Late planner results cannot
@@ -254,11 +255,12 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
 - Requires `tkinterdnd2` on Windows (Medic_Checker installs it when enabled)
 - Agetha receives a `[system] file_dragged: "name" (path: …)` message and can react
 
-### AI Backend Options & Token UI
+### AI Backend Options & Provider Status
 
 | Backend | Config | Keys in `.env` |
 |---------|--------|----------------|
 | **Groq** (default) | `ENABLE_GROQ = yes` | `GROQ_API_KEY_1` … `_10` |
+| **Google Gemini** | `ENABLE_GEMINI = yes` | `GEMINI_API_KEY` |
 | **OpenRouter** | `ENABLE_OPENROUTER = yes` | `OPENROUTER_API_KEY` |
 | **Ollama** | `USE_LOCAL_AI = yes` | *(none — local)* |
 
@@ -273,7 +275,9 @@ Before executing risky actions, Agetha shows a **native Windows MessageBox** wit
   user request can make one format-repair call; ambient, OCR-only,
   web/document, terminal-sentinel, and tool-result traffic never starts a
   repair cycle. Only the final response is eligible for history or memory.
-- **Token %** — when using Groq, the input placeholder shows `key 1/3 • 87% tokens left` (estimated daily budget per key); status bar shows the same after each reply
+- **Provider status** — the placeholder reports the selected provider/model;
+  Groq also shows the active key index/count. Agetha does not present inferred
+  token percentages as provider quota data.
 - **Fast Mode 2.0** — `FASTER_MODE = yes` activates a reversible performance
   profile plus request-aware prompt budgets. Original managed values are kept in
   `memory/fast_mode_snapshot.json` and restored when Fast Mode is disabled.
@@ -292,7 +296,7 @@ Agetha_Mod/
 ├── config.txt              # User settings only — no API keys
 ├── .env.example            # API key template
 ├── requirements.txt
-├── Medic_Checker.ps1       # Startup health check & launcher (v5.7)
+├── Medic_Checker.ps1       # Startup health check & launcher (v5.7.5)
 ├── Medic_Checker.bat
 ├── Run_Agetha_Admin.ps1
 ├── assets/                 # GIFs, fonts, icons
@@ -544,6 +548,9 @@ GROQ_API_KEY_1=gsk_your_key_here
 GROQ_API_KEY_2=
 # … up to GROQ_API_KEY_10 for rate-limit rotation
 
+# Optional - only if ENABLE_GEMINI = yes in config.txt
+GEMINI_API_KEY=your_gemini_key_here
+
 # Optional — only if ENABLE_OPENROUTER = yes in config.txt
 OPENROUTER_API_KEY=sk-or-v1-...
 
@@ -552,6 +559,7 @@ UNLIMITED_OCR_API_KEY=
 ```
 
 - Groq keys: [console.groq.com](https://console.groq.com)
+- Gemini keys: [Google AI Studio](https://aistudio.google.com/apikey)
 - OpenRouter keys: [openrouter.ai/keys](https://openrouter.ai/keys)
 
 `.env` overrides matching non-secret keys in `config.txt`, except `FASTER_MODE`
@@ -570,6 +578,8 @@ All **non-secret** settings live in `config.txt` and are loaded by `app_config.p
 |---------|---------|-------------|
 | `USE_LOCAL_AI` | `no` | Use Ollama instead of cloud APIs |
 | `ENABLE_GROQ` | `yes` | Enable Groq (default cloud backend) |
+| `ENABLE_GEMINI` | `no` | Enable Gemini after Groq or as the primary cloud route when Groq is unavailable |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
 | `ENABLE_OPENROUTER` | `no` | Use OpenRouter instead of Groq |
 | `OPENROUTER_MODEL` | see `config.txt` | OpenRouter model slug |
 | `FASTER_MODE` | `no` | Reversible AI/context/polling/OCR performance profile; restores prior managed values when disabled |
@@ -577,7 +587,8 @@ All **non-secret** settings live in `config.txt` and are loaded by `app_config.p
 | `LOCAL_AI_MODEL` | *(empty)* | Ollama model (`ollama list`) |
 | `LOCAL_AI_TIMEOUT` | `30` | Ollama request timeout (seconds) |
 
-API keys (`GROQ_API_KEY_*`, `OPENROUTER_API_KEY`, `UNLIMITED_OCR_API_KEY`) → **`.env` only**, not `config.txt`.
+API keys (`GROQ_API_KEY_*`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
+`UNLIMITED_OCR_API_KEY`) → **`.env` only**, not `config.txt`.
 
 #### AI tuning
 
@@ -626,7 +637,7 @@ listing is required for broader output.
 | `ENABLE_COMPUTER_USE` | `no` | Master opt-in for explicit direct-user Computer Use sessions |
 | `COMPUTER_USE_MAX_STEPS` | `30` | Maximum session steps |
 | `COMPUTER_USE_TIMEOUT_SEC` | `120` | Session deadline in seconds |
-| `COMPUTER_USE_PLANNER_PROVIDER` | `inherit` | `inherit`, `groq`, `openrouter`, or `ollama` using existing credentials/config |
+| `COMPUTER_USE_PLANNER_PROVIDER` | `inherit` | `inherit`, `groq`, `gemini`, `openrouter`, or `ollama` using existing credentials/config |
 | `COMPUTER_USE_PLANNER_MODEL` | *(empty)* | Optional cheaper planner model; blank inherits the selected route's model |
 | `COMPUTER_USE_PLANNER_CONFIDENCE_MIN` | `0.65` | Below this, reobserve/recover rather than guess |
 | `COMPUTER_USE_RECOVERY_AFTER_FAILURES` | `2` | Repeated failures before primary-model recovery is eligible |
@@ -778,6 +789,7 @@ The glitch effect is **disabled by default** (`ENABLE_GLITCH_EFFECTS = no`). Whe
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `ENABLE_SCREEN_READER` | `yes` | Enable OCR screen context when the active profile permits sensing |
+| `ENABLE_PRINTWINDOW_FALLBACK` | `yes` | On Windows, retry a uniform/blank focused MSS frame with PrintWindow without changing target/exclusion policy |
 | `OCR_MAX_DIMENSION` | `2560` | Max capture dimension (px) |
 | `OCR_FOCUSED_WINDOW_ONLY` | `yes` | OCR focused window only |
 | `OCR_CHANGE_DETECTION` | `yes` | Skip Tesseract while the captured target is visually unchanged |
@@ -832,8 +844,7 @@ Click the **📊** button in the title bar (beside minimize) to open the **Dashb
 | `SKIP_ASSET_CHECK` | `no` | Skip asset file verification |
 | `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
 | `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
-| `CHECK_FOR_UPDATES` | `yes` | Compare `APP_VERSION` to GitHub release API |
-| `APP_VERSION` | `5.7` | Shown in window title |
+| `CHECK_FOR_UPDATES` | `yes` | Compare the source-owned build version to the GitHub release API |
 | `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
 | `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
 | `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |
@@ -918,7 +929,7 @@ Run **Medic_Checker** after enabling — it installs the package for `VOICE_TTS_
 
 ---
 
-## Medic_Checker v5.7 (PowerShell)
+## Medic_Checker v5.7.5 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
@@ -947,7 +958,7 @@ On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used 
 - **Python 3.13.x** recommended (3.14 may have compatibility issues)
 - **Tesseract OCR** — [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) (optional, enables screen reading)
 - **Assets** — included in this repository; keep the `assets` folder beside the application files
-- **Groq API key** (in `.env`), **OpenRouter** (optional), or **Ollama** for AI responses
+- **Groq or Gemini API key** (in `.env`), **OpenRouter** (optional), or **Ollama** for AI responses
 - **Microphone** — optional, for voice input (`ENABLE_VOICE = yes`)
 - **PyAudio** — optional, required for microphone (installed by Medic_Checker)
 
@@ -985,7 +996,7 @@ pyttsx3 / edge-tts / kokoro       # VOICE_OUTPUT_MODE = tts_only|both (per VOICE
 | Input | Action |
 |-------|--------|
 | Text box + Enter | Send message to Agetha |
-| Placeholder hint | Groq: `key N/M • X% tokens left`; OpenRouter/local shown when not on Groq |
+| Placeholder hint | Provider/model identity; Groq also shows `key N/M` without an inferred quota percentage |
 | 🎤 button | Toggle microphone (`ENABLE_VOICE = yes`) — speak, pause ~1.2 s, text is sent |
 | Drop file on GIF | File drag event (`ENABLE_FILE_DRAG_DROP = yes`) |
 | Click GIF | Touch event (`__touch__`) — 10 s cooldown |
@@ -1004,7 +1015,7 @@ Direct user goal / eligible ambient poll
         ↓
 screen_reader.py + process_awareness.py → minimized local context
         ↓
-ai_engine.py → Groq / OpenRouter / Ollama → validated response
+ai_engine.py → Groq / Gemini / OpenRouter / Ollama → validated response
         ↓
 continuation.py → bounded status / read-only tool / final decisions
         ↓
@@ -1115,7 +1126,8 @@ cancellation, or shutdown.
 - **`voice_input.py`** — microphone input with Google STT or local faster-whisper
 - **File drag-and-drop** — drop files onto the GIF (`tkinterdnd2`)
 - **OpenRouter** — optional cloud backend (`ENABLE_OPENROUTER`, key in `.env`)
-- **Token % UI** — Groq daily budget estimate in input placeholder + status bar
+- **Token status UI (historical)** — the original estimate was later replaced
+  by truthful provider/model and Groq key index/count display
 - **`FASTER_MODE`** — shorter prompts for lower token cost
 - **Secrets** — API keys documented as `.env` only; `config.txt` has no key lines
 - **Medic_Checker** — optional package install for voice/STT/DnD/TTS; 16-module compile check + Phase 1+2 import verify

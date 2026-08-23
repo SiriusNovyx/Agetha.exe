@@ -56,7 +56,8 @@ Detailed sequence:
 
 1. A guarded bootstrap ensures `config.txt` exists and reconciles any Fast Mode
    snapshot before `AIEngine`/legacy utility imports cache settings. The normal
-   `_early_config_check()` then reloads typed settings, refreshes compatibility
+   `_early_config_check()` appends missing canonical non-secret `SettingSpec`
+   keys through the structural atomic writer, then reloads typed settings and refreshes compatibility
    constants, and emits a one-time setup hint if no provider is usable.
    Mutating reconciliation obtains the bounded cross-process lock and
    revalidates every owned path after acquisition. Busy, unsafe, or ambiguous
@@ -295,7 +296,8 @@ lifecycle is:
    rescheduled; it never queues behind a user message.
 4. Recent typing can pause OCR for privacy and responsiveness. The active window
    title may still be included when enabled.
-5. `ScreenReader.capture_text()` performs focused capture, change detection,
+5. `ScreenReader.capture_text()` performs focused capture, an optional Windows
+   PrintWindow fallback for a uniform/blank MSS frame, change detection,
    Tesseract OCR, stale-window rejection, local pattern matching, and event
    deduplication.
 6. Valid capture metadata publishes minimized local active-window
@@ -413,7 +415,7 @@ The configured server can be loopback or, with explicit opt-in, remote. See
 
 ## Prompt assembly
 
-`AIEngine._build_prompt()` is shared by Groq, OpenRouter, and Ollama modes. The
+`AIEngine._build_prompt()` is shared by Groq, Gemini, OpenRouter, and Ollama modes. The
 exact optional sections depend on settings, but the logical order is:
 
 1. System persona and command/JSON contract.
@@ -462,11 +464,15 @@ automatic read-only allowlist, and performs no memory/history write.
 | Mode | Adapter | Notes |
 |---|---|---|
 | Groq | `GroqProvider` | SDK transport, model normalization, GPT-OSS reasoning effort, and JSON Object Mode request shaping |
+| Gemini | `GeminiProvider` | Gemini REST/SSE transport, system/role conversion, JSON response mode, usage conversion, and provider-specific HTTP errors |
 | OpenRouter | `OpenRouterProvider` | OpenAI-compatible HTTP/SSE transport and provider-specific HTTP error conversion |
 | Local | `OllamaProvider` | Local Ollama transport; completed output follows the shared streaming callback contract |
 
 `AIEngine` retains Groq key rotation, provider fallback orchestration, bounded
 repair/final publication, and Agetha request, history, and authority semantics.
+Local Ollama remains exclusive when selected. Cloud fallback is explicit:
+Groq, then configured Gemini, then configured OpenRouter. The existing explicit
+Groq/OpenRouter startup choice remains authoritative when both are enabled.
 
 Provider text passes through `_parse()` before dispatch. The parser:
 
@@ -586,7 +592,7 @@ Engine, Process Awareness/mode, Computer Use enabled and active state, planner
 route/model, primary recovery, current target/step, and last result without
 showing raw OCR or payloads. It reads configuration, installed-module
 hints, platform session detection, and already-known runtime state. Opening or
-refreshing it does not call Groq/OpenRouter/Ollama, test a paid endpoint, expose
+refreshing it does not call Groq/Gemini/OpenRouter/Ollama, test a paid endpoint, expose
 an API key, change configuration, or create persistent history.
 
 The snapshot includes the effective capability profile and reports a denied

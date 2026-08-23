@@ -517,7 +517,7 @@ def _provider_name(settings: object, runtime: SensesRuntime) -> str:
         try:
             status = engine.get_token_status()
             provider = str(status.get("provider", "")).strip().casefold()
-            if provider in {"local", "ollama", "groq", "openrouter"}:
+            if provider in {"local", "ollama", "groq", "gemini", "openrouter"}:
                 return "local" if provider == "ollama" else provider
         except Exception as exc:
             logger.debug("Senses provider status lookup failed: %s", type(exc).__name__)
@@ -526,10 +526,13 @@ def _provider_name(settings: object, runtime: SensesRuntime) -> str:
     if _bool(_setting(settings, "USE_LOCAL_AI", False), False):
         return "local"
     groq = _bool(_setting(settings, "ENABLE_GROQ", True), True)
+    gemini = _bool(_setting(settings, "ENABLE_GEMINI", False), False)
     openrouter = _bool(_setting(settings, "ENABLE_OPENROUTER", False), False)
-    if groq and not openrouter:
+    if groq and not gemini and not openrouter:
         return "groq"
-    if openrouter and not groq:
+    if gemini and not groq and not openrouter:
+        return "gemini"
+    if openrouter and not groq and not gemini:
         return "openrouter"
     return "unknown"
 
@@ -924,7 +927,7 @@ def collect_senses_state(
 
     # Network and AI ---------------------------------------------------------
     provider = _provider_name(settings, view)
-    provider_remote = provider in {"groq", "openrouter"}
+    provider_remote = provider in {"groq", "gemini", "openrouter"}
     if view.provider_available is True:
         provider_availability_status = CapabilityStatus.AVAILABLE
         provider_availability_detail = "Already-known runtime state: available"

@@ -14,7 +14,7 @@ flowchart TD
     Main --> Platform["agetha.platform"]
     Main --> Features["agetha.features"]
     Engine --> Prompt["time, memory, emotion, rhythm, dreams, tasks, status"]
-    Engine --> Provider["Groq / OpenRouter / local Ollama"]
+    Engine --> Provider["Groq / Gemini / OpenRouter / local Ollama"]
     Provider --> Parse["validated response dictionary"]
     Parse --> Continue["core.continuation / bounded read-only turns"]
     Continue --> ReadTools["core.read_only_tools"]
@@ -129,6 +129,12 @@ settings are live-readable; settings marked with `*` in the dashboard require
 restart. Consult typed properties rather than parsing strings independently in
 a feature module.
 
+Normal startup also compares the existing document with the conservative
+`SettingSpec` registry. Missing canonical non-secret settings are appended in
+registry order through the same structural atomic writer. Existing lines and
+values are untouched; secrets, Compact markers, and Fast Mode snapshots remain
+outside this migration.
+
 `agetha.config.schema.SETTING_SPECS` contains the canonical machine facts for a
 small stable subset of typed settings. Runtime defaults, strict ranges, and enum
 choices for those keys derive from the registry. The checked-in
@@ -205,15 +211,16 @@ and presentation complete only behind the already active deny boundary. See
 
 [ai_engine.py](../agetha/core/ai_engine.py) owns prompt, parser, repair,
 history, and Agetha request semantics. A small `ProviderRouter` delegates
-request transport and provider request shape to three adapters:
+request transport and provider request shape to four adapters:
 
-- Groq, with configured key rotation and token-limit handling;
+- Groq, with configured key rotation;
+- Google Gemini, through its REST and SSE generation endpoints;
 - OpenRouter, through its OpenAI-compatible HTTP endpoint;
 - local Ollama, through the local API and configured model.
 
 Groq model normalization, GPT-OSS reasoning options, JSON Object Mode, and SDK
-construction live in `agetha.providers.groq`. OpenRouter and Ollama own their
-HTTP request, stream, usage, and error conversion details. AIEngine retains key
+construction live in `agetha.providers.groq`. Gemini, OpenRouter, and Ollama own
+their HTTP request, stream, usage, and error conversion details. AIEngine retains key
 and provider fallback because those loops also own authorization, UI exhaustion,
 repair, and final publication semantics.
 
@@ -346,6 +353,13 @@ capture libraries. Linux desktop environments use the existing X11/desktop-tool
 paths, which are exercised with mocks in headless CI and return safe empty/error
 results when capture facilities are unavailable. Historical macOS paths may
 remain, but macOS is retired and unsupported as of v5.5.5.
+
+On Windows, focused capture starts with MSS. When that exact approved frame is
+uniform/blank and `ENABLE_PRINTWINDOW_FALLBACK=yes`, a bounded local
+`WM_PRINT` render sent through `SendMessageTimeoutW` may replace it. The
+fallback cannot select a target, is never used for
+minimized/unmapped/excluded/Agetha windows, and preserves the MSS crop and
+physical origin for partially visible windows.
 
 ## Local observation and presence
 
