@@ -1,0 +1,114 @@
+name: Native OCR preprocessing experiment
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "agetha/platform/native_ocr_preprocessing.py"
+      - "native/ocr_preprocessing/**"
+      - "benchmarks/**"
+      - "tests/ocr_preprocessing_contract.py"
+      - "tests/test_native_ocr_preprocessing*.py"
+      - ".github/workflows/native-ocr-experiment.yml"
+  pull_request:
+    paths:
+      - "agetha/platform/native_ocr_preprocessing.py"
+      - "native/ocr_preprocessing/**"
+      - "benchmarks/**"
+      - "tests/ocr_preprocessing_contract.py"
+      - "tests/test_native_ocr_preprocessing*.py"
+      - ".github/workflows/native-ocr-experiment.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-native:
+    name: Native OCR / ${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            architecture: x64
+            cmake_arch: x64
+          - runner: windows-11-vs2026-arm
+            architecture: arm64
+            cmake_arch: ARM64
+
+    env:
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: ${{ matrix.architecture }}
+          cache: pip
+
+      - name: Install deterministic test dependencies
+        run: >-
+          python -m pip install
+          "pillow>=10.0.0,<12.0.0"
+          "psutil>=5.9.0,<8.0.0"
+          "pytesseract>=0.3.10,<1.0.0"
+
+      - name: Install local OCR executable
+        run: choco install tesseract --yes --no-progress
+
+      - name: Configure native library
+        run: >-
+          cmake -S native/ocr_preprocessing
+          -B native/ocr_preprocessing/build
+          -A ${{ matrix.cmake_arch }}
+
+      - name: Build native library
+        run: cmake --build native/ocr_preprocessing/build --config Release
+
+      - name: Run native ABI contract
+        run: ctest --test-dir native/ocr_preprocessing/build -C Release --output-on-failure
+
+      - name: Run Python ABI contract
+        shell: pwsh
+        run: |
+          $env:AGETHA_NATIVE_OCR_DLL = (Resolve-Path "native/ocr_preprocessing/build/Release/agetha_ocr_preprocessing.dll").Path
+          $env:AGETHA_REQUIRE_NATIVE_OCR = "1"
+          python -m unittest tests.test_native_ocr_preprocessing tests.test_native_ocr_preprocessing_parity -v
+
+      - name: Benchmark complete Python and native paths
+        shell: pwsh
+        run: |
+          $dll = (Resolve-Path "native/ocr_preprocessing/build/Release/agetha_ocr_preprocessing.dll").Path
+          python -m benchmarks.ocr_preprocessing --native-dll $dll --parity-verified --output "benchmark-results/${{ matrix.architecture }}.json"
+
+      - name: Upload native experiment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-ocr-${{ matrix.architecture }}
+          path: |
+            native/ocr_preprocessing/build/Release/agetha_ocr_preprocessing.dll
+            benchmark-results/${{ matrix.architecture }}.json
+            benchmark-results/${{ matrix.architecture }}.md
+          if-no-files-found: error
+
+  linux-fallback:
+    name: Native OCR / Linux fallback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install Pillow
+        run: python -m pip install "pillow>=10.0.0,<12.0.0"
+      - name: Verify lazy import and deterministic fallback
+        run: >-
+          python -m unittest -v
+          tests.test_native_ocr_preprocessing.NativeOCRPreprocessingTests.test_import_does_not_load_a_library
+          tests.test_native_ocr_preprocessing.NativeOCRPreprocessingTests.test_unsupported_platform_is_unavailable_without_loading
