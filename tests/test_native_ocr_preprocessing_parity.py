@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from agetha.platform.native_ocr_preprocessing import NativeOCRPreprocessor
+from benchmarks.native_ocr_preprocessing import NativeOCRPreprocessor
 from agetha.platform.screen_monitoring import preprocess_ocr_image
 from tests.ocr_preprocessing_contract import (
     AUTO_MAX_MEAN_ABS_ERROR,

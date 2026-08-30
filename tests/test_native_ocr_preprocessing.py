@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import importlib
+import importlib.util
 import platform
 import unittest
 from pathlib import Path
@@ -72,7 +73,7 @@ class NativeOCRPreprocessingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = importlib.import_module(
-            "agetha.platform.native_ocr_preprocessing",
+            "benchmarks.native_ocr_preprocessing",
         )
 
     def _processor(self, **library_options):
@@ -89,61 +90,26 @@ class NativeOCRPreprocessingTests(unittest.TestCase):
             importlib.reload(self.module)
         loader.assert_not_called()
 
-    def test_default_path_is_absolute_and_package_controlled(self):
-        base = Path("C:/Agetha/agetha")
-
-        resolved = self.module.default_native_library_path(
-            package_root=base,
-            system="Windows",
-            machine="AMD64",
+    def test_production_namespace_has_no_native_experiment_loader(self):
+        self.assertIsNone(
+            importlib.util.find_spec("agetha.platform.native_ocr_preprocessing"),
         )
 
-        self.assertEqual(
-            resolved,
-            base / "native" / "win-amd64" / "agetha_ocr_preprocessing.dll",
-        )
-        self.assertTrue(resolved.is_absolute())
-
-    def test_unsupported_platform_is_unavailable_without_loading(self):
-        with patch.object(self.module.NativeOCRPreprocessor, "from_library") as load:
-            processor, availability = self.module.load_default_native_preprocessor(
-                system="Linux",
-                machine="x86_64",
-            )
-
-        self.assertIsNone(processor)
-        self.assertFalse(availability.available)
-        self.assertEqual(availability.reason, "unsupported_platform")
-        load.assert_not_called()
-
-    def test_missing_default_library_is_unavailable(self):
-        processor, availability = self.module.load_default_native_preprocessor(
-            package_root=Path("C:/definitely-missing-agetha-package"),
-            system="Windows",
-            machine="AMD64",
-        )
-
-        self.assertIsNone(processor)
-        self.assertFalse(availability.available)
-        self.assertEqual(availability.reason, "library_missing")
-
-    def test_default_loader_rejects_library_outside_package_root(self):
-        escaped = Path("C:/outside/agetha_ocr_preprocessing.dll")
+    def test_non_windows_explicit_load_fails_before_touching_ctypes(self):
+        loader_name = "WinDLL" if hasattr(ctypes, "WinDLL") else "CDLL"
         with (
-            patch.object(self.module, "default_native_library_path",
-                         return_value=escaped),
-            patch.object(Path, "is_file", return_value=True),
-            patch.object(self.module.NativeOCRPreprocessor, "from_library") as load,
+            patch.object(platform, "system", return_value="Linux"),
+            patch.object(ctypes, loader_name) as loader,
+            self.assertRaisesRegex(
+                self.module.NativePreprocessError,
+                "INVALID_ARGUMENT",
+            ),
         ):
-            processor, availability = self.module.load_default_native_preprocessor(
-                package_root=Path("C:/trusted/agetha"),
-                system="Windows",
-                machine="AMD64",
+            self.module.NativeOCRPreprocessor.from_library(
+                Path("/tmp/native.dll"),
             )
 
-        self.assertIsNone(processor)
-        self.assertEqual(availability.reason, "library_outside_package")
-        load.assert_not_called()
+        loader.assert_not_called()
 
     def test_abi_version_mismatch_is_rejected(self):
         library = _FakeNativeLibrary(self.module, abi_version=99)

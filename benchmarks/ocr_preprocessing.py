@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, __version__ as pillow_version
 
-from agetha.platform.native_ocr_preprocessing import (
+from benchmarks.native_ocr_preprocessing import (
     NativeOCRPreprocessor,
     native_architecture_name,
 )

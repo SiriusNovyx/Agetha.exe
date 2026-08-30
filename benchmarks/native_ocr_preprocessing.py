@@ -1,8 +1,8 @@
-"""Optional Windows-native OCR preprocessing boundary.
+"""Development-only Python boundary for the Issue #38 native experiment.
 
-The module is safe to import on every supported platform and never loads a
-native library at import time.  The existing Pillow implementation remains the
-authoritative fallback owned by :mod:`agetha.platform.screen_monitoring`.
+This module loads a caller-supplied DLL only. It is deliberately outside the
+production ``agetha`` package because the candidate did not pass parity and is
+retained solely to reproduce the ABI, parity, and benchmark experiment.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import ctypes
 import enum
 import platform
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -73,14 +72,6 @@ class NativeResultV1(ctypes.Structure):
     ]
 
 
-@dataclass(frozen=True)
-class NativeBackendAvailability:
-    available: bool
-    architecture: str
-    reason: str
-    library_path: Path | None = None
-
-
 def native_architecture_name(
     *,
     system: str | None = None,
@@ -97,36 +88,11 @@ def native_architecture_name(
     return None
 
 
-def default_native_library_path(
-    *,
-    package_root: Path | None = None,
-    system: str | None = None,
-    machine: str | None = None,
-) -> Path | None:
-    architecture = native_architecture_name(system=system, machine=machine)
-    if architecture is None:
-        return None
-    root = (
-        Path(package_root).resolve()
-        if package_root is not None
-        else Path(__file__).resolve().parents[1]
-    )
-    return root / "native" / architecture / "agetha_ocr_preprocessing.dll"
-
-
 def _status_from_code(code: int) -> NativePreprocessStatus:
     try:
         return NativePreprocessStatus(int(code))
     except (TypeError, ValueError):
         return NativePreprocessStatus.INTERNAL_ERROR
-
-
-def _path_is_within(candidate: Path, root: Path) -> bool:
-    try:
-        candidate.resolve().relative_to(root.resolve())
-    except (OSError, ValueError):
-        return False
-    return True
 
 
 class NativeOCRPreprocessor:
@@ -136,16 +102,16 @@ class NativeOCRPreprocessor:
 
     @classmethod
     def from_library(cls, library_path: Path) -> "NativeOCRPreprocessor":
+        if platform.system() != "Windows" or not hasattr(ctypes, "WinDLL"):
+            raise NativePreprocessError(
+                NativePreprocessStatus.INVALID_ARGUMENT,
+                "platform",
+            )
         resolved = Path(library_path).resolve(strict=True)
         if not resolved.is_file():
             raise NativePreprocessError(
                 NativePreprocessStatus.INVALID_ARGUMENT,
                 "library_path",
-            )
-        if platform.system() != "Windows" or not hasattr(ctypes, "WinDLL"):
-            raise NativePreprocessError(
-                NativePreprocessStatus.INVALID_ARGUMENT,
-                "platform",
             )
         try:
             library = ctypes.WinDLL(
@@ -295,58 +261,3 @@ class NativeOCRPreprocessor:
             scale_x=output_width / max(1, original_width),
             scale_y=output_height / max(1, original_height),
         )
-
-
-def load_default_native_preprocessor(
-    *,
-    package_root: Path | None = None,
-    system: str | None = None,
-    machine: str | None = None,
-) -> tuple[NativeOCRPreprocessor | None, NativeBackendAvailability]:
-    architecture = native_architecture_name(system=system, machine=machine)
-    if architecture is None:
-        return None, NativeBackendAvailability(
-            available=False,
-            architecture="unsupported",
-            reason="unsupported_platform",
-        )
-    library_path = default_native_library_path(
-        package_root=package_root,
-        system=system,
-        machine=machine,
-    )
-    assert library_path is not None
-    package_path = (
-        Path(package_root).resolve()
-        if package_root is not None
-        else Path(__file__).resolve().parents[1]
-    )
-    if not _path_is_within(library_path, package_path):
-        return None, NativeBackendAvailability(
-            available=False,
-            architecture=architecture,
-            reason="library_outside_package",
-            library_path=library_path,
-        )
-    if not library_path.is_file():
-        return None, NativeBackendAvailability(
-            available=False,
-            architecture=architecture,
-            reason="library_missing",
-            library_path=library_path,
-        )
-    try:
-        processor = NativeOCRPreprocessor.from_library(library_path)
-    except NativePreprocessError as exc:
-        return None, NativeBackendAvailability(
-            available=False,
-            architecture=architecture,
-            reason=exc.operation,
-            library_path=library_path,
-        )
-    return processor, NativeBackendAvailability(
-        available=True,
-        architecture=architecture,
-        reason="available",
-        library_path=library_path,
-    )
