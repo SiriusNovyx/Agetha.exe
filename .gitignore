@@ -21,3 +21,7 @@ __pycache__/
 # OS
 Thumbs.db
 .DS_Store
+
+# Optional native OCR experiment outputs
+/native/ocr_preprocessing/build/
+/benchmark-results/
