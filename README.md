@@ -1,218 +1,231 @@
 # Agetha Mod — Overhaul Edition
 
-> A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0) with enhanced desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
+<div align="center">
 
-> Check out my agetha website! https://agethasirius.wasmer.app/ or https://agethasirius.vercel.app/!
+![Agetha Mod Version](https://img.shields.io/badge/Version-Overhaul_v5.7.5-blue?style=for-the-badge&logo=windows95&logoColor=white)
+![Medic Checker](https://img.shields.io/badge/Medic__Checker-v5.7.5-emerald?style=for-the-badge)
+![Python 3.13](https://img.shields.io/badge/Python-3.13.x-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![License GPLv3](https://img.shields.io/badge/License-GPLv3-red?style=for-the-badge)
+![Platform](https://img.shields.io/badge/Platform-Windows_10%2F11_%7C_Linux-lightgrey?style=for-the-badge)
 
-**Version:** Overhaul v5.7.5 · **Medic_Checker:** v5.7.5 · **Original author:** @tomiszivacs
+<br>
 
-> **Asset notice:** The bundled files in [`assets/`](assets/) are provided so a
-> normal clone or source download runs with the complete UI. They are not
-> covered by this repository's GPLv3 license. See
-> [`assets/README.md`](assets/README.md) for details.
+> **A modified fork of [Agetha.exe](https://chocolatebread.ddns.net/agetha.html) (v4.2.0)**  
+> Enhanced with desktop integration, spatial OCR, emotional AI, native safety confirmations, and expanded OS control.
 
----
+**Original Author:** [@tomiszivacs](https://github.com/tomiszivacs) • **Fork Maintainer:** [SiriusNovyx](https://github.com/SiriusNovyx/Agetha.exe)
 
-## Developer documentation
+[🌐 Web App (Wasmer)](https://agethasirius.wasmer.app/) • [⚡ Web App (Vercel)](https://agethasirius.vercel.app/) • [📖 Developer Docs](docs/README.md) • [🐛 Report Issue](https://github.com/SiriusNovyx/Agetha.exe/issues)
 
-For a code-map-first view of the architecture, runtime flows, module ownership,
-configuration, and focused tests, start with [`docs/README.md`](docs/README.md).
-
-## Platform support
-
-Official release targets are **Windows 10/11 x64**, **Windows 11 ARM64 or
-Snapdragon using x64 Python under Prism**, and **Linux desktop environments
-covered by the existing Linux paths**. GitHub Actions validates the shared
-Python code and focused Fast Mode recovery paths on Windows and Linux.
-
-**macOS is unsupported as of v5.5.5.** Historical macOS fallback code may
-remain under GPLv3, but it receives no release testing, compatibility fixes, or
-support. Windows-only integrations such as native warning dialogs, Startup
-shortcuts, and Windows Settings remain feature-gated on Linux.
-
-## About
-
-Agetha is a **desktop AI companion** — a small always-on-top Windows 95–style
-window with an animated character who lives on your machine. She chats, remembers
-context across sessions, and can use configured providers: **Groq** (default),
-**OpenRouter** (optional), or **Ollama** (local).
-
-The default Compact profile keeps the classic companion experience and blocks
-the fork's advanced screen/process observation and OS-control capabilities. A
-deliberately enabled Full profile can expose spatial OCR, process awareness,
-voice input, file drag-and-drop, and guarded OS actions. Full Mode is not
-unrestricted access: native confirmations, Command Guard, individual feature
-gates, target validation, cancellation, and protected-process rules remain on.
+</div>
 
 ---
 
-## Features
+> [!NOTE]  
+> **Asset Notice:** The bundled files in [`assets/`](assets/) are provided so a normal clone or source download runs with the complete UI. They are not covered by this repository's GPLv3 license. See [`assets/README.md`](assets/README.md) for details.
 
-### Compact Mode by default
+---
 
-Fresh or missing configuration starts with `COMPACT_MODE = yes`. Compact keeps
-chat, memory, emotion/personality, WebRAG, and bounded read-only continuation
-available according to their ordinary settings. It is an outer capability gate,
-not just a hidden Dashboard tab: Computer Use, planner/recovery, Process
-Awareness, Terminal Sentinel, OS typing/control, background sensing, and other
-advanced OS integration do not start or perform effects while Compact is on.
+## 📑 Table of Contents
 
-Turning Compact off starts an explicit two-confirmation flow. After the first
-confirmation, a narrow Windows-only presentation may open a validated Notepad
-window and type one compiled warning. It is not Computer Use, accepts no
-arbitrary app or text, and makes zero provider calls. Full remains disabled until
-the user selects **Enable Full Mode** at the final confirmation. A safe in-app
-fallback is used if Notepad cannot be validated. Returning to Compact is
-immediate and invalidates active Full work before cleanup.
+- [Developer Documentation](#developer-documentation)
+- [Platform Support](#platform-support)
+- [About](#about)
+- [Features](#features)
+  - [Compact Mode by default](#compact-mode-by-default)
+  - [Spatial OCR & Focused Window Scanning](#spatial-ocr--focused-window-scanning)
+  - [Optional Deep OCR](#optional-deep-ocr)
+  - [Screen Monitoring Reliability](#screen-monitoring-reliability)
+  - [Polyglot Presence](#polyglot-presence)
+  - [Bounded Continuation, Process Awareness & Computer Use Lite](#bounded-continuation-process-awareness--computer-use-lite)
+  - [Dual-Layer Memory](#dual-layer-memory)
+  - [Presence & Realism (v4.0.0)](#presence--realism-v400)
+  - [Emotion Engine & Transparent Windows Integration (v5.0.0)](#emotion-engine--transparent-windows-integration-v500)
+  - [Psychological Moods & Attention Snapping](#psychological-moods--attention-snapping)
+  - [Command Guard (Safety System)](#command-guard-safety-system)
+  - [Voice Input (optional)](#voice-input-optional)
+  - [File Drag-and-Drop](#file-drag-and-drop)
+  - [AI Backend Options & Provider Status](#ai-backend-options--provider-status)
+- [Project Structure](#project-structure)
+- [Commands](#commands)
+  - [Communication](#communication)
+  - [File System](#file-system)
+  - [Apps, Web & Processes](#apps-web--processes)
+  - [Window Control](#window-control)
+  - [System & Media](#system--media)
+- [Quick Start](#quick-start)
+  - [Option A — Windows Medic Checker (recommended on Windows)](#option-a--windows-medic-checker-recommended-on-windows)
+  - [Option B — Windows manual](#option-b--windows-manual)
+  - [Option C — Linux manual](#option-c--linux-manual)
+- [Configuration](#configuration)
+  - [API Keys (.env only)](#api-keys-env-only)
+  - [config.txt Reference](#configtxt)
+  - [Local AI (Ollama)](#local-ai-ollama)
+  - [OpenRouter (optional)](#openrouter-optional)
+  - [Voice + drag-and-drop (optional)](#voice--drag-and-drop-optional)
+  - [Voice output / TTS (optional)](#voice-output--tts-optional)
+- [Medic_Checker v5.7.5 (PowerShell)](#medic_checker-v575-powershell)
+- [Requirements](#requirements)
+  - [Frozen executable caveat](#frozen-executable-caveat)
+  - [Python packages (requirements.txt)](#python-packages-requirementstxt)
+- [Controls](#controls)
+- [Architecture Overview](#architecture-overview)
+- [Changelog (Overhaul)](#changelog-overhaul)
+- [Warning & Disclaimer](#warning--disclaimer)
+- [License & Credits](#license--credits)
 
-The Compact Dashboard uses the existing classic/upstream-compatible basic
-surfaces; Full reveals only applicable advanced sections. See
-[`docs/compact_full_mode.md`](docs/compact_full_mode.md) and the entirely
-unperformed [34-item manual checklist](docs/testing/compact_full_mode_manual.md).
+---
 
-### Spatial OCR & Focused Window Scanning
+## 📖 Developer documentation
 
-- **Targeted scanning** — captures only the active foreground window (~4× faster than full-desktop OCR)
-- **Spatial mapping** — maps words to desktop coordinates (e.g. `TypeError@(320,458)`); Agetha can move her window next to an on-screen error
-- **Pattern registry** — regex detection for Python tracebacks, PowerShell errors, build failures, npm errors, security alerts, and more
-- **Multi-monitor & DPI** — per-monitor DPI awareness and correct physical pixel coordinates
+For a code-map-first view of the architecture, runtime flows, module ownership, configuration, and focused tests, start with [`docs/README.md`](docs/README.md).
 
-### Optional Deep OCR
+---
 
-Tesseract remains Agetha's standard, default OCR backend for foreground scanning,
-ambient polling, pattern detection, and word coordinates. Advanced users can opt
-into `analyze_screen_deep`, which sends one explicitly requested capture to a
-separately hosted [Baidu Unlimited-OCR](https://github.com/baidu/Unlimited-OCR)
-OpenAI-compatible service for complex documents, tables, layouts, and long text.
+## 🖥 Platform support
 
-Deep OCR is disabled by default and is never used by automatic polling. If its
-server is disabled or offline, standard Tesseract OCR continues normally. The
-official Unlimited-OCR setup primarily targets NVIDIA CUDA environments; Windows
-ARM/Snapdragon users should normally keep Tesseract local and connect to another
-machine only when deep OCR is needed. A remote service receives screenshot
-content, so remote URLs require explicit configuration and opt-in. See
-[`docs/unlimited_ocr_server.md`](docs/unlimited_ocr_server.md).
+| Operating System | Support Tier | Architecture & Runtime Requirements | Status / Notes |
+| :--- | :---: | :--- | :--- |
+| **Windows 10 / 11 x64** | 🟢 Tier 1 | Native x64 Python 3.13.x | Official primary target; all Win32 features enabled. |
+| **Windows 11 ARM64 / Snapdragon** | 🟢 Tier 1 | x64 Python running under **Prism** emulation | Fully supported; Prism ensures binary wheel compatibility. |
+| **Linux (Ubuntu / GNOME / Xorg)** | 🟡 Tier 2 | Python 3.13.x with distribution Tk/Tesseract | Shared Python code & Fast Mode verified; platform-gated. |
+| **Linux (GNOME Wayland)** | 🟡 Tier 2 | Python 3.13.x | Interactive GUI supported; OCR fails closed if capture restricted. |
+| **macOS** | 🔴 Deprecated | None | **Unsupported as of v5.5.5.** Historical code remains under GPLv3. |
 
-### Screen Monitoring Reliability
+> [!WARNING]  
+> **macOS is unsupported as of v5.5.5.** Historical macOS fallback code may remain under GPLv3, but it receives no release testing, compatibility fixes, or support. Windows-only integrations such as native warning dialogs, Startup shortcuts, and Windows Settings remain feature-gated on Linux.
 
-Automatic monitoring uses one immutable capture record containing the image,
-desktop origin, window title, window identity, and capture scope. This keeps
-spatial word coordinates correct after high-resolution downscaling and on
-multi-monitor desktops with negative origins. Standard scans are serialized;
-explicit deep OCR holds the capture lock only while taking its own screenshot
-and cannot overwrite or restore standard OCR state.
+---
 
-The local monitor skips Agetha's own window and configured exclusions, rejects
-OCR results if the foreground window changes during recognition, and avoids
-rerunning Tesseract for visually unchanged frames. A periodic forced refresh
-and per-window state expiry prevent stale caches. Pattern events preserve OCR
-line coordinates/confidence and are deduplicated separately from the compatible
-`last_pattern_matches` current-state list. An active event does not retrigger
-until it clears for the configured number of clean scans and its cooldown has
-elapsed; a changed normalized snippet is a distinct event.
+## 🤖 About
 
-Sensitive-looking tokens, bearer credentials, private keys, passwords, session
-values, and recovery-code forms are redacted only when screen text is prepared
-for Groq, OpenRouter, or Ollama context. Local pattern matching still uses the
-original OCR text. Use `OCR_EXCLUDED_APPS` and
-`OCR_EXCLUDED_TITLE_PATTERNS` for windows that should never be captured
-automatically; title exclusions accept plain text or a bounded `re:` prefix.
+Agetha is a **desktop AI companion** — a small always-on-top Windows 95–style window with an animated character who lives on your machine. She chats, remembers context across sessions, and can use configured providers:
 
-On Windows, focused capture and process names use Win32 APIs and MSS. Ubuntu
-Xorg supports managed Tk windows and automatic OCR through validated optional
-backends. GNOME Wayland supports the interactive GUI and normal minimize/restore
-behavior, while screen capture remains compositor-dependent and automatic OCR
-fails closed when unrestricted capture is unavailable. See
-[Linux desktop support](docs/linux_support.md). Historical macOS fallbacks
-remain unsupported as of v5.5.5.
+* ⚡ **Groq** *(default cloud provider, fast inference)*
+* ♊ **Google Gemini** *(multimodal & alternative cloud route)*
+* 🌐 **OpenRouter** *(open-source models: Gemma, DeepSeek, etc.)*
+* 🦙 **Ollama** *(fully offline local AI)*
 
-Tesseract remains the default real-time backend; Unlimited-OCR is still used
-only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported
-after both matching Tesseract language-data packages are installed locally.
+The default **Compact profile** keeps the classic companion experience and blocks the fork's advanced screen/process observation and OS-control capabilities. A deliberately enabled **Full profile** can expose spatial OCR, process awareness, voice input, file drag-and-drop, and guarded OS actions. Full Mode is not unrestricted access: native confirmations, Command Guard, individual feature gates, target validation, cancellation, and protected-process rules remain on.
 
-### Polyglot Presence
+---
 
-The current tree adds a local-first Polyglot Presence foundation without
-changing the public v5.7.5 release label:
+## ✨ Features
 
-- **Language-neutral multilingual voice** — Agetha mirrors the user's current
-  language and approximate conversational register without inventing
-  translation, transliteration, gendered speech, honorifics, cultural particles,
-  formality, or slang. This is character guidance, not a global output filter:
-  quoted text, documents, code, and exact text requested for typing remain
-  unchanged. English, Thai, Japanese, Chinese, Korean, Arabic, Russian, French,
-  mixed-script text, and emoji are validation vectors rather than personality
-  preferences.
-- **Universal Unicode typing** — `type_text` preserves the exact string and
-  supports `auto`, `unicode`, `paste`, `preview`, and `paced` modes. Windows
-  uses Win32 Unicode input first; Xorg uses guarded clipboard paste where its
-  optional desktop tools are available; Wayland copies for a manual paste when
-  global synthetic input is restricted. It never appends Enter, Return, or Tab.
-- **Observation Bus and Presence Etiquette** — bounded typed local events are
-  kept separate from provider, memory, notification, and command eligibility.
-  Local rules suppress or defer nonurgent interruptions during fullscreen,
-  presentation, rapid typing, quiet hours, dismissal backoff, sleep, or
-  shutdown without making an AI request.
-- **Terminal Sentinel** — an opt-in, empty-allowlist-by-default developer
-  helper reuses confirmed new OCR error events. Its local notification offers
-  Explain, Dismiss, and Ignore Pattern; no provider request occurs until the
-  user selects Explain, and explanations cannot authorize model-suggested OS
-  commands.
-- **Senses Control Panel** — the Dashboard can open an honest snapshot of
-  Vision, Hearing, Memory, Network & AI, Actions, and Presence. Refresh uses
-  local/configured state, performs no paid provider probe, and never displays
-  API-key values.
+### 🔒 Compact Mode by default
 
-See the [manual validation checklist](docs/testing/polyglot_presence_manual.md)
-and the [future Polyglot Presence roadmap](docs/roadmap/polyglot_presence_roadmap.md).
-Roadmap features A–O are design-only and **planned / not implemented**.
+Fresh or missing configuration starts with `COMPACT_MODE = yes`. Compact keeps chat, memory, emotion/personality, WebRAG, and bounded read-only continuation available according to their ordinary settings. It is an outer capability gate, not just a hidden Dashboard tab: Computer Use, planner/recovery, Process Awareness, Terminal Sentinel, OS typing/control, background sensing, and other advanced OS integration do not start or perform effects while Compact is on.
 
-### Bounded Continuation, Process Awareness & Computer Use Lite
+```mermaid
+graph LR
+    subgraph Compact_State["🔒 Compact Mode (Default)"]
+        direction TB
+        C1["Chat & Companion Personality"]
+        C2["Episodic & Long-Term Memory"]
+        C3["WebRAG Search"]
+        C4["Read-Only Continuations"]
+    end
 
-- **True bounded continuation** — one direct user goal may produce a short
-  status, one or more allowlisted read-only lookups, and a later final answer.
-  Sessions have step/time/result limits, generation-safe cancellation, and no
-  recursive AI-turn loop. Tool results remain untrusted and cannot authorize a
-  state-changing command or start Computer Use.
-- **Application awareness** — Agetha distinguishes the foreground application,
-  visible interactive windows, and background processes. Identity combines PID,
-  executable basename, and creation time where available; provider context is
-  minimized and sensitive applications are suppressed.
-- **Computer Use Lite** — an opt-in, **disabled-by-default** Windows-first
-  observe → one-action plan → policy → execute → verify loop. Every effect is
-  locked to PID/name/creation-time/HWND/bounds and the allowed app. Exact text
-  stays behind a local payload reference and reuses guarded Unicode typing.
-- **Cost-aware planning** — a small isolated planner can use an existing
-  Groq/Gemini/OpenRouter/Ollama route. Local verification avoids unnecessary
-  calls;
-  repeated ambiguity may use a bounded primary-model recovery call.
-- **Immediate stop** — a non-activating Win95 status window provides STOP, and
-  Escape cancels the same session generation. Late planner results cannot
-  produce input after cancellation.
+    subgraph Full_State["🔓 Full Mode (Deliberate Opt-In)"]
+        direction TB
+        F1["Spatial OCR & Screen Sensing"]
+        F2["Process Awareness & Inspection"]
+        F3["Guarded OS Automation & Typing"]
+        F4["Deterministic Computer Use Lite"]
+    end
 
-There is no real accessibility/UI-Automation backend in this phase; the honest
-unavailable abstraction falls back to local OCR controls. Xorg support is
-degraded, autonomous Computer Use is unavailable on Wayland, and full visual
-vision-model Computer Use remains future work. See
-[`docs/continuation_engine.md`](docs/continuation_engine.md),
-[`docs/computer_use.md`](docs/computer_use.md), and the unperformed
-[25-item manual checklist](docs/testing/computer_use_manual.md).
+    Compact_State -->|"1. Disable COMPACT_MODE<br>2. Notepad Warning Validation<br>3. Final Dialog Confirmation"| Full_State
+    Full_State -->|"Instant Reversion (Invalidates active work)"| Compact_State
+```
 
-### Dual-Layer Memory
+Turning Compact off starts an explicit two-confirmation flow:
+1. After the first confirmation, a narrow Windows-only presentation may open a validated Notepad window and type one compiled warning. It is not Computer Use, accepts no arbitrary app or text, and makes zero provider calls.
+2. Full remains disabled until the user selects **Enable Full Mode** at the final confirmation.
+3. A safe in-app fallback is used if Notepad cannot be validated. Returning to Compact is immediate and invalidates active Full work before cleanup.
 
-| Layer | File | Purpose |
-|-------|------|---------|
-| Static identity | `memory/soul.md` | Personality, mood rules, triggers (editable Markdown) |
-| Episodic memory | `memory/episodic_memory.json` | Timestamped interaction log (max 50 entries) |
+The Compact Dashboard uses the existing classic/upstream-compatible basic surfaces; Full reveals only applicable advanced sections. See [`docs/compact_full_mode.md`](docs/compact_full_mode.md) and the entirely unperformed [34-item manual checklist](docs/testing/compact_full_mode_manual.md).
 
-### Presence & Realism (v4.0.0)
+---
 
-- **Circadian rhythm** — an internal clock (deep night / dawn / morning / afternoon / evening / night) flavors her energy and mood; drowsy whispers at 3 AM, sharp and smug in the morning
-- **Dream journal** — during deep sleep she *dreams*: fragments of real episodic and long-term memories woven into surreal entries (`memory/dreams.jsonl`); on waking she remembers the dream once and may mention it — ask "did you dream?" (`view_dreams`)
-- **Task keeper** — "remind me to…" stores tasks in `memory/tasks.json` (`add_task` / `complete_task` / `list_tasks`); pending tasks appear in her ambient context so she nags you about them in character
-- All three are local-only (no network), never touch files outside `memory/`, and are config-gated (`ENABLE_CIRCADIAN_RHYTHM`, `ENABLE_DREAMS`, `ENABLE_TASKS`)
+### 👁️ Spatial OCR & Focused Window Scanning
 
-### Emotion Engine & Transparent Windows Integration (v5.0.0)
+- **Targeted scanning** — captures only the active foreground window (~4× faster than full-desktop OCR).
+- **Spatial mapping** — maps words to desktop coordinates (e.g. `TypeError@(320,458)`); Agetha can move her window next to an on-screen error.
+- **Pattern registry** — regex detection for Python tracebacks, PowerShell errors, build failures, npm errors, security alerts, and more.
+- **Multi-monitor & DPI** — per-monitor DPI awareness and correct physical pixel coordinates.
+
+---
+
+### 🔬 Optional Deep OCR
+
+Tesseract remains Agetha's standard, default OCR backend for foreground scanning, ambient polling, pattern detection, and word coordinates. Advanced users can opt into `analyze_screen_deep`, which sends one explicitly requested capture to a separately hosted [Baidu Unlimited-OCR](https://github.com/baidu/Unlimited-OCR) OpenAI-compatible service for complex documents, tables, layouts, and long text.
+
+> [!TIP]
+> Deep OCR is disabled by default and is never used by automatic polling. If its server is disabled or offline, standard Tesseract OCR continues normally. The official Unlimited-OCR setup primarily targets NVIDIA CUDA environments; Windows ARM/Snapdragon users should normally keep Tesseract local and connect to another machine only when deep OCR is needed. A remote service receives screenshot content, so remote URLs require explicit configuration and opt-in. See [`docs/unlimited_ocr_server.md`](docs/unlimited_ocr_server.md).
+
+---
+
+### 🛡️ Screen Monitoring Reliability
+
+Automatic monitoring uses one immutable capture record containing the image, desktop origin, window title, window identity, and capture scope. This keeps spatial word coordinates correct after high-resolution downscaling and on multi-monitor desktops with negative origins. Standard scans are serialized; explicit deep OCR holds the capture lock only while taking its own screenshot and cannot overwrite or restore standard OCR state.
+
+The local monitor skips Agetha's own window and configured exclusions, rejects OCR results if the foreground window changes during recognition, and avoids rerunning Tesseract for visually unchanged frames. A periodic forced refresh and per-window state expiry prevent stale caches. Pattern events preserve OCR line coordinates/confidence and are deduplicated separately from the compatible `last_pattern_matches` current-state list. An active event does not retrigger until it clears for the configured number of clean scans and its cooldown has elapsed; a changed normalized snippet is a distinct event.
+
+> [!IMPORTANT]
+> **Privacy Filter:** Sensitive-looking tokens, bearer credentials, private keys, passwords, session values, and recovery-code forms are redacted only when screen text is prepared for Groq, OpenRouter, or Ollama context. Local pattern matching still uses the original OCR text. Use `OCR_EXCLUDED_APPS` and `OCR_EXCLUDED_TITLE_PATTERNS` for windows that should never be captured automatically; title exclusions accept plain text or a bounded `re:` prefix.
+
+On Windows, focused capture and process names use Win32 APIs and MSS. Ubuntu Xorg supports managed Tk windows and automatic OCR through validated optional backends. GNOME Wayland supports the interactive GUI and normal minimize/restore behavior, while screen capture remains compositor-dependent and automatic OCR fails closed when unrestricted capture is unavailable. See [Linux desktop support](docs/linux_support.md). Historical macOS fallbacks remain unsupported as of v5.5.5.
+
+Tesseract remains the default real-time backend; Unlimited-OCR is still used only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported after both matching Tesseract language-data packages are installed locally.
+
+---
+
+### 🗣️ Polyglot Presence
+
+The current tree adds a local-first Polyglot Presence foundation without changing the public v5.7.5 release label:
+
+- **Language-neutral multilingual voice** — Agetha mirrors the user's current language and approximate conversational register without inventing translation, transliteration, gendered speech, honorifics, cultural particles, formality, or slang. This is character guidance, not a global output filter: quoted text, documents, code, and exact text requested for typing remain unchanged. English, Thai, Japanese, Chinese, Korean, Arabic, Russian, French, mixed-script text, and emoji are validation vectors rather than personality preferences.
+- **Universal Unicode typing** — `type_text` preserves the exact string and supports `auto`, `unicode`, `paste`, `preview`, and `paced` modes. Windows uses Win32 Unicode input first; Xorg uses guarded clipboard paste where its optional desktop tools are available; Wayland copies for a manual paste when global synthetic input is restricted. It never appends <kbd>Enter</kbd>, <kbd>Return</kbd>, or <kbd>Tab</kbd>.
+- **Observation Bus and Presence Etiquette** — bounded typed local events are kept separate from provider, memory, notification, and command eligibility. Local rules suppress or defer nonurgent interruptions during fullscreen, presentation, rapid typing, quiet hours, dismissal backoff, sleep, or shutdown without making an AI request.
+- **Terminal Sentinel** — an opt-in, empty-allowlist-by-default developer helper reuses confirmed new OCR error events. Its local notification offers **Explain**, **Dismiss**, and **Ignore Pattern**; no provider request occurs until the user selects Explain, and explanations cannot authorize model-suggested OS commands.
+- **Senses Control Panel** — the Dashboard can open an honest snapshot of Vision, Hearing, Memory, Network & AI, Actions, and Presence. Refresh uses local/configured state, performs no paid provider probe, and never displays API-key values.
+
+See the [manual validation checklist](docs/testing/polyglot_presence_manual.md) and the [future Polyglot Presence roadmap](docs/roadmap/polyglot_presence_roadmap.md). Roadmap features A–O are design-only and **planned / not implemented**.
+
+---
+
+### ⚙️ Bounded Continuation, Process Awareness & Computer Use Lite
+
+- **True bounded continuation** — one direct user goal may produce a short status, one or more allowlisted read-only lookups, and a later final answer. Sessions have step/time/result limits, generation-safe cancellation, and no recursive AI-turn loop. Tool results remain untrusted and cannot authorize a state-changing command or start Computer Use.
+- **Application awareness** — Agetha distinguishes the foreground application, visible interactive windows, and background processes. Identity combines PID, executable basename, and creation time where available; provider context is minimized and sensitive applications are suppressed.
+- **Computer Use Lite** — an opt-in, **disabled-by-default** Windows-first observe → one-action plan → policy → execute → verify loop. Every effect is locked to PID/name/creation-time/HWND/bounds and the allowed app. Exact text stays behind a local payload reference and reuses guarded Unicode typing.
+- **Cost-aware planning** — a small isolated planner can use an existing Groq/Gemini/OpenRouter/Ollama route. Local verification avoids unnecessary calls; repeated ambiguity may use a bounded primary-model recovery call.
+- **Immediate stop** — a non-activating Win95 status window provides **STOP**, and <kbd>Escape</kbd> cancels the same session generation. Late planner results cannot produce input after cancellation.
+
+There is no real accessibility/UI-Automation backend in this phase; the honest unavailable abstraction falls back to local OCR controls. Xorg support is degraded, autonomous Computer Use is unavailable on Wayland, and full visual vision-model Computer Use remains future work. See [`docs/continuation_engine.md`](docs/continuation_engine.md), [`docs/computer_use.md`](docs/computer_use.md), and the unperformed [25-item manual checklist](docs/testing/computer_use_manual.md).
+
+---
+
+### 🧠 Dual-Layer Memory
+
+| Layer | File Path | Format | Purpose |
+| :--- | :--- | :---: | :--- |
+| **Static identity** | `memory/soul.md` | Markdown | Personality, mood rules, boundaries, and behavioral triggers (user-editable). |
+| **Episodic memory** | `memory/episodic_memory.json` | JSON | Timestamped interaction log of recent exchanges (max 50 entries). |
+| **Long-term archive** | `memory/longterm_memory.jsonl` | JSONL | Dual-write summary archive searchable via BM25 retrieval (`search_memory`). |
+
+---
+
+### 🌅 Presence & Realism (v4.0.0)
+
+- **Circadian rhythm** — an internal clock (`deep night` / `dawn` / `morning` / `afternoon` / `evening` / `night`) flavors her energy and mood; drowsy whispers at 3 AM, sharp and smug in the morning.
+- **Dream journal** — during deep sleep she *dreams*: fragments of real episodic and long-term memories woven into surreal entries (`memory/dreams.jsonl`); on waking she remembers the dream once and may mention it — ask *"did you dream?"* (`view_dreams`).
+- **Task keeper** — *"remind me to…"* stores tasks in `memory/tasks.json` (`add_task` / `complete_task` / `list_tasks`); pending tasks appear in her ambient context so she nags you about them in character.
+- All three are local-only (no network), never touch files outside `memory/`, and are config-gated (`ENABLE_CIRCADIAN_RHYTHM`, `ENABLE_DREAMS`, `ENABLE_TASKS`).
+
+---
+
+### ❤️ Emotion Engine & Transparent Windows Integration (v5.0.0)
 
 - **Deep emotion engine** — persistent valence / arousal / trust / loneliness in `memory/emotional_state.json` (inertia, decay, bounded events). A declined dangerous command causes mild disappointment only — never guilt or pressure.
 - **Emotional history** — bounded relationship signals in `memory/emotional_history.jsonl`; viewable (`view_emotions`), removable, fully resettable (`clear_emotions`). Prompt injection is hardened: category templates + sanitized summaries labeled as untrusted historical data.
@@ -221,76 +234,70 @@ vision-model Computer Use remains future work. See
 - **Status providers** — coarse local observations (battery / disk / network), disabled by default, pausable.
 - **Tray scaffold** — optional compatibility path if you install `pystray` yourself; not bundled, not a guaranteed runtime feature, silent when absent.
 
-### Psychological Moods & Attention Snapping
+---
 
-- **Surface moods:** neutral, happy, excited, sad, surprised, thinking, whisper, angry
-- **Deep moods:** manic, melancholic, paranoid, vulnerable, dominant
-- **Snap mechanic** — if ignored too long in attention-seeking moods, Agetha snaps to screen center and pulls herself to the foreground
-- **Native audio** — platform system sounds + mood-based ambient bleeps
+### 🎭 Psychological Moods & Attention Snapping
 
-### Command Guard (Safety System)
-
-Before executing risky actions, Agetha shows a **native Windows MessageBox** with tier-appropriate icons:
-
-| Tier | Icon | When |
-|------|------|------|
-| **Safe** | — | speak, open_url, screenshots, move own window… |
-| **Caution** | ℹ Info | open files, clipboard, search, volume… |
-| **Danger** | ⚠ Warning | delete, run_command, shutdown, lock screen… |
-
-- **Process kills:** common user apps (Chrome, Notepad, etc.) close without a prompt; system processes (`explorer.exe`, `svchost.exe`, …) require confirmation
-- **Denied actions:** Agetha responds *"Fine. I won't."*
-- Toggle all OS execution via `ENABLE_COMMAND_EXECUTION` in `config.txt`
-
-### Voice Input (optional)
-
-- **Microphone button** (🎤) in the chat row when `ENABLE_VOICE = yes`
-- **Google STT** (online) — default when `USE_LOCAL_STT = no`
-- **faster-whisper** (offline) — when `USE_LOCAL_STT = yes` (~75 MB `tiny.en` model on first run)
-- Mic choice saved in `memory/settings.json` (Win95-style picker on first use)
-- Medic_Checker installs `SpeechRecognition` + `PyAudio` (and `faster-whisper` if needed)
-
-### File Drag-and-Drop
-
-- Drop files onto Agetha's GIF when `ENABLE_FILE_DRAG_DROP = yes`
-- Requires `tkinterdnd2` on Windows (Medic_Checker installs it when enabled)
-- Agetha receives a `[system] file_dragged: "name" (path: …)` message and can react
-
-### AI Backend Options & Provider Status
-
-| Backend | Config | Keys in `.env` |
-|---------|--------|----------------|
-| **Groq** (default) | `ENABLE_GROQ = yes` | `GROQ_API_KEY_1` … `_10` |
-| **Google Gemini** | `ENABLE_GEMINI = yes` | `GEMINI_API_KEY` |
-| **OpenRouter** | `ENABLE_OPENROUTER = yes` | `OPENROUTER_API_KEY` |
-| **Ollama** | `USE_LOCAL_AI = yes` | *(none — local)* |
-
-- **Groq model policy** — `openai/gpt-oss-120b` is the default. Existing
-  configuration that names the retired `llama-3.3-70b-versatile` model is
-  normalized to the supported default at runtime. GPT-OSS command-envelope
-  requests use JSON Object Mode and map fast/normal/deep profiles to
-  low/medium/high reasoning effort. Permanent model or request failures skip
-  unchanged key retries and enter the configured provider fallback path.
-- **Response recovery** — intentional `idle`, malformed JSON, schema failures,
-  and unsupported commands remain distinct local outcomes. An explicit direct
-  user request can make one format-repair call; ambient, OCR-only,
-  web/document, terminal-sentinel, and tool-result traffic never starts a
-  repair cycle. Only the final response is eligible for history or memory.
-- **Provider status** — the placeholder reports the selected provider/model;
-  Groq also shows the active key index/count. Agetha does not present inferred
-  token percentages as provider quota data.
-- **Fast Mode 2.0** — `FASTER_MODE = yes` activates a reversible performance
-  profile plus request-aware prompt budgets. Original managed values are kept in
-  `memory/fast_mode_snapshot.json` and restored when Fast Mode is disabled.
-  Unchanged ambient scans are handled locally instead of spending an AI request.
-  Provider, permission, privacy, and security settings are never changed. See
-  the [threat model and recovery guide](docs/fast_mode_security.md).
+- **Surface moods:** `neutral`, `happy`, `excited`, `sad`, `surprised`, `thinking`, `whisper`, `angry`
+- **Deep moods:** `manic`, `melancholic`, `paranoid`, `vulnerable`, `dominant`
+- **Snap mechanic** — if ignored too long in attention-seeking moods, Agetha snaps to screen center and pulls herself to the foreground.
+- **Native audio** — platform system sounds + mood-based ambient bleeps.
 
 ---
 
-## Project Structure
+### 🛡️ Command Guard (Safety System)
 
-```
+Before executing risky actions, Agetha displays a **native Windows MessageBox** with tier-appropriate icons:
+
+| Tier | Native Icon | Scope & Actions |
+| :---: | :---: | :--- |
+| **Safe** | — | `speak`, `open_url`, `take_screenshot`, `move_window`, `idle`, `popup`… |
+| **Caution** | ℹ️ Info | `open_file`, `set_clipboard`, `get_clipboard`, `search_files`, `set_volume`, `type_text`… |
+| **Danger** | ⚠️ Warning | `delete_file`, `run_command`, `shutdown`, `restart`, `lock_screen`, `force_close`… |
+
+- **Process kills:** common user apps (Chrome, Notepad, etc.) close without a prompt; system processes (`explorer.exe`, `svchost.exe`, …) require confirmation.
+- **Denied actions:** Agetha responds *"Fine. I won't."*
+- Toggle all OS execution via `ENABLE_COMMAND_EXECUTION` in `config.txt`.
+
+---
+
+### 🎤 Voice Input (optional)
+
+- **Microphone button** (🎤) in the chat row when `ENABLE_VOICE = yes`.
+- **Google STT** (online) — default when `USE_LOCAL_STT = no`.
+- **faster-whisper** (offline) — when `USE_LOCAL_STT = yes` (~75 MB `tiny.en` model on first run).
+- Mic choice saved in `memory/settings.json` (Win95-style picker on first use).
+- Medic_Checker installs `SpeechRecognition` + `PyAudio` (and `faster-whisper` if needed).
+
+---
+
+### 📂 File Drag-and-Drop
+
+- Drop files onto Agetha's GIF when `ENABLE_FILE_DRAG_DROP = yes`.
+- Requires `tkinterdnd2` on Windows (Medic_Checker installs it when enabled).
+- Agetha receives a `[system] file_dragged: "name" (path: …)` message and can react.
+
+---
+
+### ☁️ AI Backend Options & Provider Status
+
+| Backend | Configuration Key | Credentials (`.env`) | Notes |
+| :--- | :--- | :--- | :--- |
+| **Groq** *(default)* | `ENABLE_GROQ = yes` | `GROQ_API_KEY_1` … `_10` | High-speed cloud backend with key rotation. |
+| **Google Gemini** | `ENABLE_GEMINI = yes` | `GEMINI_API_KEY` | Secondary or fallback cloud engine. |
+| **OpenRouter** | `ENABLE_OPENROUTER = yes` | `OPENROUTER_API_KEY` | Access to open models (Gemma, DeepSeek). |
+| **Ollama** | `USE_LOCAL_AI = yes` | *(none — local)* | Completely local & offline inference. |
+
+- **Groq model policy** — `openai/gpt-oss-120b` is the default. Existing configuration that names the retired `llama-3.3-70b-versatile` model is normalized to the supported default at runtime. GPT-OSS command-envelope requests use JSON Object Mode and map fast/normal/deep profiles to low/medium/high reasoning effort. Permanent model or request failures skip unchanged key retries and enter the configured provider fallback path.
+- **Response recovery** — intentional `idle`, malformed JSON, schema failures, and unsupported commands remain distinct local outcomes. An explicit direct user request can make one format-repair call; ambient, OCR-only, web/document, terminal-sentinel, and tool-result traffic never starts a repair cycle. Only the final response is eligible for history or memory.
+- **Provider status** — the placeholder reports the selected provider/model; Groq also shows the active key index/count. Agetha does not present inferred token percentages as provider quota data.
+- **Fast Mode 2.0** — `FASTER_MODE = yes` activates a reversible performance profile plus request-aware prompt budgets. Original managed values are kept in `memory/fast_mode_snapshot.json` and restored when Fast Mode is disabled. Unchanged ambient scans are handled locally instead of spending an AI request. Provider, permission, privacy, and security settings are never changed. See the [threat model and recovery guide](docs/fast_mode_security.md).
+
+---
+
+## 🗂️ Project Structure
+
+```text
 Agetha_Mod/
 ├── main.py                 # Tkinter entry point (launch via Medic_Checker)
 ├── medic_helper.py         # Medic_Checker CLI helpers
@@ -398,145 +405,163 @@ Agetha_Mod/
 
 ---
 
-## Commands
+## 💻 Commands
 
-Agetha responds with JSON commands. The AI chooses actions based on context; you can also trigger them by asking naturally.
+Agetha responds with structured JSON commands. The AI selects actions based on context, or you can trigger them through natural conversational requests.
+
+> **Legend:** ⚠️ = Requires user confirmation (Caution or Danger tier).
 
 ### Communication
 
-| Command | Description |
-|---------|-------------|
-| `speak` | Talk with mood + subtitle segments |
-| `idle` | Do nothing (common for ambient polls) |
-| `wake_user` | Get user's attention |
-| `popup` | Show multi-line Agetha popup |
-| `change_mood` | Switch avatar mood without speaking |
+| Command | Tier | Description |
+| :--- | :---: | :--- |
+| `speak` | 🟢 Safe | Talk with mood + subtitle segments. |
+| `idle` | 🟢 Safe | Do nothing (common for ambient polls). |
+| `wake_user` | 🟢 Safe | Get user's attention and bring window to front. |
+| `popup` | 🟢 Safe | Show multi-line Agetha popup dialogue. |
+| `change_mood` | 🟢 Safe | Switch avatar mood without speaking. |
 
 ### File System
 
-| Command | Description |
-|---------|-------------|
-| `open_file` | Open file with OS default app |
-| `open_folder` | Open folder in file explorer |
-| `create_folder` | Create directory |
-| `create_file` | Create file with content |
-| `write_file` | Write/append to file (`mode`: overwrite \| append) |
-| `delete_file` | Delete file or folder |
-| `rename_file` | Rename/move file |
-| `list_dir` / `list_directory` | List directory in popup |
-| `read_document` | Read file into AI context |
-| `search_files` | Search by glob pattern |
-| `run_command` | Execute shell command ⚠ |
+| Command | Tier | Description |
+| :--- | :---: | :--- |
+| `open_file` | 🟡 Caution ⚠️ | Open file with OS default app. |
+| `open_folder` | 🟡 Caution ⚠️ | Open folder in file explorer. |
+| `create_folder` | 🟡 Caution ⚠️ | Create directory. |
+| `create_file` | 🟡 Caution ⚠️ | Create file with content. |
+| `write_file` | 🟡 Caution ⚠️ | Write/append to file (`mode`: `overwrite` \| `append`). |
+| `delete_file` | 🔴 Danger ⚠️ | Delete file or folder. |
+| `rename_file` | 🟡 Caution ⚠️ | Rename/move file. |
+| `list_dir` / `list_directory` | 🟢 Safe | List directory contents in popup. |
+| `read_document` | 🟢 Safe | Read file into AI context. |
+| `search_files` | 🟢 Safe | Search filesystem by glob pattern. |
+| `run_command` | 🔴 Danger ⚠️ | Execute native shell command. |
 
 ### Apps, Web & Processes
 
-| Command | Description |
-|---------|-------------|
-| `open_app` | Launch application |
-| `open_url` | Open URL in default browser |
-| `open_browser` | Open URL or search (Google/DuckDuckGo/Bing) |
-| `force_close` | Kill process (user apps auto-allowed; system apps confirmed) |
-| `monitor_process` | Check if process is running |
-| `get_active_app` | Read the current foreground application without a full path |
-| `list_running_apps` | List visible interactive applications, not background services |
-| `computer_use` | Start one explicit opt-in Computer Use Lite session against an authorized app ⚠ |
+| Command | Tier | Description |
+| :--- | :---: | :--- |
+| `open_app` | 🟡 Caution ⚠️ | Launch application binary or URI. |
+| `open_url` | 🟢 Safe | Open URL in default browser. |
+| `open_browser` | 🟢 Safe | Open URL or search (Google/DuckDuckGo/Bing). |
+| `force_close` | 🔴 Danger ⚠️ | Kill process (user apps auto-allowed; system apps confirmed). |
+| `monitor_process` | 🟢 Safe | Check if process is running. |
+| `get_active_app` | 🟢 Safe | Read the current foreground application without a full path. |
+| `list_running_apps` | 🟢 Safe | List visible interactive applications, not background services. |
+| `computer_use` | 🔴 Danger ⚠️ | Start one explicit opt-in Computer Use Lite session against an authorized app. |
 
 ### Window Control
 
-| Command | Description |
-|---------|-------------|
-| `move_window` | Move Agetha's window (coords or direction) |
-| `snap_to_center` | Force Agetha to screen center |
-| `target_window_move` | Move another app's window ⚠ |
-| `target_window_resize` | Resize another app's window ⚠ |
-| `target_window_close` | Close another app's window ⚠ |
+| Command | Tier | Description |
+| :--- | :---: | :--- |
+| `move_window` | 🟢 Safe | Move Agetha's window (coords or direction). |
+| `snap_to_center` | 🟢 Safe | Force Agetha to screen center. |
+| `target_window_move` | 🔴 Danger ⚠️ | Move another app's window. |
+| `target_window_resize` | 🔴 Danger ⚠️ | Resize another app's window. |
+| `target_window_close` | 🔴 Danger ⚠️ | Close another app's window. |
 
 ### System & Media
 
-| Command | Description |
-|---------|-------------|
-| `take_screenshot` | Save PNG screenshot |
-| `set_clipboard` / `copy_to_clipboard` | Copy text to clipboard |
-| `get_clipboard` | Read clipboard into AI context |
-| `system_info` | CPU/RAM/disk report (requires psutil) |
-| `set_volume` | Volume set/mute/unmute |
-| `set_wallpaper` | Change desktop wallpaper |
-| `type_text` | Enter exact Unicode text (`mode`: `auto` \| `unicode` \| `paste` \| `preview` \| `paced`; `speed`: `instant` \| `fast` \| `normal` \| `slow`; optional `restore_clipboard`) ⚠ |
-| `lock_screen` | Lock computer ⚠ |
-| `shutdown` / `restart` | Shutdown/restart with delay ⚠ |
-| `set_reminder` | Timed reminder |
-| `show_notification` | Native OS toast |
-| `show_dialog` | Native info/warning/error/yesno dialog |
-| `play_sound` / `play_emotion_sound` | Play sound or OS emotion sound |
-| `show_error_gif` | Show error animation |
-| `request_screen_read` | Force immediate OCR capture |
-| `analyze_screen_deep` | Explicit complex screenshot/document analysis through optional Unlimited-OCR ⚠ |
-| `search_memory` | BM25 search of long-term memory archive (`query`, optional `limit`) |
-| `search_web` | DuckDuckGo web search (`query`, optional `limit`) — requires `ENABLE_WEB_RAG=yes` ⚠ |
-| `fetch_webpage` | Fetch visible text from a URL (`url`) — requires `ENABLE_WEB_RAG=yes` ⚠ |
-| `glitch_overlay` | Brief harmless CRT glitch overlay (`style`, `duration_ms`) — requires `ENABLE_GLITCH_EFFECTS=yes` |
-| `read_notepad` | Read dashboard notepad (`memory/notepad.txt`) into AI context |
-| `play_virus_trivia` | Open Win95 virus trivia minigame popup |
-| `view_dreams` | Show dream journal popup (`limit` optional) — she dreams during deep sleep |
-| `add_task` | Remember a task for the user (`text`) — requires `ENABLE_TASKS=yes` |
-| `complete_task` | Mark a task done (`task` = id or text match) |
-| `list_tasks` | Show the user's task list in a popup |
-| `view_emotions` | Show emotional state + history popup |
-| `clear_emotions` | Reset emotional state and/or history (`entry_id` or `all`) ⚠ |
-| `set_autostart` | "Start Agetha when I sign in" — create/remove Startup shortcut (`enabled` true/false); requires `ENABLE_AUTOSTART_CONTROL=yes` ⚠ |
-| `open_settings` | Open an allowlisted Windows Settings page (`page`) ⚠ |
-| `set_theme` | Set current-user Windows light/dark theme (`mode`: light/dark/rollback; `scope`: apps/system/both); requires `ENABLE_THEME_CONTROL=yes` ⚠ |
-| `recycle_bin_status` | Aggregate Recycle Bin item count + total size (no filenames) |
-| `clear_memory` | Erase episodic memory (soul.md kept); `memory_scope`: all/recent/old/keep_5 |
-| `view_memory` | Show recent episodic entries in popup |
-
-⚠ = requires user confirmation (Danger or Caution tier)
+| Command | Tier | Description |
+| :--- | :---: | :--- |
+| `take_screenshot` | 🟢 Safe | Save PNG screenshot. |
+| `set_clipboard` / `copy_to_clipboard` | 🟡 Caution ⚠️ | Copy text to clipboard. |
+| `get_clipboard` | 🟡 Caution ⚠️ | Read clipboard into AI context. |
+| `system_info` | 🟢 Safe | CPU/RAM/disk report (requires `psutil`). |
+| `set_volume` | 🟡 Caution ⚠️ | Volume set/mute/unmute. |
+| `set_wallpaper` | 🟡 Caution ⚠️ | Change desktop wallpaper. |
+| `type_text` | 🟡 Caution ⚠️ | Enter exact Unicode text (`mode`: `auto` \| `unicode` \| `paste` \| `preview` \| `paced`; `speed`: `instant` \| `fast` \| `normal` \| `slow`; optional `restore_clipboard`). |
+| `lock_screen` | 🔴 Danger ⚠️ | Lock computer workstation. |
+| `shutdown` / `restart` | 🔴 Danger ⚠️ | Shutdown/restart with delay. |
+| `set_reminder` | 🟢 Safe | Timed desktop reminder. |
+| `show_notification` | 🟢 Safe | Native OS toast notification. |
+| `show_dialog` | 🟢 Safe | Native info/warning/error/yesno dialog. |
+| `play_sound` / `play_emotion_sound` | 🟢 Safe | Play sound or OS emotion sound. |
+| `show_error_gif` | 🟢 Safe | Show error animation. |
+| `request_screen_read` | 🟢 Safe | Force immediate OCR capture. |
+| `analyze_screen_deep` | 🔴 Danger ⚠️ | Explicit complex screenshot/document analysis through optional Unlimited-OCR. |
+| `search_memory` | 🟢 Safe | BM25 search of long-term memory archive (`query`, optional `limit`). |
+| `search_web` | 🟡 Caution ⚠️ | DuckDuckGo web search (`query`, optional `limit`) — requires `ENABLE_WEB_RAG=yes`. |
+| `fetch_webpage` | 🟡 Caution ⚠️ | Fetch visible text from a URL (`url`) — requires `ENABLE_WEB_RAG=yes`. |
+| `glitch_overlay` | 🟢 Safe | Brief harmless CRT glitch overlay (`style`, `duration_ms`) — requires `ENABLE_GLITCH_EFFECTS=yes`. |
+| `read_notepad` | 🟢 Safe | Read dashboard notepad (`memory/notepad.txt`) into AI context. |
+| `play_virus_trivia` | 🟢 Safe | Open Win95 virus trivia minigame popup. |
+| `view_dreams` | 🟢 Safe | Show dream journal popup (`limit` optional) — she dreams during deep sleep. |
+| `add_task` | 🟢 Safe | Remember a task for the user (`text`) — requires `ENABLE_TASKS=yes`. |
+| `complete_task` | 🟢 Safe | Mark a task done (`task` = id or text match). |
+| `list_tasks` | 🟢 Safe | Show the user's task list in a popup. |
+| `view_emotions` | 🟢 Safe | Show emotional state + history popup. |
+| `clear_emotions` | 🔴 Danger ⚠️ | Reset emotional state and/or history (`entry_id` or `all`). |
+| `set_autostart` | 🔴 Danger ⚠️ | "Start Agetha when I sign in" — create/remove Startup shortcut (`enabled` true/false); requires `ENABLE_AUTOSTART_CONTROL=yes`. |
+| `open_settings` | 🟡 Caution ⚠️ | Open an allowlisted Windows Settings page (`page`). |
+| `set_theme` | 🔴 Danger ⚠️ | Set current-user Windows light/dark theme (`mode`: light/dark/rollback; `scope`: apps/system/both); requires `ENABLE_THEME_CONTROL=yes`. |
+| `recycle_bin_status` | 🟢 Safe | Aggregate Recycle Bin item count + total size (no filenames). |
+| `clear_memory` | 🔴 Danger ⚠️ | Erase episodic memory (soul.md kept); `memory_scope`: all/recent/old/keep_5. |
+| `view_memory` | 🟢 Safe | Show recent episodic entries in popup. |
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Option A — Windows Medic Checker (recommended on Windows)
 
-1. Place all project files in one folder
-2. Double-click **`Medic_Checker.bat`** (or run **`Medic_Checker.ps1`** in PowerShell)
-3. The script runs 7 health checks, installs missing packages, compiles modules, then launches Agetha
+1. Place all project files in one folder.
+2. Double-click **`Medic_Checker.bat`** (or run `.\Medic_Checker.ps1` in PowerShell).
+3. The script executes 7 comprehensive health checks, installs missing packages, compiles modules, and launches Agetha.
+
+---
 
 ### Option B — Windows manual
 
 ```powershell
+# 1. Create and activate virtual environment
 py -3.13 -m venv venv
 venv\Scripts\activate
+
+# 2. Install dependencies
 pip install -r requirements.txt
+
+# 3. Create .env and supply your API key
 copy .env.example .env
 # Edit .env — add your Groq API key
+
+# 4. Launch Agetha
 python main.py
 ```
-
-### Option C — Linux manual
-
-Create a Python 3.13 virtual environment, install the distribution's Tk/native
-Tesseract packages when those features are needed, then run:
-
-```bash
-python3.13 -m venv venv
-source venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
-# Edit .env, then:
-python main.py
-```
-
-Medic Checker is Windows-specific. Linux Fast Mode recovery commands are listed
-in the [security and recovery guide](docs/fast_mode_security.md).
 
 ---
 
-## Configuration
+### Option C — Linux manual
 
-### API Keys (`.env` only)
+Create a Python 3.13 virtual environment, install distribution Tk/Tesseract packages if needed, then run:
 
-**Do not put API keys in `config.txt`.** All secrets belong in `.env`:
+```bash
+# 1. Create and activate virtual environment
+python3.13 -m venv venv
+source venv/bin/activate
+
+# 2. Install dependencies
+python -m pip install -r requirements.txt
+
+# 3. Configure credentials
+cp .env.example .env
+# Edit .env, then:
+
+# 4. Launch Agetha
+python main.py
+```
+
+> [!NOTE]
+> Medic Checker is Windows-specific. Linux Fast Mode recovery commands are detailed in the [security and recovery guide](docs/fast_mode_security.md).
+
+---
+
+## ⚙️ Configuration
+
+### 🔑 API Keys (`.env` only)
+
+> [!CAUTION]  
+> **Do not put API keys in `config.txt`.** All secrets belong strictly in `.env`.
 
 ```bash
 copy .env.example .env
@@ -544,7 +569,7 @@ copy .env.example .env
 
 Edit `.env`:
 
-```
+```ini
 GROQ_API_KEY_1=gsk_your_key_here
 GROQ_API_KEY_2=
 # … up to GROQ_API_KEY_10 for rate-limit rotation
@@ -559,195 +584,178 @@ OPENROUTER_API_KEY=sk-or-v1-...
 UNLIMITED_OCR_API_KEY=
 ```
 
-- Groq keys: [console.groq.com](https://console.groq.com)
-- Gemini keys: [Google AI Studio](https://aistudio.google.com/apikey)
-- OpenRouter keys: [openrouter.ai/keys](https://openrouter.ai/keys)
+* **Groq keys:** [console.groq.com](https://console.groq.com)
+* **Gemini keys:** [Google AI Studio](https://aistudio.google.com/apikey)
+* **OpenRouter keys:** [openrouter.ai/keys](https://openrouter.ai/keys)
 
-`.env` overrides matching non-secret keys in `config.txt`, except `FASTER_MODE`
-and all 13 managed profile keys, whose disk-backed transaction remains
-authoritative. A validated active Fast Mode profile reapplies its approved
-managed values afterward. Fast Mode never edits
-`.env`. Never commit `.env` to git (already in `.gitignore`).
+`.env` overrides matching non-secret keys in `config.txt`, except `FASTER_MODE` and all 13 managed profile keys, whose disk-backed transaction remains authoritative. A validated active Fast Mode profile reapplies its approved managed values afterward. Fast Mode never edits `.env`. Never commit `.env` to git (already in `.gitignore`).
 
-### config.txt
+---
+
+### 📄 `config.txt`
 
 All **non-secret** settings live in `config.txt` and are loaded by `app_config.py`. Boolean values accept `yes`/`no`, `true`/`false`, `1`/`0`, or `on`/`off`.
 
 #### AI backend
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `USE_LOCAL_AI` | `no` | Use Ollama instead of cloud APIs |
-| `ENABLE_GROQ` | `yes` | Enable Groq (default cloud backend) |
-| `ENABLE_GEMINI` | `no` | Enable Gemini after Groq or as the primary cloud route when Groq is unavailable |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
-| `ENABLE_OPENROUTER` | `no` | Use OpenRouter instead of Groq |
-| `OPENROUTER_MODEL` | see `config.txt` | OpenRouter model slug |
-| `FASTER_MODE` | `no` | Reversible AI/context/polling/OCR performance profile; restores prior managed values when disabled |
-| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model name |
-| `LOCAL_AI_MODEL` | *(empty)* | Ollama model (`ollama list`) |
-| `LOCAL_AI_TIMEOUT` | `30` | Ollama request timeout (seconds) |
+| :--- | :---: | :--- |
+| `USE_LOCAL_AI` | `no` | Use Ollama instead of cloud APIs. |
+| `ENABLE_GROQ` | `yes` | Enable Groq (default cloud backend). |
+| `ENABLE_GEMINI` | `no` | Enable Gemini after Groq or as primary route when Groq is unavailable. |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name. |
+| `ENABLE_OPENROUTER` | `no` | Use OpenRouter instead of Groq. |
+| `OPENROUTER_MODEL` | *see config* | OpenRouter model slug. |
+| `FASTER_MODE` | `no` | Reversible AI/context/polling/OCR profile; restores prior values when disabled. |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model name. |
+| `LOCAL_AI_MODEL` | *(empty)* | Ollama model (`ollama list`). |
+| `LOCAL_AI_TIMEOUT` | `30` | Ollama request timeout (seconds). |
 
-API keys (`GROQ_API_KEY_*`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
-`UNLIMITED_OCR_API_KEY`) → **`.env` only**, not `config.txt`.
+> [!NOTE]  
+> API keys (`GROQ_API_KEY_*`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `UNLIMITED_OCR_API_KEY`) belong in **`.env` only**, not `config.txt`.
 
 #### AI tuning
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `AI_TEMPERATURE` | `0.85` | Response randomness (0–2) |
-| `AI_MAX_TOKENS` | `400` | Max tokens per reply |
-| `AI_TOP_P` | `0.95` | Nucleus sampling (0–1) |
-| `ENABLE_STREAMING` | `yes` | Stream Groq responses to UI |
-| `ENABLE_AMBIENT_POLLS` | `yes` | Periodic screen-context AI polls when the active profile permits background sensing |
-| `ENABLE_DATETIME_CONTEXT` | `yes` | Include compact local weekday/date/time in every AI prompt |
-| `DATETIME_INCLUDE_SECONDS` | `no` | Include seconds in datetime context |
-| `DATETIME_INCLUDE_TIMEZONE` | `yes` | Include local zone name and UTC offset |
+| :--- | :---: | :--- |
+| `AI_TEMPERATURE` | `0.85` | Response randomness (0–2). |
+| `AI_MAX_TOKENS` | `400` | Max tokens per reply. |
+| `AI_TOP_P` | `0.95` | Nucleus sampling (0–1). |
+| `ENABLE_STREAMING` | `yes` | Stream Groq responses to UI. |
+| `ENABLE_AMBIENT_POLLS` | `yes` | Periodic screen-context AI polls when active profile permits background sensing. |
+| `ENABLE_DATETIME_CONTEXT` | `yes` | Include compact local weekday/date/time in every AI prompt. |
+| `DATETIME_INCLUDE_SECONDS` | `no` | Include seconds in datetime context. |
+| `DATETIME_INCLUDE_TIMEZONE` | `yes` | Include local zone name and UTC offset. |
 
 #### Capability profile
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `COMPACT_MODE` | `yes` | Outer safe profile. `yes` blocks advanced observation/OS effects; `no` is persisted only after the deliberate Full Mode flow |
+| :--- | :---: | :--- |
+| `COMPACT_MODE` | `yes` | Outer safe profile. `yes` blocks advanced observation/OS effects; `no` is persisted only after the deliberate Full Mode flow. |
 
-Fast Mode never manages `COMPACT_MODE`. A previously consented
-`COMPACT_MODE=no` survives restart without replaying the demonstration; Full
-still obeys every individual feature switch below.
+Fast Mode never manages `COMPACT_MODE`. A previously consented `COMPACT_MODE=no` survives restart without replaying the demonstration; Full still obeys every individual feature switch below.
 
 #### Continuation and process awareness
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_AGENT_CONTINUATION` | `yes` | Allow one direct-user goal to use the bounded read-only continuation loop |
-| `AGENT_MAX_STEPS` | `6` | Maximum automatic read-only tool steps per goal |
-| `AGENT_MAX_DURATION_SEC` | `120` | Continuation deadline in seconds |
-| `AGENT_MAX_TOOL_RESULT_CHARS` | `8000` | Maximum provider-facing characters from one tool outcome |
-| `ENABLE_PROCESS_AWARENESS` | `yes` | Enable local foreground/visible/process snapshots in Full; Compact overrides this flag |
-| `PROCESS_CONTEXT_MODE` | `visible_apps` | `off`, `foreground_only`, `visible_apps`, or local `all_processes` inspection |
-| `PROCESS_MAX_VISIBLE_APPS` | `20` | Bound visible application results |
-| `PROCESS_CONTEXT_EXCLUDED_APPS` | *(empty)* | Additional comma-separated sensitive application basenames to suppress |
+| :--- | :---: | :--- |
+| `ENABLE_AGENT_CONTINUATION` | `yes` | Allow one direct-user goal to use the bounded read-only continuation loop. |
+| `AGENT_MAX_STEPS` | `6` | Maximum automatic read-only tool steps per goal. |
+| `AGENT_MAX_DURATION_SEC` | `120` | Continuation deadline in seconds. |
+| `AGENT_MAX_TOOL_RESULT_CHARS` | `8000` | Maximum provider-facing characters from one tool outcome. |
+| `ENABLE_PROCESS_AWARENESS` | `yes` | Enable local foreground/visible/process snapshots in Full; Compact overrides this flag. |
+| `PROCESS_CONTEXT_MODE` | `visible_apps` | `off`, `foreground_only`, `visible_apps`, or local `all_processes` inspection. |
+| `PROCESS_MAX_VISIBLE_APPS` | `20` | Bound visible application results. |
+| `PROCESS_CONTEXT_EXCLUDED_APPS` | *(empty)* | Additional comma-separated sensitive application basenames to suppress. |
 
-`all_processes` does not automatically transmit the full background inventory
-to a cloud provider. Normal context remains minimized; an explicit user process
-listing is required for broader output.
+`all_processes` does not automatically transmit the full background inventory to a cloud provider. Normal context remains minimized; an explicit user process listing is required for broader output.
 
 #### Computer Use Lite (opt-in)
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_COMPUTER_USE` | `no` | Master opt-in for explicit direct-user Computer Use sessions |
-| `COMPUTER_USE_MAX_STEPS` | `30` | Maximum session steps |
-| `COMPUTER_USE_TIMEOUT_SEC` | `120` | Session deadline in seconds |
-| `COMPUTER_USE_PLANNER_PROVIDER` | `inherit` | `inherit`, `groq`, `gemini`, `openrouter`, or `ollama` using existing credentials/config |
-| `COMPUTER_USE_PLANNER_MODEL` | *(empty)* | Optional cheaper planner model; blank inherits the selected route's model |
-| `COMPUTER_USE_PLANNER_CONFIDENCE_MIN` | `0.65` | Below this, reobserve/recover rather than guess |
-| `COMPUTER_USE_RECOVERY_AFTER_FAILURES` | `2` | Repeated failures before primary-model recovery is eligible |
-| `COMPUTER_USE_MAX_RECOVERY_CALLS` | `2` | Hard recovery-call budget |
-| `COMPUTER_USE_ALLOWED_APPS` | *(empty)* | Additional comma-separated application allowlist |
+| :--- | :---: | :--- |
+| `ENABLE_COMPUTER_USE` | `no` | Master opt-in for explicit direct-user Computer Use sessions. |
+| `COMPUTER_USE_MAX_STEPS` | `30` | Maximum session steps. |
+| `COMPUTER_USE_TIMEOUT_SEC` | `120` | Session deadline in seconds. |
+| `COMPUTER_USE_PLANNER_PROVIDER` | `inherit` | `inherit`, `groq`, `gemini`, `openrouter`, or `ollama` using existing credentials. |
+| `COMPUTER_USE_PLANNER_MODEL` | *(empty)* | Optional cheaper planner model; blank inherits the selected route's model. |
+| `COMPUTER_USE_PLANNER_CONFIDENCE_MIN` | `0.65` | Below this, reobserve/recover rather than guess. |
+| `COMPUTER_USE_RECOVERY_AFTER_FAILURES` | `2` | Repeated failures before primary-model recovery is eligible. |
+| `COMPUTER_USE_MAX_RECOVERY_CALLS` | `2` | Hard recovery-call budget. |
+| `COMPUTER_USE_ALLOWED_APPS` | *(empty)* | Additional comma-separated application allowlist. |
 
-Computer Use also requires the Full capability profile and obeys
-`ENABLE_COMMAND_EXECUTION`, Command Guard, protected targets, and Unicode typing
-settings. Fast Mode never changes these permission, provider-selection, profile,
-or safety values. Exact typing payloads are kept local and are not sent to the
-Computer Planner.
+Computer Use also requires the Full capability profile and obeys `ENABLE_COMMAND_EXECUTION`, Command Guard, protected targets, and Unicode typing settings. Fast Mode never changes these permission, provider-selection, profile, or safety values. Exact typing payloads are kept local and are not sent to the Computer Planner.
 
 #### OS permissions
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_COMMAND_EXECUTION` | `yes` | Master switch for all OS commands |
-| `ENABLE_WINDOW_CONTROL` | `yes` | `target_window_*` move/resize/close |
-| `ENABLE_COMMAND_CONFIRMATIONS` | `yes` | Native confirm dialogs for risky cmds |
-| `FORCE_CLOSE_AUTO_ALLOW` | `yes` | Auto-allow `force_close` on user apps |
-| `PROTECTED_PROCESSES` | *(empty)* | Extra comma-separated processes to protect |
+| :--- | :---: | :--- |
+| `ENABLE_COMMAND_EXECUTION` | `yes` | Master switch for all OS commands. |
+| `ENABLE_WINDOW_CONTROL` | `yes` | `target_window_*` move/resize/close. |
+| `ENABLE_COMMAND_CONFIRMATIONS` | `yes` | Native confirm dialogs for risky cmds. |
+| `FORCE_CLOSE_AUTO_ALLOW` | `yes` | Auto-allow `force_close` on user apps. |
+| `PROTECTED_PROCESSES` | *(empty)* | Extra comma-separated processes to protect. |
 
 #### Universal Unicode typing
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_UNICODE_TYPING` | `yes` | Full-only feature gate for `type_text`; the command also requires `ENABLE_COMMAND_EXECUTION` and Command Guard |
-| `UNICODE_TYPING_MODE` | `auto` | Default mode: `auto`, `unicode`, `paste`, `preview`, or `paced` |
-| `UNICODE_TYPING_DELAY_MS` | `20` | Paced chunk delay, clamped to 0–500 ms |
-| `UNICODE_TYPING_PREVIEW_THRESHOLD` | `300` | Long-text preview threshold, clamped to 40–50,000 characters |
-| `UNICODE_TYPING_RESTORE_CLIPBOARD` | `yes` | Restore captured clipboard text only if Agetha's temporary value is still present |
+| :--- | :---: | :--- |
+| `ENABLE_UNICODE_TYPING` | `yes` | Full-only feature gate for `type_text`; requires `ENABLE_COMMAND_EXECUTION` and Command Guard. |
+| `UNICODE_TYPING_MODE` | `auto` | Default mode: `auto`, `unicode`, `paste`, `preview`, or `paced`. |
+| `UNICODE_TYPING_DELAY_MS` | `20` | Paced chunk delay, clamped to 0–500 ms. |
+| `UNICODE_TYPING_PREVIEW_THRESHOLD` | `300` | Long-text preview threshold, clamped to 40–50,000 characters. |
+| `UNICODE_TYPING_RESTORE_CLIPBOARD` | `yes` | Restore captured clipboard text only if Agetha's temporary value is still present. |
 
-`type_text` remains a Caution command. Preflight captures the intended external
-window before confirmation, rejects Agetha and conservative protected/elevated
-targets, revalidates focus before entry and at paced boundaries, and stops on
-focus change, cancellation, or shutdown. Long, multiline, terminal,
-administrator-related, shell-like, sensitive-looking, and explicit-preview
-requests use a Win95 preview; detected sensitive content is hidden. Logs and
-guard descriptions contain counts and method/target metadata, never the typed
-payload.
+`type_text` remains a Caution command. Preflight captures the intended external window before confirmation, rejects Agetha and conservative protected/elevated targets, revalidates focus before entry and at paced boundaries, and stops on focus change, cancellation, or shutdown. Long, multiline, terminal, administrator-related, shell-like, sensitive-looking, and explicit-preview requests use a Win95 preview; detected sensitive content is hidden. Logs and guard descriptions contain counts and method/target metadata, never the typed payload.
 
 #### Context & memory
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `MEMORY_CHARS` | `600` | Long-term memory chars per prompt |
-| `HISTORY_LIMIT` | `6` | Recent conversation turns kept |
-| `FILE_READ_CHARS` | `200` | Max chars when reading files into context |
-| `EPISODIC_PROMPT_LIMIT` | `10` | Episodic memories injected per prompt |
-| `EPISODIC_ENTRY_MAX_CHARS` | `300` | Max chars per episodic entry |
-| `EPISODIC_MAX_ENTRIES` | `50` | Max episodic entries stored |
-| `ENABLE_LONGTERM_MEMORY` | `yes` | Dual-write `summary_memory` to `memory/longterm_memory.jsonl` |
-| `LONGTERM_MEMORY_MAX_RESULTS` | `5` | Max BM25 hits for `search_memory` |
-| `LONGTERM_MEMORY_MAX_CHARS` | `2500` | Max chars of search results injected into prompt |
-| `ENABLE_WEB_RAG` | `no` | Enable `search_web` / `fetch_webpage` (network access) |
-| `WEB_FETCH_MAX_CHARS` | `8000` | Max chars of fetched page text injected into prompt |
-| `WEB_TIMEOUT_SEC` | `10` | HTTP timeout for web search/fetch (seconds) |
-| `WEB_SEARCH_MAX_RESULTS` | `5` | Max DuckDuckGo hits for `search_web` |
-| `ENABLE_GLITCH_EFFECTS` | `no` | Enable harmless `glitch_overlay` visual effect |
-| `GLITCH_MAX_DURATION_MS` | `2000` | Max overlay lifetime in ms (200–5000) |
-| `GLITCH_DEFAULT_STYLE` | `scanlines` | Default style: `scanlines` \| `static` \| `rgb_split` \| `flicker` \| `bsod` \| `matrix` \| `tear` |
-| `GLITCH_MOOD_AUTO` | `no` | Auto brief glitch on deep moods (`manic`, `angry`, `dominant`, `paranoid`) when glitches enabled |
-| `GLITCH_FULLSCREEN` | `no` | Use fullscreen overlay instead of corner window |
-| `ENABLE_COMPANION_STATS_CONTEXT` | `yes` | Inject virus-registry stats + CPU heat hints into AI prompt |
+| :--- | :---: | :--- |
+| `MEMORY_CHARS` | `600` | Long-term memory chars per prompt. |
+| `HISTORY_LIMIT` | `6` | Recent conversation turns kept. |
+| `FILE_READ_CHARS` | `200` | Max chars when reading files into context. |
+| `EPISODIC_PROMPT_LIMIT` | `10` | Episodic memories injected per prompt. |
+| `EPISODIC_ENTRY_MAX_CHARS` | `300` | Max chars per episodic entry. |
+| `EPISODIC_MAX_ENTRIES` | `50` | Max episodic entries stored. |
+| `ENABLE_LONGTERM_MEMORY` | `yes` | Dual-write `summary_memory` to `memory/longterm_memory.jsonl`. |
+| `LONGTERM_MEMORY_MAX_RESULTS` | `5` | Max BM25 hits for `search_memory`. |
+| `LONGTERM_MEMORY_MAX_CHARS` | `2500` | Max chars of search results injected into prompt. |
+| `ENABLE_WEB_RAG` | `no` | Enable `search_web` / `fetch_webpage` (network access). |
+| `WEB_FETCH_MAX_CHARS` | `8000` | Max chars of fetched page text injected into prompt. |
+| `WEB_TIMEOUT_SEC` | `10` | HTTP timeout for web search/fetch (seconds). |
+| `WEB_SEARCH_MAX_RESULTS` | `5` | Max DuckDuckGo hits for `search_web`. |
+| `ENABLE_GLITCH_EFFECTS` | `no` | Enable harmless `glitch_overlay` visual effect. |
+| `GLITCH_MAX_DURATION_MS` | `2000` | Max overlay lifetime in ms (200–5000). |
+| `GLITCH_DEFAULT_STYLE` | `scanlines` | Default style: `scanlines` \| `static` \| `rgb_split` \| `flicker` \| `bsod` \| `matrix` \| `tear`. |
+| `GLITCH_MOOD_AUTO` | `no` | Auto brief glitch on deep moods (`manic`, `angry`, `dominant`, `paranoid`) when enabled. |
+| `GLITCH_FULLSCREEN` | `no` | Use fullscreen overlay instead of corner window. |
+| `ENABLE_COMPANION_STATS_CONTEXT` | `yes` | Inject virus-registry stats + CPU heat hints into AI prompt. |
 
 #### Presence & realism (v4.0.0)
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_CIRCADIAN_RHYTHM` | `yes` | Internal clock flavors her mood by time of day |
-| `RHYTHM_NIGHT_START` | `23` | Hour (0–23) her "deep night" drowsy window begins |
-| `RHYTHM_NIGHT_END` | `6` | Hour (0–23) it ends (window wraps midnight) |
-| `ENABLE_DREAMS` | `yes` | She dreams during deep sleep → `memory/dreams.jsonl`; recalls on waking |
-| `DREAMS_MAX_ENTRIES` | `40` | Max dream records kept (5–500) |
-| `ENABLE_TASKS` | `yes` | `add_task` / `complete_task` / `list_tasks` → `memory/tasks.json` |
-| `TASKS_MAX_ENTRIES` | `100` | Max stored tasks (10–1000); oldest completed pruned first |
+| :--- | :---: | :--- |
+| `ENABLE_CIRCADIAN_RHYTHM` | `yes` | Internal clock flavors her mood by time of day. |
+| `RHYTHM_NIGHT_START` | `23` | Hour (0–23) her "deep night" drowsy window begins. |
+| `RHYTHM_NIGHT_END` | `6` | Hour (0–23) it ends (window wraps midnight). |
+| `ENABLE_DREAMS` | `yes` | She dreams during deep sleep → `memory/dreams.jsonl`; recalls on waking. |
+| `DREAMS_MAX_ENTRIES` | `40` | Max dream records kept (5–500). |
+| `ENABLE_TASKS` | `yes` | `add_task` / `complete_task` / `list_tasks` → `memory/tasks.json`. |
+| `TASKS_MAX_ENTRIES` | `100` | Max stored tasks (10–1000); oldest completed pruned first. |
 
 #### Polyglot presence controls
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_PRESENCE_ETIQUETTE` | `yes` | Apply local interruption, voice, focus, movement, and queue policy |
-| `PRESENCE_FULLSCREEN_SILENT` | `yes` | Suppress nonessential popup/voice/focus behavior in fullscreen or presentation state |
-| `PRESENCE_DISMISS_COOLDOWN_SEC` | `900` | Bounded backoff after repeated dismissals (10–86,400 s) |
-| `PRESENCE_RAPID_TYPING_COOLDOWN_SEC` | `30` | Delay nonurgent reactions after rapid input (1–3,600 s) |
-| `QUIET_HOURS_START` / `QUIET_HOURS_END` | *(empty)* | Optional local `HH:MM` quiet-hours window; both empty disables it |
-| `ENABLE_TERMINAL_SENTINEL` | `no` | Enable the Full-only local confirmed-error observer; Compact and an empty allowlist both keep it inactive |
-| `TERMINAL_SENTINEL_APPS` | *(empty)* | Comma-separated process/application allowlist |
-| `TERMINAL_SENTINEL_TITLE_PATTERNS` | *(empty)* | Comma-separated safe title patterns for explicitly allowed targets |
-| `TERMINAL_SENTINEL_COOLDOWN_SEC` | `120` | Local duplicate-notification cooldown, clamped to 10–86,400 s |
-| `ENABLE_SENSES_PANEL` | `yes` | Allow Full Dashboard → Senses to show passive local capability state; Compact hides the entry |
+| :--- | :---: | :--- |
+| `ENABLE_PRESENCE_ETIQUETTE` | `yes` | Apply local interruption, voice, focus, movement, and queue policy. |
+| `PRESENCE_FULLSCREEN_SILENT` | `yes` | Suppress nonessential popup/voice/focus behavior in fullscreen or presentation state. |
+| `PRESENCE_DISMISS_COOLDOWN_SEC` | `900` | Bounded backoff after repeated dismissals (10–86,400 s). |
+| `PRESENCE_RAPID_TYPING_COOLDOWN_SEC` | `30` | Delay nonurgent reactions after rapid input (1–3,600 s). |
+| `QUIET_HOURS_START` / `QUIET_HOURS_END` | *(empty)* | Optional local `HH:MM` quiet-hours window; both empty disables it. |
+| `ENABLE_TERMINAL_SENTINEL` | `no` | Enable the Full-only local confirmed-error observer. |
+| `TERMINAL_SENTINEL_APPS` | *(empty)* | Comma-separated process/application allowlist. |
+| `TERMINAL_SENTINEL_TITLE_PATTERNS` | *(empty)* | Comma-separated safe title patterns for explicitly allowed targets. |
+| `TERMINAL_SENTINEL_COOLDOWN_SEC` | `120` | Local duplicate-notification cooldown, clamped to 10–86,400 s. |
+| `ENABLE_SENSES_PANEL` | `yes` | Allow Full Dashboard → Senses to show passive local capability state. |
 
 #### Emotion & Windows integration (v5.0.0)
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_EMOTION_ENGINE` | `yes` | Persistent valence/arousal/trust/loneliness + emotional history |
-| `EMOTION_BASELINE_VALENCE` | `0` | Resting valence (−100..100) |
-| `EMOTION_BASELINE_AROUSAL` | `30` | Resting arousal (0..100) |
-| `EMOTION_BASELINE_TRUST` | `50` | Resting trust (0..100) |
-| `EMOTION_BASELINE_LONELINESS` | `25` | Resting loneliness (0..100) |
-| `EMOTION_DECAY_PER_HOUR` | `0.10` | Fraction of distance-to-baseline recovered per hour |
-| `EMOTION_HISTORY_MAX` | `200` | Max emotional-history records (20–1000) |
-| `ENABLE_AUTOSTART_CONTROL` | `no` | Allow `set_autostart` ("Start Agetha when I sign in") |
-| `ENABLE_THEME_CONTROL` | `no` | Allow `set_theme` (HKCU light/dark only) |
-| `ENABLE_STATUS_PROVIDERS` | `no` | Coarse battery/disk/network observations |
-| `STATUS_POLL_INTERVAL_SEC` | `300` | Status-provider poll interval (60–3600) |
-| `ENABLE_TRAY` | `no` | Optional tray scaffold (requires user-installed `pystray`) |
-| `TRAY_BACKGROUND_CLOSE` | `no` | Keep running in tray on close (only if tray is active) |
+| :--- | :---: | :--- |
+| `ENABLE_EMOTION_ENGINE` | `yes` | Persistent valence/arousal/trust/loneliness + emotional history. |
+| `EMOTION_BASELINE_VALENCE` | `0` | Resting valence (−100..100). |
+| `EMOTION_BASELINE_AROUSAL` | `30` | Resting arousal (0..100). |
+| `EMOTION_BASELINE_TRUST` | `50` | Resting trust (0..100). |
+| `EMOTION_BASELINE_LONELINESS` | `25` | Resting loneliness (0..100). |
+| `EMOTION_DECAY_PER_HOUR` | `0.10` | Fraction of distance-to-baseline recovered per hour. |
+| `EMOTION_HISTORY_MAX` | `200` | Max emotional-history records (20–1000). |
+| `ENABLE_AUTOSTART_CONTROL` | `no` | Allow `set_autostart` ("Start Agetha when I sign in"). |
+| `ENABLE_THEME_CONTROL` | `no` | Allow `set_theme` (HKCU light/dark only). |
+| `ENABLE_STATUS_PROVIDERS` | `no` | Coarse battery/disk/network observations. |
+| `STATUS_POLL_INTERVAL_SEC` | `300` | Status-provider poll interval (60–3600). |
+| `ENABLE_TRAY` | `no` | Optional tray scaffold (requires user-installed `pystray`). |
+| `TRAY_BACKGROUND_CLOSE` | `no` | Keep running in tray on close (only if tray is active). |
 
 #### Web RAG security
 
@@ -772,114 +780,116 @@ The glitch effect is **disabled by default** (`ENABLE_GLITCH_EFFECTS = no`). Whe
 #### Behavior & timing
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `SCREEN_POLL_INTERVAL_SEC` | `120` | Ambient screen poll interval |
-| `TOUCH_COOLDOWN_SEC` | `10` | Click-GIF touch cooldown |
-| `WAKE_DELAY_SEC` | `8` | Delay before wake-from-sleep |
-| `LOAF_TIMER_MIN` | `15` | Minutes idle before loaf animation |
+| :--- | :---: | :--- |
+| `SCREEN_POLL_INTERVAL_SEC` | `120` | Ambient screen poll interval. |
+| `TOUCH_COOLDOWN_SEC` | `10` | Click-GIF touch cooldown. |
+| `WAKE_DELAY_SEC` | `8` | Delay before wake-from-sleep. |
+| `LOAF_TIMER_MIN` | `15` | Minutes idle before loaf animation. |
 
 #### Mood & attention snap
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_ATTENTION_SNAP` | `yes` | Auto-return to idle after mood timeout |
-| `MOOD_SNAP_*_SEC` | varies | Per-mood snap threshold (see `config.txt`) |
+| :--- | :---: | :--- |
+| `ENABLE_ATTENTION_SNAP` | `yes` | Auto-return to idle after mood timeout. |
+| `MOOD_SNAP_*_SEC` | *varies* | Per-mood snap threshold (see `config.txt`). |
 
 #### Screen reader / OCR
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_SCREEN_READER` | `yes` | Enable OCR screen context when the active profile permits sensing |
-| `ENABLE_PRINTWINDOW_FALLBACK` | `yes` | On Windows, retry a uniform/blank focused MSS frame with PrintWindow without changing target/exclusion policy |
-| `OCR_MAX_DIMENSION` | `2560` | Max capture dimension (px) |
-| `OCR_FOCUSED_WINDOW_ONLY` | `yes` | OCR focused window only |
-| `OCR_CHANGE_DETECTION` | `yes` | Skip Tesseract while the captured target is visually unchanged |
-| `OCR_CHANGE_THRESHOLD` | `0.025` | Normalized thumbnail-difference threshold (clamped 0-1) |
-| `OCR_FORCE_REFRESH_SECONDS` | `20` | Re-run OCR periodically even without visible change |
-| `OCR_STATE_EXPIRY_SECONDS` | `300` | Expire inactive per-window change state |
-| `OCR_PATTERN_COOLDOWN_SECONDS` | `60` | Suppress repeated notifications for the same normalized event |
-| `OCR_PATTERN_CONFIRM_SCANS` | `1` | Matching scans required before a normal-confidence event |
-| `OCR_LOW_CONFIDENCE_CONFIRM_SCANS` | `2` | Matching scans required for lower-confidence OCR events |
-| `OCR_PATTERN_CLEAR_SCANS` | `2` | Clean scans required before an event becomes inactive |
-| `OCR_MIN_WORD_CONFIDENCE` | `30` | Minimum Tesseract confidence for spatial word output |
-| `OCR_MIN_PATTERN_CONFIDENCE` | `45` | Minimum structured-line confidence for pattern matching |
-| `OCR_PREPROCESSING` | `auto` | `basic` grayscale scaling or adaptive local preprocessing |
-| `OCR_LANGUAGES` | `eng` | Installed Tesseract language codes, joined with `+` |
-| `OCR_PSM` | `auto` | Tesseract page segmentation: `auto`, `3`, `6`, or `11` |
-| `OCR_EXCLUDED_APPS` | *(empty)* | Comma-separated application names excluded from automatic capture |
-| `OCR_EXCLUDED_TITLE_PATTERNS` | *(empty)* | Comma-separated title text or `re:regex` exclusions |
-| `OCR_REDACT_SENSITIVE_TEXT` | `yes` | Redact common keys, tokens, and passwords before AI context |
-| `INCLUDE_WINDOW_TITLE_IN_CONTEXT` | `yes` | Add window title to AI context |
-| `TESSERACT_PATH` | *(empty)* | Custom path to `tesseract.exe` |
-| `DEEP_OCR_BACKEND` | `none` | Optional explicit backend: `none` or `unlimited_ocr` |
-| `UNLIMITED_OCR_SERVER_URL` | `http://127.0.0.1:10000` | Separate OpenAI-compatible service root |
-| `UNLIMITED_OCR_MODEL` | `Unlimited-OCR` | Served model name |
-| `UNLIMITED_OCR_TIMEOUT_SECONDS` | `180` | Explicit deep-analysis timeout (clamped 10–1200 seconds) |
-| `UNLIMITED_OCR_ALLOW_REMOTE` | `no` | Allow a non-loopback service; screenshots may leave this PC |
-| `DEEP_OCR_MAX_OUTPUT_CHARS` | `12000` | Maximum OCR text returned to AI context (clamped 1000–50000) |
+| :--- | :---: | :--- |
+| `ENABLE_SCREEN_READER` | `yes` | Enable OCR screen context when active profile permits sensing. |
+| `ENABLE_PRINTWINDOW_FALLBACK` | `yes` | On Windows, retry uniform/blank MSS frame with PrintWindow. |
+| `OCR_MAX_DIMENSION` | `2560` | Max capture dimension (px). |
+| `OCR_FOCUSED_WINDOW_ONLY` | `yes` | OCR focused window only. |
+| `OCR_CHANGE_DETECTION` | `yes` | Skip Tesseract while captured target is visually unchanged. |
+| `OCR_CHANGE_THRESHOLD` | `0.025` | Normalized thumbnail-difference threshold (clamped 0-1). |
+| `OCR_FORCE_REFRESH_SECONDS` | `20` | Re-run OCR periodically even without visible change. |
+| `OCR_STATE_EXPIRY_SECONDS` | `300` | Expire inactive per-window change state. |
+| `OCR_PATTERN_COOLDOWN_SECONDS`| `60` | Suppress repeated notifications for the same normalized event. |
+| `OCR_PATTERN_CONFIRM_SCANS` | `1` | Matching scans required before a normal-confidence event. |
+| `OCR_LOW_CONFIDENCE_CONFIRM_SCANS` | `2` | Matching scans required for lower-confidence OCR events. |
+| `OCR_PATTERN_CLEAR_SCANS` | `2` | Clean scans required before an event becomes inactive. |
+| `OCR_MIN_WORD_CONFIDENCE` | `30` | Minimum Tesseract confidence for spatial word output. |
+| `OCR_MIN_PATTERN_CONFIDENCE`| `45` | Minimum structured-line confidence for pattern matching. |
+| `OCR_PREPROCESSING` | `auto` | `basic` grayscale scaling or adaptive local preprocessing. |
+| `OCR_LANGUAGES` | `eng` | Installed Tesseract language codes, joined with `+`. |
+| `OCR_PSM` | `auto` | Tesseract page segmentation: `auto`, `3`, `6`, or `11`. |
+| `OCR_EXCLUDED_APPS` | *(empty)* | Comma-separated application names excluded from automatic capture. |
+| `OCR_EXCLUDED_TITLE_PATTERNS` | *(empty)* | Comma-separated title text or `re:regex` exclusions. |
+| `OCR_REDACT_SENSITIVE_TEXT` | `yes` | Redact common keys, tokens, and passwords before AI context. |
+| `INCLUDE_WINDOW_TITLE_IN_CONTEXT` | `yes` | Add window title to AI context. |
+| `TESSERACT_PATH` | *(empty)* | Custom path to `tesseract.exe`. |
+| `DEEP_OCR_BACKEND` | `none` | Optional explicit backend: `none` or `unlimited_ocr`. |
+| `UNLIMITED_OCR_SERVER_URL` | `http://127.0.0.1:10000` | Separate OpenAI-compatible service root. |
+| `UNLIMITED_OCR_MODEL` | `Unlimited-OCR` | Served model name. |
+| `UNLIMITED_OCR_TIMEOUT_SECONDS`| `180` | Explicit deep-analysis timeout (clamped 10–1200 seconds). |
+| `UNLIMITED_OCR_ALLOW_REMOTE`| `no` | Allow non-loopback service; screenshots may leave this PC. |
+| `DEEP_OCR_MAX_OUTPUT_CHARS` | `12000` | Maximum OCR text returned to AI context (clamped 1000–50000). |
 
 #### UI
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `WINDOW_TOPMOST` | `yes` | Keep Agetha above other windows |
-| `UI_SCALE` | `auto` | Scale the UI from display resolution, or set a manual value from `0.75` to `2.50` |
-| `WINDOW_START_X` / `Y` | `80` | Initial window position |
-| `SUBTITLE_CHAR_DELAY` | `0.035` | Typewriter subtitle speed (seconds) |
-| `ANIMATION_SPEED` | `0.6` | GIF speed multiplier |
-| `ENABLE_CRT_CLOSE_ANIMATION` | `yes` | Brief CRT collapse before graceful application exit |
-| `REDUCED_MOTION` | `no` | Disable decorative window movement and animated glow |
-| `ENABLE_MOOD_GLOW` | `no` | Enable a subtle mood-coloured GIF border |
-| `MOOD_GLOW_ANIMATED` | `yes` | Pulse the enabled mood border; reduced motion makes it static |
-| `MOOD_GLOW_INTERVAL_MS` | `150` | Glow refresh interval (clamped to 100-1000 ms) |
-| `ENABLE_MOOD_MOTION` | `yes` | Allow guarded motion once per completed response |
-| `MOOD_MOTION_COOLDOWN_SECONDS` | `4` | Motion cooldown (clamped to 1-60 seconds) |
+| :--- | :---: | :--- |
+| `WINDOW_TOPMOST` | `yes` | Keep Agetha above other windows. |
+| `UI_SCALE` | `auto` | Scale UI from display resolution, or set manual `0.75` to `2.50`. |
+| `WINDOW_START_X` / `Y` | `80` | Initial window position. |
+| `SUBTITLE_CHAR_DELAY` | `0.035` | Typewriter subtitle speed (seconds). |
+| `ANIMATION_SPEED` | `0.6` | GIF speed multiplier. |
+| `ENABLE_CRT_CLOSE_ANIMATION` | `yes` | Brief CRT collapse before graceful application exit. |
+| `REDUCED_MOTION` | `no` | Disable decorative window movement and animated glow. |
+| `ENABLE_MOOD_GLOW` | `no` | Enable a subtle mood-coloured GIF border. |
+| `MOOD_GLOW_ANIMATED` | `yes` | Pulse enabled mood border; reduced motion makes it static. |
+| `MOOD_GLOW_INTERVAL_MS` | `150` | Glow refresh interval (clamped to 100-1000 ms). |
+| `ENABLE_MOOD_MOTION` | `yes` | Allow guarded motion once per completed response. |
+| `MOOD_MOTION_COOLDOWN_SECONDS`| `4` | Motion cooldown (clamped to 1-60 seconds). |
 
 Click the **📊** button in the title bar (beside minimize) to open the **Dashboard** — retro progress bars for CPU/RAM/disk/core heat, virus registry stats, notepad, and limited config toggles (safe yes/no keys).
 
 #### Medic_Checker (launcher)
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `SKIP_TESSERACT_CHECK` | `no` | Skip Tesseract step in health check |
-| `SKIP_ASSET_CHECK` | `no` | Skip asset file verification |
-| `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages |
-| `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run |
-| `CHECK_FOR_UPDATES` | `yes` | Compare the source-owned build version to the GitHub release API |
-| `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check |
-| `TARGET_APP_ALIASES` | see `config.txt` | Map short names to window title fragments |
-| `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match |
-| `DRY_RUN_MODE` | `no` | Confirm each command before executing |
-| `OCR_CUSTOM_PATTERNS` | *(empty)* | `label:mood:regex` patterns (semicolon-separated) |
-| `OCR_PAUSE_WHILE_TYPING_SEC` | `8` | Skip OCR for N seconds after keyboard/touch |
+| :--- | :---: | :--- |
+| `SKIP_TESSERACT_CHECK` | `no` | Skip Tesseract step in health check. |
+| `SKIP_ASSET_CHECK` | `no` | Skip asset file verification. |
+| `AUTO_PIP_INSTALL` | `yes` | Auto `pip install` missing packages. |
+| `CREATE_DESKTOP_SHORTCUT` | `no` | Create Desktop shortcut on Medic_Checker run. |
+| `CHECK_FOR_UPDATES` | `yes` | Compare source version to GitHub release API. |
+| `GITHUB_RELEASES_URL` | *(empty)* | GitHub API URL for update check. |
+| `TARGET_APP_ALIASES` | *see config* | Map short names to window title fragments. |
+| `WINDOW_PICKER_ON_AMBIGUOUS` | `yes` | Dialog when multiple windows match. |
+| `DRY_RUN_MODE` | `no` | Confirm each command before executing. |
+| `OCR_CUSTOM_PATTERNS` | *(empty)* | `label:mood:regex` patterns (semicolon-separated). |
+| `OCR_PAUSE_WHILE_TYPING_SEC` | `8` | Skip OCR for N seconds after keyboard/touch. |
 
 #### Voice & drag-and-drop
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `ENABLE_VOICE` | `no` | Show 🎤 microphone button |
-| `USE_LOCAL_STT` | `no` | `yes` = faster-whisper offline; `no` = Google STT online |
-| `ENABLE_FILE_DRAG_DROP` | `yes` | Drop files onto Agetha's GIF |
+| :--- | :---: | :--- |
+| `ENABLE_VOICE` | `no` | Show 🎤 microphone button. |
+| `USE_LOCAL_STT` | `no` | `yes` = faster-whisper offline; `no` = Google STT online. |
+| `ENABLE_FILE_DRAG_DROP` | `yes` | Drop files onto Agetha's GIF. |
 
 #### Voice output (retro bleeps + optional TTS)
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `VOICE_OUTPUT_MODE` | `bleeps_only` | `bleeps_only` (Undertale-style bleeps), `tts_only`, or `both` |
-| `VOICE_TTS_ENGINE` | `pyttsx3` | `pyttsx3` (OS voices), `edge_tts` (free cloud neural), or `kokoro` (local neural) |
-| `TTS_RATE` | `165` | Speech rate (80–300); mapped per engine |
-| `TTS_VOLUME` | `0.8` | TTS volume (0.0–1.0) |
-| `TTS_VOICE_NAME` | *(empty)* | Engine-specific voice id (see below) |
+| :--- | :---: | :--- |
+| `VOICE_OUTPUT_MODE` | `bleeps_only` | `bleeps_only` (Undertale-style bleeps), `tts_only`, or `both`. |
+| `VOICE_TTS_ENGINE` | `pyttsx3` | `pyttsx3` (OS voices), `edge_tts` (cloud neural), or `kokoro` (local neural). |
+| `TTS_RATE` | `165` | Speech rate (80–300); mapped per engine. |
+| `TTS_VOLUME` | `0.8` | TTS volume (0.0–1.0). |
+| `TTS_VOICE_NAME` | *(empty)* | Engine-specific voice id. |
 
-| `VOICE_TTS_ENGINE` | Install | `TTS_VOICE_NAME` examples | Notes |
-|--------------------|---------|---------------------------|-------|
-| `pyttsx3` | `pip install "pyttsx3>=2.90,<3.0.0"` | `Zira`, `David` | Offline OS voices |
-| `edge_tts` | `pip install "edge-tts>=6.1.0,<8.0.0"` | `en-US-AvaNeural` | Needs internet; no API key |
-| `kokoro` | `pip install "kokoro>=0.9.4" soundfile` | `af_heart`, `am_adam` | Offline; needs `espeak-ng` on PATH |
+| `VOICE_TTS_ENGINE` | Install Command | `TTS_VOICE_NAME` Examples | Engine Characteristics |
+| :--- | :--- | :--- | :--- |
+| `pyttsx3` | `pip install "pyttsx3>=2.90,<3.0.0"` | `Zira`, `David` | Offline OS voices; immediate. |
+| `edge_tts` | `pip install "edge-tts>=6.1.0,<8.0.0"` | `en-US-AvaNeural` | Cloud neural; needs internet; no API key. |
+| `kokoro` | `pip install "kokoro>=0.9.4" soundfile` | `af_heart`, `am_adam` | Offline neural; needs `espeak-ng` on PATH. |
 
 TTS is **optional**. The app falls back to bleeps if the chosen engine package is missing.
 
 Subtitles and TTS are not perfectly synced in v1 — bleeps follow mood; TTS runs on a background worker thread.
+
+---
 
 ### Local AI (Ollama)
 
@@ -888,7 +898,9 @@ USE_LOCAL_AI = yes
 LOCAL_AI_MODEL = llama3
 ```
 
-Run `ollama list` to see installed models.
+Run `ollama list` in your shell to view installed models.
+
+---
 
 ### OpenRouter (optional)
 
@@ -897,10 +909,9 @@ ENABLE_OPENROUTER = yes
 OPENROUTER_MODEL = google/gemma-4-31b-it:free
 ```
 
-Add `OPENROUTER_API_KEY=…` to `.env`. Ignored when `USE_LOCAL_AI = yes`.
-Gemma 4 31B Free is the safe default. For users who accept paid OpenRouter
-usage, the recommended model is `deepseek/deepseek-v4-flash-0731`. Model
-availability and pricing may change, so verify both on OpenRouter before use.
+Add `OPENROUTER_API_KEY=…` to `.env`. Ignored when `USE_LOCAL_AI = yes`. Gemma 4 31B Free is the safe default. For users who accept paid OpenRouter usage, the recommended model is `deepseek/deepseek-v4-flash-0731`. Model availability and pricing may change, so verify both on OpenRouter before use.
+
+---
 
 ### Voice + drag-and-drop (optional)
 
@@ -909,6 +920,8 @@ ENABLE_VOICE = yes
 USE_LOCAL_STT = no          # no = Google STT; yes = faster-whisper
 ENABLE_FILE_DRAG_DROP = yes
 ```
+
+---
 
 ### Voice output / TTS (optional)
 
@@ -930,21 +943,21 @@ Run **Medic_Checker** after enabling — it installs the package for `VOICE_TTS_
 
 ---
 
-## Medic_Checker v5.7.5 (PowerShell)
+## 🩺 Medic_Checker v5.7.5 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
-| Step | Check |
-|------|-------|
-| Pre-flight | Current core modules + `requirements.txt` present |
-| [A–D] | ARM64/Snapdragon x64 Python detection & auto-install |
-| [1/7] | Python installed |
-| [2/7] | Virtual environment create/activate |
-| [3/7] | Packages from `requirements.txt`; optional voice/STT/DnD/**TTS** when enabled in `config.txt` |
-| [4/7] | Tesseract OCR plus non-fatal optional deep-OCR configuration status |
-| [5/7] | All 21 required assets in `assets\` |
-| [6/7] | Config, `.env`, `memory\` (`soul.md`, episodic, long-term JSONL, stats, notepad); reports `ENABLE_LONGTERM_MEMORY` and `VOICE_OUTPUT_MODE` |
-| [7/7] | `py_compile` all 35 checked Python modules; feature and reliability import checks |
+| Step | Diagnostic Target | Scope & Validation |
+| :---: | :--- | :--- |
+| **Pre-flight** | Module Presence | Current core modules + `requirements.txt` present. |
+| **[A–D]** | ARM64 / Snapdragon | Auto-detection of Snapdragon/ARM64 Windows hosts & x64 Python setup under Prism. |
+| **[1/7]** | Python Runtime | Python 3.13.x detection and architecture verification. |
+| **[2/7]** | Virtual Environment | Virtual environment create / activate verification. |
+| **[3/7]** | Dependencies | Packages from `requirements.txt`; optional voice/STT/DnD/**TTS** when enabled. |
+| **[4/7]** | Tesseract & Deep OCR | Tesseract OCR plus non-fatal optional deep-OCR configuration status. |
+| **[5/7]** | Asset Integrity | All 21 required assets verified in `assets/`. |
+| **[6/7]** | Persistence & Config | `config.txt`, `.env`, and `memory/` (`soul.md`, episodic, long-term JSONL, stats, notepad). |
+| **[7/7]** | Bytecode Compilation | `py_compile` on all 35 checked Python modules; feature & reliability import verification. |
 
 **Color codes:** `[ OK ]` green · `[WARN]` yellow · `[FAIL]` red
 
@@ -952,38 +965,29 @@ On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used 
 
 ---
 
-## Requirements
+## 📦 Requirements
 
-- **Operating system:** Windows 10/11. Windows 11 ARM64/Snapdragon is supported
-  through x64 Python running under Prism.
-- **Python 3.13.x** recommended (3.14 may have compatibility issues)
-- **Tesseract OCR** — [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) (optional, enables screen reading)
-- **Assets** — included in this repository; keep the `assets` folder beside the application files
-- **Groq or Gemini API key** (in `.env`), **OpenRouter** (optional), or **Ollama** for AI responses
-- **Microphone** — optional, for voice input (`ENABLE_VOICE = yes`)
-- **PyAudio** — optional, required for microphone (installed by Medic_Checker)
+- **Operating system:** Windows 10/11. Windows 11 ARM64/Snapdragon is supported through x64 Python running under Prism.
+- **Python 3.13.x** recommended (3.14 may have compatibility issues).
+- **Tesseract OCR** — [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) (optional, enables screen reading).
+- **Assets** — included in this repository; keep the `assets` folder beside the application files.
+- **Groq or Gemini API key** (in `.env`), **OpenRouter** (optional), or **Ollama** for AI responses.
+- **Microphone** — optional, for voice input (`ENABLE_VOICE = yes`).
+- **PyAudio** — optional, required for microphone (installed by Medic_Checker).
 
 ### Frozen executable caveat
 
-The repository contains existing PyInstaller-style spec files. `main.spec`
-currently produces a console artifact named `main.exe`, has an empty data-file
-manifest, and does not by itself stage `assets/`; its presence is not proof that
-a current distributable was built or smoke-tested. In frozen mode Agetha uses
-the executable directory—not the process current directory or `_MEIPASS`—for
-mutable config/state and sibling assets. Do not add a new packager for this
-feature, and report source tests, frozen compatibility audits, local builds, and
-real `.exe` smoke tests separately. Windows ARM64 remains the documented x64
-process-under-Prism path, not a native ARM64 executable claim.
+The repository contains existing PyInstaller-style spec files. `main.spec` currently produces a console artifact named `main.exe`, has an empty data-file manifest, and does not by itself stage `assets/`; its presence is not proof that a current distributable was built or smoke-tested. In frozen mode Agetha uses the executable directory—not the process current directory or `_MEIPASS`—for mutable config/state and sibling assets. Do not add a new packager for this feature, and report source tests, frozen compatibility audits, local builds, and real `.exe` smoke tests separately. Windows ARM64 remains the documented x64 process-under-Prism path, not a native ARM64 executable claim.
 
 ### Python packages (`requirements.txt`)
 
 **Core:**
-```
+```text
 pillow, numpy, requests, groq, pyautogui, pytesseract, mss, pygame-ce, psutil
 ```
 
 **Optional** (installed by Medic_Checker when enabled in `config.txt`):
-```
+```text
 SpeechRecognition, PyAudio          # ENABLE_VOICE = yes
 faster-whisper                    # USE_LOCAL_STT = yes
 tkinterdnd2                       # ENABLE_FILE_DRAG_DROP = yes (Windows)
@@ -992,214 +996,178 @@ pyttsx3 / edge-tts / kokoro       # VOICE_OUTPUT_MODE = tts_only|both (per VOICE
 
 ---
 
-## Controls
+## 🎮 Controls
 
-| Input | Action |
-|-------|--------|
-| Text box + Enter | Send message to Agetha |
-| Placeholder hint | Provider/model identity; Groq also shows `key N/M` without an inferred quota percentage |
-| 🎤 button | Toggle microphone (`ENABLE_VOICE = yes`) — speak, pause ~1.2 s, text is sent |
-| Drop file on GIF | File drag event (`ENABLE_FILE_DRAG_DROP = yes`) |
-| Click GIF | Touch event (`__touch__`) — 10 s cooldown |
-| 📊 title-bar button | Open Dashboard; choose **Open Senses Control Panel** for the local capability snapshot |
-| **Escape** | Cancel an in-flight AI/Continuation request and the active Computer Use session |
-| Title bar | Drag window |
-
----
-
-## Architecture Overview
-
-```
-Config → central Compact/Full capability policy
-        ↓
-Direct user goal / eligible ambient poll
-        ↓
-screen_reader.py + process_awareness.py → minimized local context
-        ↓
-ai_engine.py → Groq / Gemini / OpenRouter / Ollama → validated response
-        ↓
-continuation.py → bounded status / read-only tool / final decisions
-        ↓
-capability decision → command_guard.py + command_handlers.py → guarded actions
-
-Explicit opt-in Computer Use goal
-        ↓
-Observer → isolated one-action Planner → deterministic Policy
-        ↓
-PID/name/creation-time/HWND/bounds revalidation → Executor → Verifier
-```
-
-Confirmed local observations also flow through
-`core.observation_bus.ObservationBus`. Publication itself performs no UI,
-provider, memory, or command work. `core.presence_etiquette.PresenceEtiquette`
-decides whether an eligible local reaction may interrupt. Terminal Sentinel is
-fed only from the existing confirmed-new-event OCR path, and the Senses panel
-reads already-known runtime/configuration state on an application-owned worker.
-
-Continuation tool results are untrusted read-only observations, never a new
-user-authority source. Computer Use is a separate default-off direct-user
-session and is Full-only: planner output is only a proposal and cannot bypass
-the Compact outer gate, deterministic policy, target locking, Command Guard,
-cancellation, or shutdown.
+| Input | Target Element | Action / Behavior |
+| :--- | :--- | :--- |
+| **Text box + <kbd>Enter</kbd>** | Chat Bar | Send message to Agetha. |
+| **Placeholder hint** | Chat Bar | Provider/model identity; Groq also shows `key N/M` without inferred quota percentage. |
+| **🎤 button** | Chat Row | Toggle microphone (`ENABLE_VOICE = yes`) — speak, pause ~1.2 s, text is sent. |
+| **Drop file on GIF** | Avatar Canvas | File drag event (`ENABLE_FILE_DRAG_DROP = yes`). |
+| **Click GIF** | Avatar Canvas | Touch event (`__touch__`) — 10 s cooldown. |
+| **📊 title-bar button** | Window Bar | Open Dashboard; choose **Open Senses Control Panel** for local capability snapshot. |
+| **<kbd>Escape</kbd>** | Global | Cancel in-flight AI/Continuation request and active Computer Use session. |
+| **Title bar drag** | Window Bar | Move companion window across desktop. |
 
 ---
 
-## Changelog (Overhaul)
+## 🏛️ Architecture Overview
 
-### v5.7 — Quality-of-life, privacy, and lifecycle hardening
+```mermaid
+flowchart TD
+    UserGoal[Direct User Goal / Eligible Ambient Poll] --> CapPolicy{Capability Policy Check}
 
-- Privacy-safe file drops reject unsafe targets and expose only bounded metadata
-  to AI providers.
-- Structured request origins prevent ordinary user text from impersonating
-  internal touch, reminder, ambient, file, or tool-result events.
-- External OCR, memory, web, document, notepad, and tool context is sanitized
-  through a shared fail-closed boundary.
-- Background workers, Tk callbacks, AI-operation ownership, window picking,
-  Linux minimize recovery, and shutdown now have coordinated lifecycle guards.
-- Direct command dispatch rejects malformed and unknown payloads, while existing
-  confirmations, protected-process rules, and Fast Mode locks remain intact.
+    CapPolicy -->|COMPACT MODE| CompactLoop[Chat / Memory / Read-Only Continuations]
+    CapPolicy -->|FULL MODE| Sensing[Spatial OCR & Process Senses]
 
-### v5.5.5 — Reversible Fast Mode 2.0
+    CompactLoop --> Engine[AI Engine: Groq / Gemini / OpenRouter / Ollama]
+    Sensing --> Engine
 
-- Official support covers Windows 10/11 x64, Windows 11 ARM64/Snapdragon through
-  x64 Python under Prism, and Linux through the existing desktop paths. macOS is
-  retired and unsupported.
-- Atomic, schema-versioned Fast Mode snapshots preserve only the approved
-  non-secret settings and restore them without replacing unrelated config.
-- Startup reconciliation repairs managed drift idempotently, quarantines an
-  invalid inactive snapshot, and fails closed when an active snapshot is invalid.
-- Manual third-value edits are preserved as the post-Fast preference; comments,
-  ordering, blank lines, unknown keys, and unmanaged changes survive every write.
-- The dashboard uses one coordinated activation/restoration transaction and
-  identifies managed fields. Medic Checker reports profile health and requires
-  confirmation before recovery changes the configuration. If reconciliation is
-  declined, Medic still launches Agetha but sends a one-launch signal that skips
-  automatic Fast Mode reconciliation, so the declined change remains pending.
-- Adaptive request profiles keep user/command/ambient prompts compact while
-  allowing bounded tool and explicit deep-analysis requests to use the saved
-  pre-Fast output ceiling and a complete-analysis segment rule. Their final
-  answer stays available for follow-up while raw tool/OCR payloads are omitted
-  from retained history. Groq, OpenRouter, and Ollama retain provider parity.
-- Unchanged Fast Mode ambient scans now skip the provider call locally; meaningful
-  OCR events and pending presence observations still reach the AI.
+    Engine --> Classifier{Response Classifier}
+    
+    Classifier -->|Final Reply| Subtitles[Subtitles & Avatar Emotion Animation]
+    Classifier -->|Read-Only Lookup| ContSession[Bounded Continuation Loop]
+    Classifier -->|OS Command| GuardCheck{Command Guard Validation}
 
-### v5.5.1 — Reliability, Windows ARM, high-DPI UI, and lifecycle polish
+    ContSession -->|Untrusted Tool Outcome| Engine
 
-- Reliable focused-window OCR with immutable capture metadata, exact desktop
-  coordinates, change detection, event deduplication, exclusions, redaction,
-  and stale-window result rejection.
-- Optional explicit Unlimited-OCR integration for complex layouts; Tesseract
-  remains the automatic local backend and ambient turns cannot invoke deep OCR.
-- Correct x64 Python detection and selection on ARM64/Snapdragon Windows hosts,
-  including Prism-aware architecture reporting and virtual-environment repair.
-- Resolution/DPI-aware companion and dashboard scaling for Surface-class
-  2880x1920 displays.
-- Compact local weekday/date/time/timezone prompt context across Groq,
-  OpenRouter, and Ollama modes.
-- Cancellable CRT shutdown, optional mood glow, centralized guarded mood motion,
-  and idempotent graceful cleanup.
-- Repository-wide architecture, runtime-flow, module, configuration, Windows ARM,
-  and testing documentation under `docs/`.
+    GuardCheck -->|Safe Tier| Execute[Execute System Command]
+    GuardCheck -->|Caution / Danger| MessageBox{Native OS MessageBox Confirmation}
 
-### v5.0.0 — Emotion Engine & Transparent Windows Integration (Phase 6)
+    MessageBox -->|User Approved| Execute
+    MessageBox -->|User Denied| Declination["'Fine. I won't.'"]
 
-- **`emotion_engine.py`** — four-dimension persistent state with inertia, decay, milestone-based `long_absence` (once per stage), injectable UTC clock, RLock-guarded RMW
-- **`emotional_history.py`** — bounded relationship_state; deterministic category templates; sanitized untrusted prompt labels; view/remove/reset; denials never become resentment
-- **`audit_log.py`** — local append-only log for autostart/theme changes
-- **`autostart.py`** — "Start Agetha when I sign in" via visible Startup-folder shortcut; path-normalized target+args validation; refuses foreign/malformed overwrite/delete; PowerShell env-var path passing
-- **`win_integration.py`** — allowlisted `open_settings`, `set_theme` with existence-aware rollback chain, `recycle_bin_status` aggregates only
-- **`status_providers.py`** — default-off coarse local observations; pausable
-- **`tray_scaffold.py`** — optional pystray compatibility scaffold (not bundled; silent when absent)
-- All gated Windows mutations are Danger/Caution + config-default-off where required; Medic/docs/tests updated (`tests/test_phase6_v5.py`)
+    Execute --> LocalState[Observation Bus & Memory Persistence]
+```
 
-### v4.0.0 — Presence & Realism (Phase 5)
+Confirmed local observations also flow through `core.observation_bus.ObservationBus`. Publication itself performs no UI, provider, memory, or command work. `core.presence_etiquette.PresenceEtiquette` decides whether an eligible local reaction may interrupt. Terminal Sentinel is fed only from the existing confirmed-new-event OCR path, and the Senses panel reads already-known runtime/configuration state on an application-owned worker.
 
-- **`rhythm.py`** — circadian internal clock: six day-phases flavor her energy and mood (drowsy deep-night whispers, sharp mornings); compact `INTERNAL CLOCK` block injected into AI context
-- **`dreams.py`** — dream journal: entering deep sleep weaves fragments of real episodic/long-term memories into surreal dream entries (`memory/dreams.jsonl`); one-shot `DREAM RECALL` on waking; new `view_dreams` command
-- **`tasks.py`** — task keeper: `add_task` / `complete_task` / `list_tasks` persisted to `memory/tasks.json`; pending tasks injected into ambient context so she nags in character
-- All new commands are **Safe tier** (they only touch `memory/`); features are config-gated and degrade gracefully when disabled
-- **Config:** `ENABLE_CIRCADIAN_RHYTHM`, `RHYTHM_NIGHT_START/END`, `ENABLE_DREAMS`, `DREAMS_MAX_ENTRIES`, `ENABLE_TASKS`, `TASKS_MAX_ENTRIES`
-- **Medic_Checker v4.0** — compiles 23 modules, imports Phase 1–5 extensions, reports `dreams.jsonl` / `tasks.json` status
-- **Tests:** `tests/test_phase5_v4.py` (29 tests — rhythm phases, dream lifecycle, task CRUD, command wiring)
+Continuation tool results are untrusted read-only observations, never a new user-authority source. Computer Use is a separate default-off direct-user session and is Full-only: planner output is only a proposal and cannot bypass the Compact outer gate, deterministic policy, target locking, Command Guard, cancellation, or shutdown.
 
-### v3.5.0 — Voice, OpenRouter & UX (tamsamas upstream patterns)
+---
 
-- **`voice_input.py`** — microphone input with Google STT or local faster-whisper
-- **File drag-and-drop** — drop files onto the GIF (`tkinterdnd2`)
-- **OpenRouter** — optional cloud backend (`ENABLE_OPENROUTER`, key in `.env`)
-- **Token status UI (historical)** — the original estimate was later replaced
-  by truthful provider/model and Groq key index/count display
-- **`FASTER_MODE`** — shorter prompts for lower token cost
-- **Secrets** — API keys documented as `.env` only; `config.txt` has no key lines
-- **Medic_Checker** — optional package install for voice/STT/DnD/TTS; 16-module compile check + Phase 1+2 import verify
+## 📜 Changelog (Overhaul)
 
-### v3.0 — Quality & Safety Overhaul
+### 🌟 v5.7 — Quality-of-life, privacy, and lifecycle hardening
 
-- **`command_guard.py`** — 3-tier native confirmation dialogs with Windows warning icons
-- **`command_handlers.py`** — command pattern refactor (43 handlers); `main.py` slimmed to ~1,650 lines
-- **`system_commands.py`** — OS utilities extracted (volume, wallpaper, shutdown, clipboard…)
-- **`utils.py`** — shared platform helpers, logging, `.env` loader
-- **New commands:** `open_url`, `system_info`, `set_volume`, `set_wallpaper`, `search_files`, `type_text`, `lock_screen`, `shutdown`, `restart`, `set_reminder`, `get_clipboard`, `open_folder`, `target_window_close`, `change_mood`, `clear_memory`
-- **UX:** Escape to abort AI; input stays enabled during ambient polls; subtitle errors on failed file ops
-- **Reliability:** null guards, retry limits, config validation, OCR resolution cap
-- **Medic_Checker.ps1 v3.6** — Phase 1+2 modules, TTS optional install, memory file status
+- Privacy-safe file drops reject unsafe targets and expose only bounded metadata to AI providers.
+- Structured request origins prevent ordinary user text from impersonating internal touch, reminder, ambient, file, or tool-result events.
+- External OCR, memory, web, document, notepad, and tool context is sanitized through a shared fail-closed boundary.
+- Background workers, Tk callbacks, AI-operation ownership, window picking, Linux minimize recovery, and shutdown now have coordinated lifecycle guards.
+- Direct command dispatch rejects malformed and unknown payloads, while existing confirmations, protected-process rules, and Fast Mode locks remain intact.
 
-### Phase 3 — Spatial OCR
+### ⚡ v5.5.5 — Reversible Fast Mode 2.0
 
-- Focused window capture, spatial word coordinates, regex pattern registry, 4-layer context injection
+- Official support covers Windows 10/11 x64, Windows 11 ARM64/Snapdragon through x64 Python under Prism, and Linux through the existing desktop paths. macOS is retired and unsupported.
+- Atomic, schema-versioned Fast Mode snapshots preserve only the approved non-secret settings and restore them without replacing unrelated config.
+- Startup reconciliation repairs managed drift idempotently, quarantines an invalid inactive snapshot, and fails closed when an active snapshot is invalid.
+- Manual third-value edits are preserved as the post-Fast preference; comments, ordering, blank lines, unknown keys, and unmanaged changes survive every write.
+- The dashboard uses one coordinated activation/restoration transaction and identifies managed fields. Medic Checker reports profile health and requires confirmation before recovery changes the configuration. If reconciliation is declined, Medic still launches Agetha but sends a one-launch signal that skips automatic Fast Mode reconciliation, so the declined change remains pending.
+- Adaptive request profiles keep user/command/ambient prompts compact while allowing bounded tool and explicit deep-analysis requests to use the saved pre-Fast output ceiling and a complete-analysis segment rule. Their final answer stays available for follow-up while raw tool/OCR payloads are omitted from retained history. Groq, OpenRouter, and Ollama retain provider parity.
+- Unchanged Fast Mode ambient scans now skip the provider call locally; meaningful OCR events and pending presence observations still reach the AI.
 
-### Phase 2 — Psychology & Windows
+### 🔍 v5.5.1 — Reliability, Windows ARM, high-DPI UI, and lifecycle polish
 
-- Deep moods, attention snap, external window control via ctypes, native emotion sounds
+- Reliable focused-window OCR with immutable capture metadata, exact desktop coordinates, change detection, event deduplication, exclusions, redaction, and stale-window result rejection.
+- Optional explicit Unlimited-OCR integration for complex layouts; Tesseract remains the automatic local backend and ambient turns cannot invoke deep OCR.
+- Correct x64 Python detection and selection on ARM64/Snapdragon Windows hosts, including Prism-aware architecture reporting and virtual-environment repair.
+- Resolution/DPI-aware companion and dashboard scaling for Surface-class 2880x1920 displays.
+- Compact local weekday/date/time/timezone prompt context across Groq, OpenRouter, and Ollama modes.
+- Cancellable CRT shutdown, optional mood glow, centralized guarded mood motion, and idempotent graceful cleanup.
+- Repository-wide architecture, runtime-flow, module, configuration, Windows ARM, and testing documentation under `docs/`.
 
-### Phase 1 — Foundation
+### 🎭 v5.0.0 — Emotion Engine & Transparent Windows Integration (Phase 6)
 
-- Core command dispatch, OCR loop, Groq integration, memory system
+- **`emotion_engine.py`** — four-dimension persistent state with inertia, decay, milestone-based `long_absence` (once per stage), injectable UTC clock, RLock-guarded RMW.
+- **`emotional_history.py`** — bounded relationship_state; deterministic category templates; sanitized untrusted prompt labels; view/remove/reset; denials never become resentment.
+- **`audit_log.py`** — local append-only log for autostart/theme changes.
+- **`autostart.py`** — "Start Agetha when I sign in" via visible Startup-folder shortcut; path-normalized target+args validation; refuses foreign/malformed overwrite/delete; PowerShell env-var path passing.
+- **`win_integration.py`** — allowlisted `open_settings`, `set_theme` with existence-aware rollback chain, `recycle_bin_status` aggregates only.
+- **`status_providers.py`** — default-off coarse local observations; pausable.
+- **`tray_scaffold.py`** — optional pystray compatibility scaffold (not bundled; silent when absent).
+- All gated Windows mutations are Danger/Caution + config-default-off where required; Medic/docs/tests updated (`tests/test_phase6_v5.py`).
 
-### Screen-monitoring validation
+### 🌙 v4.0.0 — Presence & Realism (Phase 5)
 
-The mock-based reliability suite does not need a display, Tesseract executable,
-network service, CUDA, or platform desktop utilities:
+- **`rhythm.py`** — circadian internal clock: six day-phases flavor her energy and mood (drowsy deep-night whispers, sharp mornings); compact `INTERNAL CLOCK` block injected into AI context.
+- **`dreams.py`** — dream journal: entering deep sleep weaves fragments of real episodic/long-term memories into surreal dream entries (`memory/dreams.jsonl`); one-shot `DREAM RECALL` on waking; new `view_dreams` command.
+- **`tasks.py`** — task keeper: `add_task` / `complete_task` / `list_tasks` persisted to `memory/tasks.json`; pending tasks injected into ambient context so she nags in character.
+- All new commands are **Safe tier** (they only touch `memory/`); features are config-gated and degrade gracefully when disabled.
+- **Config:** `ENABLE_CIRCADIAN_RHYTHM`, `RHYTHM_NIGHT_START/END`, `ENABLE_DREAMS`, `DREAMS_MAX_ENTRIES`, `ENABLE_TASKS`, `TASKS_MAX_ENTRIES`.
+- **Medic_Checker v4.0** — compiles 23 modules, imports Phase 1–5 extensions, reports `dreams.jsonl` / `tasks.json` status.
+- **Tests:** `tests/test_phase5_v4.py` (29 tests — rhythm phases, dream lifecycle, task CRUD, command wiring).
+
+### 🎙️ v3.5.0 — Voice, OpenRouter & UX (tamsamas upstream patterns)
+
+- **`voice_input.py`** — microphone input with Google STT or local faster-whisper.
+- **File drag-and-drop** — drop files onto the GIF (`tkinterdnd2`).
+- **OpenRouter** — optional cloud backend (`ENABLE_OPENROUTER`, key in `.env`).
+- **Token status UI (historical)** — the original estimate was later replaced by truthful provider/model and Groq key index/count display.
+- **`FASTER_MODE`** — shorter prompts for lower token cost.
+- **Secrets** — API keys documented as `.env` only; `config.txt` has no key lines.
+- **Medic_Checker** — optional package install for voice/STT/DnD/TTS; 16-module compile check + Phase 1+2 import verify.
+
+### 🛡️ v3.0 — Quality & Safety Overhaul
+
+- **`command_guard.py`** — 3-tier native confirmation dialogs with Windows warning icons.
+- **`command_handlers.py`** — command pattern refactor (43 handlers); `main.py` slimmed to ~1,650 lines.
+- **`system_commands.py`** — OS utilities extracted (volume, wallpaper, shutdown, clipboard…).
+- **`utils.py`** — shared platform helpers, logging, `.env` loader.
+- **New commands:** `open_url`, `system_info`, `set_volume`, `set_wallpaper`, `search_files`, `type_text`, `lock_screen`, `shutdown`, `restart`, `set_reminder`, `get_clipboard`, `open_folder`, `target_window_close`, `change_mood`, `clear_memory`.
+- **UX:** Escape to abort AI; input stays enabled during ambient polls; subtitle errors on failed file ops.
+- **Reliability:** null guards, retry limits, config validation, OCR resolution cap.
+- **Medic_Checker.ps1 v3.6** — Phase 1+2 modules, TTS optional install, memory file status.
+
+### 🔬 Phase 3 — Spatial OCR
+- Focused window capture, spatial word coordinates, regex pattern registry, 4-layer context injection.
+
+### 🧠 Phase 2 — Psychology & Windows
+- Deep moods, attention snap, external window control via ctypes, native emotion sounds.
+
+### 🧱 Phase 1 — Foundation
+- Core command dispatch, OCR loop, Groq integration, memory system.
+
+---
+
+### 🧪 Screen-monitoring validation
+
+The mock-based reliability suite does not need a display, Tesseract executable, network service, CUDA, or platform desktop utilities:
 
 ```powershell
 python -m unittest tests.test_screen_monitoring_reliability -v
 python -m unittest discover -s tests
 ```
 
-For manual acceptance, verify focused capture and coordinate placement on every
-monitor; own-window and configured-exclusion skips; unchanged, forced-refresh,
-and changed-frame statuses; repeated/cleared error events; rapid standard/deep
-requests; shutdown during OCR; and external-context redaction. Linux desktop
-fallbacks are additionally covered by mocked headless tests. macOS behavior is
-outside the supported validation matrix as of v5.5.5.
+For manual acceptance, verify focused capture and coordinate placement on every monitor; own-window and configured-exclusion skips; unchanged, forced-refresh, and changed-frame statuses; repeated/cleared error events; rapid standard/deep requests; shutdown during OCR; and external-context redaction. Linux desktop fallbacks are additionally covered by mocked headless tests. macOS behavior is outside the supported validation matrix as of v5.5.5.
 
 ---
 
-## Warning & Disclaimer
+## ⚠️ Warning & Disclaimer
 
-**Agetha Mod is experimental software provided "as is".**
-
-By using this software you accept full responsibility for any outcome. The author is not liable for data loss, system instability, unexpected behavior, or damages from OS commands Agetha executes (even with confirmation dialogs).
+> [!CAUTION]  
+> **Agetha Mod is experimental software provided "AS IS".**  
+> By using this software you accept full responsibility for any outcome. The author is not liable for data loss, system instability, unexpected behavior, or damages from OS commands Agetha executes (even with confirmation dialogs).
 
 ### Recommended usage
 
-- Review source code before running
-- Keep `ENABLE_COMMAND_EXECUTION = yes` only if you trust the AI + confirmation layer
-- Store API keys in `.env`, never in committed files
-- Test on a non-critical machine first
+- Review source code before running.
+- Keep `ENABLE_COMMAND_EXECUTION = yes` only if you trust the AI + confirmation layer.
+- Store API keys in `.env`, never in committed files.
+- Test on a non-critical machine first.
 
 ---
 
-## License & Credits
+## 📜 License & Credits
 
-**License:** GNU General Public License v3.0 (GPL-3.0) — see `LICENSE`
+* **License:** GNU General Public License v3.0 (GPL-3.0) — see [`LICENSE`](LICENSE) for details.
 
-**Credits:**
+### Credits:
 - **Agetha Mod** — [SiriusNovyx](https://github.com/SiriusNovyx/Agetha.exe)
 - **Original Agetha.exe** — [tamsamas](https://github.com/tamsamas/Agetha.exe)
+- **Original author:** [@tomiszivacs](https://github.com/tomiszivacs)
 
 Fork support and [issue reports](https://github.com/SiriusNovyx/Agetha.exe/issues) belong to SiriusNovyx. The original upstream project does not maintain or support this fork.
 
-Feedback, bug reports, and pull requests welcome.
+Feedback, bug reports, and pull requests are welcome.
 
-Have fun — and try not to make Agetha too angry.
+Have fun — and try not to make Agetha too angry!
