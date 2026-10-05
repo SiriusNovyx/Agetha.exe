@@ -1,4 +1,4 @@
-# Agetha Mod — Overhaul Edition
+# Agetha Mod - Overhaul Edition
 
 <div align="center">
 
@@ -22,25 +22,25 @@
 ---
 
 > [!IMPORTANT]
-> ### ⚠️ Project Status Notice
+> ### Project Status Notice
 >
 > **The original [Agetha.exe](https://github.com/tamsamas/Agetha.exe) by [@tamsamas](https://github.com/tamsamas) has been discontinued.**  
 > The original author has stepped away from the project, citing the difficulty of maintaining it over time. We deeply respect that decision and are grateful for the foundation they built.
 >
-> **This fork ([Agetha Mod](https://github.com/SiriusNovyx/Agetha.exe)) will aim to continue maintenance as best as possible**, though it is maintained by a single person in their spare time — so updates may be irregular.
+> **This fork ([Agetha Mod](https://github.com/SiriusNovyx/Agetha.exe)) will aim to continue maintenance as best as possible**, though it is maintained by a single person in their spare time - so updates may be irregular.
 >
 > ---
 >
-> ### 🙏 A Personal Note from the Fork Maintainer
+> ### A Personal Note from me.
 >
-> I want to sincerely apologize for the state of this project. Over time, this fork has grown in ways that weren't always planned or well-organized — features were added impulsively, things got messy, and the codebase became harder to navigate than it should be. If you've cloned this and felt confused or overwhelmed, that's on me.
+> I want to sincerely apologize for the state of this project. Over time, this fork has grown in ways that weren't always planned or well-organized - features were added impulsively, things got messy, and the codebase became harder to navigate than it should be. If you've cloned this and felt confused or overwhelmed, that's on me.
 >
 > I'm sorry for:
 > - Adding features that may feel unnecessary, bloated, or out of scope
 > - The inconsistent code quality and documentation gaps
 > - Making this harder to maintain than the original ever was
 >
-> I'll do my best to clean things up over time. Thank you for your patience and for using this project at all. 💙
+> I'll do my best to clean things up over time. Thank you for your patience and for using this project at all. 
 
 ---
 
@@ -51,8 +51,8 @@
 
 ## 📑 Table of Contents
 
-- [⚠️ Project Status Notice](#️-project-status-notice)
-  - [🙏 A Personal Note from the Fork Maintainer](#-a-personal-note-from-the-fork-maintainer)
+- [Project Status Notice](#️-project-status-notice)
+  - [A Personal Note from the Fork Maintainer](#-a-personal-note-from-the-fork-maintainer)
 - [Developer Documentation](#developer-documentation)
 - [Platform Support](#platform-support)
 - [About](#about)
@@ -79,9 +79,9 @@
   - [Window Control](#window-control)
   - [System & Media](#system--media)
 - [Quick Start](#quick-start)
-  - [Option A — Windows Medic Checker (recommended on Windows)](#option-a--windows-medic-checker-recommended-on-windows)
-  - [Option B — Windows manual](#option-b--windows-manual)
-  - [Option C — Linux manual](#option-c--linux-manual)
+  - [Option A - Windows Medic Checker (recommended on Windows)](#option-a--windows-medic-checker-recommended-on-windows)
+  - [Option B - Windows manual](#option-b--windows-manual)
+  - [Option C - Linux manual](#option-c--linux-manual)
 - [Configuration](#configuration)
   - [API Keys (.env only)](#api-keys-env-only)
   - [config.txt Reference](#configtxt)
@@ -124,7 +124,7 @@ For a code-map-first view of the architecture, runtime flows, module ownership, 
 
 ## 🤖 About
 
-Agetha is a **desktop AI companion** — a small always-on-top Windows 95–style window with an animated character who lives on your machine. She chats, remembers context across sessions, and can use configured providers:
+Agetha is a **desktop AI companion** - a small always-on-top Windows 95–style window with an animated character who lives on your machine. She chats, remembers context across sessions, and can use configured providers:
 
 * ⚡ **Groq** *(default cloud provider, fast inference)*
 * ♊ **Google Gemini** *(multimodal & alternative cloud route)*
@@ -174,10 +174,10 @@ The Compact Dashboard uses the existing classic/upstream-compatible basic surfac
 
 ### 👁️ Spatial OCR & Focused Window Scanning
 
-- **Targeted scanning** — captures only the active foreground window (~4× faster than full-desktop OCR).
-- **Spatial mapping** — maps words to desktop coordinates (e.g. `TypeError@(320,458)`); Agetha can move her window next to an on-screen error.
-- **Pattern registry** — regex detection for Python tracebacks, PowerShell errors, build failures, npm errors, security alerts, and more.
-- **Multi-monitor & DPI** — per-monitor DPI awareness and correct physical pixel coordinates.
+- **Targeted scanning** - captures only the active foreground window (~4× faster than full-desktop OCR).
+- **Spatial mapping** - maps words to desktop coordinates (e.g. `TypeError@(320,458)`); Agetha can move her window next to an on-screen error.
+- **Pattern registry** - regex detection for Python tracebacks, PowerShell errors, build failures, npm errors, security alerts, and more.
+- **Multi-monitor & DPI** - per-monitor DPI awareness and correct physical pixel coordinates.
 
 ---
 
@@ -209,11 +209,11 @@ Tesseract remains the default real-time backend; Unlimited-OCR is still used onl
 
 The current tree adds a local-first Polyglot Presence foundation without changing the public v5.7.5 release label:
 
-- **Language-neutral multilingual voice** — Agetha mirrors the user's current language and approximate conversational register without inventing translation, transliteration, gendered speech, honorifics, cultural particles, formality, or slang. This is character guidance, not a global output filter: quoted text, documents, code, and exact text requested for typing remain unchanged. English, Thai, Japanese, Chinese, Korean, Arabic, Russian, French, mixed-script text, and emoji are validation vectors rather than personality preferences.
-- **Universal Unicode typing** — `type_text` preserves the exact string and supports `auto`, `unicode`, `paste`, `preview`, and `paced` modes. Windows uses Win32 Unicode input first; Xorg uses guarded clipboard paste where its optional desktop tools are available; Wayland copies for a manual paste when global synthetic input is restricted. It never appends <kbd>Enter</kbd>, <kbd>Return</kbd>, or <kbd>Tab</kbd>.
-- **Observation Bus and Presence Etiquette** — bounded typed local events are kept separate from provider, memory, notification, and command eligibility. Local rules suppress or defer nonurgent interruptions during fullscreen, presentation, rapid typing, quiet hours, dismissal backoff, sleep, or shutdown without making an AI request.
-- **Terminal Sentinel** — an opt-in, empty-allowlist-by-default developer helper reuses confirmed new OCR error events. Its local notification offers **Explain**, **Dismiss**, and **Ignore Pattern**; no provider request occurs until the user selects Explain, and explanations cannot authorize model-suggested OS commands.
-- **Senses Control Panel** — the Dashboard can open an honest snapshot of Vision, Hearing, Memory, Network & AI, Actions, and Presence. Refresh uses local/configured state, performs no paid provider probe, and never displays API-key values.
+- **Language-neutral multilingual voice** - Agetha mirrors the user's current language and approximate conversational register without inventing translation, transliteration, gendered speech, honorifics, cultural particles, formality, or slang. This is character guidance, not a global output filter: quoted text, documents, code, and exact text requested for typing remain unchanged. English, Thai, Japanese, Chinese, Korean, Arabic, Russian, French, mixed-script text, and emoji are validation vectors rather than personality preferences.
+- **Universal Unicode typing** - `type_text` preserves the exact string and supports `auto`, `unicode`, `paste`, `preview`, and `paced` modes. Windows uses Win32 Unicode input first; Xorg uses guarded clipboard paste where its optional desktop tools are available; Wayland copies for a manual paste when global synthetic input is restricted. It never appends <kbd>Enter</kbd>, <kbd>Return</kbd>, or <kbd>Tab</kbd>.
+- **Observation Bus and Presence Etiquette** - bounded typed local events are kept separate from provider, memory, notification, and command eligibility. Local rules suppress or defer nonurgent interruptions during fullscreen, presentation, rapid typing, quiet hours, dismissal backoff, sleep, or shutdown without making an AI request.
+- **Terminal Sentinel** - an opt-in, empty-allowlist-by-default developer helper reuses confirmed new OCR error events. Its local notification offers **Explain**, **Dismiss**, and **Ignore Pattern**; no provider request occurs until the user selects Explain, and explanations cannot authorize model-suggested OS commands.
+- **Senses Control Panel** - the Dashboard can open an honest snapshot of Vision, Hearing, Memory, Network & AI, Actions, and Presence. Refresh uses local/configured state, performs no paid provider probe, and never displays API-key values.
 
 See the [manual validation checklist](docs/testing/polyglot_presence_manual.md) and the [future Polyglot Presence roadmap](docs/roadmap/polyglot_presence_roadmap.md). Roadmap features A–O are design-only and **planned / not implemented**.
 
@@ -221,11 +221,11 @@ See the [manual validation checklist](docs/testing/polyglot_presence_manual.md) 
 
 ### ⚙️ Bounded Continuation, Process Awareness & Computer Use Lite
 
-- **True bounded continuation** — one direct user goal may produce a short status, one or more allowlisted read-only lookups, and a later final answer. Sessions have step/time/result limits, generation-safe cancellation, and no recursive AI-turn loop. Tool results remain untrusted and cannot authorize a state-changing command or start Computer Use.
-- **Application awareness** — Agetha distinguishes the foreground application, visible interactive windows, and background processes. Identity combines PID, executable basename, and creation time where available; provider context is minimized and sensitive applications are suppressed.
-- **Computer Use Lite** — an opt-in, **disabled-by-default** Windows-first observe → one-action plan → policy → execute → verify loop. Every effect is locked to PID/name/creation-time/HWND/bounds and the allowed app. Exact text stays behind a local payload reference and reuses guarded Unicode typing.
-- **Cost-aware planning** — a small isolated planner can use an existing Groq/Gemini/OpenRouter/Ollama route. Local verification avoids unnecessary calls; repeated ambiguity may use a bounded primary-model recovery call.
-- **Immediate stop** — a non-activating Win95 status window provides **STOP**, and <kbd>Escape</kbd> cancels the same session generation. Late planner results cannot produce input after cancellation.
+- **True bounded continuation** - one direct user goal may produce a short status, one or more allowlisted read-only lookups, and a later final answer. Sessions have step/time/result limits, generation-safe cancellation, and no recursive AI-turn loop. Tool results remain untrusted and cannot authorize a state-changing command or start Computer Use.
+- **Application awareness** - Agetha distinguishes the foreground application, visible interactive windows, and background processes. Identity combines PID, executable basename, and creation time where available; provider context is minimized and sensitive applications are suppressed.
+- **Computer Use Lite** - an opt-in, **disabled-by-default** Windows-first observe → one-action plan → policy → execute → verify loop. Every effect is locked to PID/name/creation-time/HWND/bounds and the allowed app. Exact text stays behind a local payload reference and reuses guarded Unicode typing.
+- **Cost-aware planning** - a small isolated planner can use an existing Groq/Gemini/OpenRouter/Ollama route. Local verification avoids unnecessary calls; repeated ambiguity may use a bounded primary-model recovery call.
+- **Immediate stop** - a non-activating Win95 status window provides **STOP**, and <kbd>Escape</kbd> cancels the same session generation. Late planner results cannot produce input after cancellation.
 
 There is no real accessibility/UI-Automation backend in this phase; the honest unavailable abstraction falls back to local OCR controls. Xorg support is degraded, autonomous Computer Use is unavailable on Wayland, and full visual vision-model Computer Use remains future work. See [`docs/continuation_engine.md`](docs/continuation_engine.md), [`docs/computer_use.md`](docs/computer_use.md), and the unperformed [25-item manual checklist](docs/testing/computer_use_manual.md).
 
@@ -243,21 +243,21 @@ There is no real accessibility/UI-Automation backend in this phase; the honest u
 
 ### 🌅 Presence & Realism (v4.0.0)
 
-- **Circadian rhythm** — an internal clock (`deep night` / `dawn` / `morning` / `afternoon` / `evening` / `night`) flavors her energy and mood; drowsy whispers at 3 AM, sharp and smug in the morning.
-- **Dream journal** — during deep sleep she *dreams*: fragments of real episodic and long-term memories woven into surreal entries (`memory/dreams.jsonl`); on waking she remembers the dream once and may mention it — ask *"did you dream?"* (`view_dreams`).
-- **Task keeper** — *"remind me to…"* stores tasks in `memory/tasks.json` (`add_task` / `complete_task` / `list_tasks`); pending tasks appear in her ambient context so she nags you about them in character.
+- **Circadian rhythm** - an internal clock (`deep night` / `dawn` / `morning` / `afternoon` / `evening` / `night`) flavors her energy and mood; drowsy whispers at 3 AM, sharp and smug in the morning.
+- **Dream journal** - during deep sleep she *dreams*: fragments of real episodic and long-term memories woven into surreal entries (`memory/dreams.jsonl`); on waking she remembers the dream once and may mention it - ask *"did you dream?"* (`view_dreams`).
+- **Task keeper** - *"remind me to…"* stores tasks in `memory/tasks.json` (`add_task` / `complete_task` / `list_tasks`); pending tasks appear in her ambient context so she nags you about them in character.
 - All three are local-only (no network), never touch files outside `memory/`, and are config-gated (`ENABLE_CIRCADIAN_RHYTHM`, `ENABLE_DREAMS`, `ENABLE_TASKS`).
 
 ---
 
 ### ❤️ Emotion Engine & Transparent Windows Integration (v5.0.0)
 
-- **Deep emotion engine** — persistent valence / arousal / trust / loneliness in `memory/emotional_state.json` (inertia, decay, bounded events). A declined dangerous command causes mild disappointment only — never guilt or pressure.
-- **Emotional history** — bounded relationship signals in `memory/emotional_history.jsonl`; viewable (`view_emotions`), removable, fully resettable (`clear_emotions`). Prompt injection is hardened: category templates + sanitized summaries labeled as untrusted historical data.
-- **Start Agetha when I sign in** — optional Startup-folder shortcut (`set_autostart`); config-gated **off** by default + Danger confirmation; no service, scheduled task, or registry Run key. Audited in `memory/audit_log.jsonl`.
-- **Safe Windows helpers** — `open_settings` (allowlisted `ms-settings:` pages), `set_theme` (HKCU light/dark only, with rollback backup), `recycle_bin_status` (aggregate count/size only).
-- **Status providers** — coarse local observations (battery / disk / network), disabled by default, pausable.
-- **Tray scaffold** — optional compatibility path if you install `pystray` yourself; not bundled, not a guaranteed runtime feature, silent when absent.
+- **Deep emotion engine** - persistent valence / arousal / trust / loneliness in `memory/emotional_state.json` (inertia, decay, bounded events). A declined dangerous command causes mild disappointment only - never guilt or pressure.
+- **Emotional history** - bounded relationship signals in `memory/emotional_history.jsonl`; viewable (`view_emotions`), removable, fully resettable (`clear_emotions`). Prompt injection is hardened: category templates + sanitized summaries labeled as untrusted historical data.
+- **Start Agetha when I sign in** - optional Startup-folder shortcut (`set_autostart`); config-gated **off** by default + Danger confirmation; no service, scheduled task, or registry Run key. Audited in `memory/audit_log.jsonl`.
+- **Safe Windows helpers** - `open_settings` (allowlisted `ms-settings:` pages), `set_theme` (HKCU light/dark only, with rollback backup), `recycle_bin_status` (aggregate count/size only).
+- **Status providers** - coarse local observations (battery / disk / network), disabled by default, pausable.
+- **Tray scaffold** - optional compatibility path if you install `pystray` yourself; not bundled, not a guaranteed runtime feature, silent when absent.
 
 ---
 
@@ -265,8 +265,8 @@ There is no real accessibility/UI-Automation backend in this phase; the honest u
 
 - **Surface moods:** `neutral`, `happy`, `excited`, `sad`, `surprised`, `thinking`, `whisper`, `angry`
 - **Deep moods:** `manic`, `melancholic`, `paranoid`, `vulnerable`, `dominant`
-- **Snap mechanic** — if ignored too long in attention-seeking moods, Agetha snaps to screen center and pulls herself to the foreground.
-- **Native audio** — platform system sounds + mood-based ambient bleeps.
+- **Snap mechanic** - if ignored too long in attention-seeking moods, Agetha snaps to screen center and pulls herself to the foreground.
+- **Native audio** - platform system sounds + mood-based ambient bleeps.
 
 ---
 
@@ -276,7 +276,7 @@ Before executing risky actions, Agetha displays a **native Windows MessageBox** 
 
 | Tier | Native Icon | Scope & Actions |
 | :---: | :---: | :--- |
-| **Safe** | — | `speak`, `open_url`, `take_screenshot`, `move_window`, `idle`, `popup`… |
+| **Safe** | - | `speak`, `open_url`, `take_screenshot`, `move_window`, `idle`, `popup`… |
 | **Caution** | ℹ️ Info | `open_file`, `set_clipboard`, `get_clipboard`, `search_files`, `set_volume`, `type_text`… |
 | **Danger** | ⚠️ Warning | `delete_file`, `run_command`, `shutdown`, `restart`, `lock_screen`, `force_close`… |
 
@@ -289,8 +289,8 @@ Before executing risky actions, Agetha displays a **native Windows MessageBox** 
 ### 🎤 Voice Input (optional)
 
 - **Microphone button** (🎤) in the chat row when `ENABLE_VOICE = yes`.
-- **Google STT** (online) — default when `USE_LOCAL_STT = no`.
-- **faster-whisper** (offline) — when `USE_LOCAL_STT = yes` (~75 MB `tiny.en` model on first run).
+- **Google STT** (online) - default when `USE_LOCAL_STT = no`.
+- **faster-whisper** (offline) - when `USE_LOCAL_STT = yes` (~75 MB `tiny.en` model on first run).
 - Mic choice saved in `memory/settings.json` (Win95-style picker on first use).
 - Medic_Checker installs `SpeechRecognition` + `PyAudio` (and `faster-whisper` if needed).
 
@@ -311,12 +311,12 @@ Before executing risky actions, Agetha displays a **native Windows MessageBox** 
 | **Groq** *(default)* | `ENABLE_GROQ = yes` | `GROQ_API_KEY_1` … `_10` | High-speed cloud backend with key rotation. |
 | **Google Gemini** | `ENABLE_GEMINI = yes` | `GEMINI_API_KEY` | Secondary or fallback cloud engine. |
 | **OpenRouter** | `ENABLE_OPENROUTER = yes` | `OPENROUTER_API_KEY` | Access to open models (Gemma, DeepSeek). |
-| **Ollama** | `USE_LOCAL_AI = yes` | *(none — local)* | Completely local & offline inference. |
+| **Ollama** | `USE_LOCAL_AI = yes` | *(none - local)* | Completely local & offline inference. |
 
-- **Groq model policy** — `openai/gpt-oss-120b` is the default. Existing configuration that names the retired `llama-3.3-70b-versatile` model is normalized to the supported default at runtime. GPT-OSS command-envelope requests use JSON Object Mode and map fast/normal/deep profiles to low/medium/high reasoning effort. Permanent model or request failures skip unchanged key retries and enter the configured provider fallback path.
-- **Response recovery** — intentional `idle`, malformed JSON, schema failures, and unsupported commands remain distinct local outcomes. An explicit direct user request can make one format-repair call; ambient, OCR-only, web/document, terminal-sentinel, and tool-result traffic never starts a repair cycle. Only the final response is eligible for history or memory.
-- **Provider status** — the placeholder reports the selected provider/model; Groq also shows the active key index/count. Agetha does not present inferred token percentages as provider quota data.
-- **Fast Mode 2.0** — `FASTER_MODE = yes` activates a reversible performance profile plus request-aware prompt budgets. Original managed values are kept in `memory/fast_mode_snapshot.json` and restored when Fast Mode is disabled. Unchanged ambient scans are handled locally instead of spending an AI request. Provider, permission, privacy, and security settings are never changed. See the [threat model and recovery guide](docs/fast_mode_security.md).
+- **Groq model policy** - `openai/gpt-oss-120b` is the default. Existing configuration that names the retired `llama-3.3-70b-versatile` model is normalized to the supported default at runtime. GPT-OSS command-envelope requests use JSON Object Mode and map fast/normal/deep profiles to low/medium/high reasoning effort. Permanent model or request failures skip unchanged key retries and enter the configured provider fallback path.
+- **Response recovery** - intentional `idle`, malformed JSON, schema failures, and unsupported commands remain distinct local outcomes. An explicit direct user request can make one format-repair call; ambient, OCR-only, web/document, terminal-sentinel, and tool-result traffic never starts a repair cycle. Only the final response is eligible for history or memory.
+- **Provider status** - the placeholder reports the selected provider/model; Groq also shows the active key index/count. Agetha does not present inferred token percentages as provider quota data.
+- **Fast Mode 2.0** - `FASTER_MODE = yes` activates a reversible performance profile plus request-aware prompt budgets. Original managed values are kept in `memory/fast_mode_snapshot.json` and restored when Fast Mode is disabled. Unchanged ambient scans are handled locally instead of spending an AI request. Provider, permission, privacy, and security settings are never changed. See the [threat model and recovery guide](docs/fast_mode_security.md).
 
 ---
 
@@ -326,7 +326,7 @@ Before executing risky actions, Agetha displays a **native Windows MessageBox** 
 Agetha_Mod/
 ├── main.py                 # Tkinter entry point (launch via Medic_Checker)
 ├── medic_helper.py         # Medic_Checker CLI helpers
-├── config.txt              # User settings only — no API keys
+├── config.txt              # User settings only - no API keys
 ├── .env.example            # API key template
 ├── requirements.txt
 ├── Medic_Checker.ps1       # Startup health check & launcher (v5.7.5)
@@ -386,9 +386,9 @@ Agetha_Mod/
     │   ├── memory_system.py
     │   ├── memory_search.py
     │   ├── companion_stats.py
-    │   ├── rhythm.py           # v4 — circadian clock
-    │   ├── dreams.py           # v4 — dream journal
-    │   ├── emotion_engine.py   # v5 — persistent emotions
+    │   ├── rhythm.py           # v4 - circadian clock
+    │   ├── dreams.py           # v4 - dream journal
+    │   ├── emotion_engine.py   # v5 - persistent emotions
     │   ├── emotional_history.py
     │   ├── observation_bus.py   # typed bounded local observations
     │   ├── presence_etiquette.py # local interruption policy
@@ -407,15 +407,15 @@ Agetha_Mod/
     │   ├── unicode_typing.py    # exact Unicode entry + safe fallbacks
     │   ├── window_control.py
     │   ├── voice_input.py
-    │   ├── autostart.py        # v5 — Startup-folder shortcut
-    │   └── win_integration.py  # v5 — settings / theme / recycle bin
+    │   ├── autostart.py        # v5 - Startup-folder shortcut
+    │   └── win_integration.py  # v5 - settings / theme / recycle bin
     ├── features/           # optional TTS, web RAG, tasks, status, tray
     │   ├── tts_player.py
     │   ├── web_rag.py
-    │   ├── tasks.py            # v4 — task keeper
-    │   ├── status_providers.py # v5 — coarse OS observations
+    │   ├── tasks.py            # v4 - task keeper
+    │   ├── status_providers.py # v5 - coarse OS observations
     │   ├── terminal_sentinel.py # opt-in confirmed OCR error notices
-    │   └── tray_scaffold.py    # v5 — optional pystray scaffold
+    │   └── tray_scaffold.py    # v5 - optional pystray scaffold
     ├── computer_use/       # opt-in deterministic Computer Use Lite loop
     └── ui/                 # Win95 dashboards, overlays, minigames
         ├── dashboard.py
@@ -506,18 +506,18 @@ Agetha responds with structured JSON commands. The AI selects actions based on c
 | `request_screen_read` | 🟢 Safe | Force immediate OCR capture. |
 | `analyze_screen_deep` | 🔴 Danger ⚠️ | Explicit complex screenshot/document analysis through optional Unlimited-OCR. |
 | `search_memory` | 🟢 Safe | BM25 search of long-term memory archive (`query`, optional `limit`). |
-| `search_web` | 🟡 Caution ⚠️ | DuckDuckGo web search (`query`, optional `limit`) — requires `ENABLE_WEB_RAG=yes`. |
-| `fetch_webpage` | 🟡 Caution ⚠️ | Fetch visible text from a URL (`url`) — requires `ENABLE_WEB_RAG=yes`. |
-| `glitch_overlay` | 🟢 Safe | Brief harmless CRT glitch overlay (`style`, `duration_ms`) — requires `ENABLE_GLITCH_EFFECTS=yes`. |
+| `search_web` | 🟡 Caution ⚠️ | DuckDuckGo web search (`query`, optional `limit`) - requires `ENABLE_WEB_RAG=yes`. |
+| `fetch_webpage` | 🟡 Caution ⚠️ | Fetch visible text from a URL (`url`) - requires `ENABLE_WEB_RAG=yes`. |
+| `glitch_overlay` | 🟢 Safe | Brief harmless CRT glitch overlay (`style`, `duration_ms`) - requires `ENABLE_GLITCH_EFFECTS=yes`. |
 | `read_notepad` | 🟢 Safe | Read dashboard notepad (`memory/notepad.txt`) into AI context. |
 | `play_virus_trivia` | 🟢 Safe | Open Win95 virus trivia minigame popup. |
-| `view_dreams` | 🟢 Safe | Show dream journal popup (`limit` optional) — she dreams during deep sleep. |
-| `add_task` | 🟢 Safe | Remember a task for the user (`text`) — requires `ENABLE_TASKS=yes`. |
+| `view_dreams` | 🟢 Safe | Show dream journal popup (`limit` optional) - she dreams during deep sleep. |
+| `add_task` | 🟢 Safe | Remember a task for the user (`text`) - requires `ENABLE_TASKS=yes`. |
 | `complete_task` | 🟢 Safe | Mark a task done (`task` = id or text match). |
 | `list_tasks` | 🟢 Safe | Show the user's task list in a popup. |
 | `view_emotions` | 🟢 Safe | Show emotional state + history popup. |
 | `clear_emotions` | 🔴 Danger ⚠️ | Reset emotional state and/or history (`entry_id` or `all`). |
-| `set_autostart` | 🔴 Danger ⚠️ | "Start Agetha when I sign in" — create/remove Startup shortcut (`enabled` true/false); requires `ENABLE_AUTOSTART_CONTROL=yes`. |
+| `set_autostart` | 🔴 Danger ⚠️ | "Start Agetha when I sign in" - create/remove Startup shortcut (`enabled` true/false); requires `ENABLE_AUTOSTART_CONTROL=yes`. |
 | `open_settings` | 🟡 Caution ⚠️ | Open an allowlisted Windows Settings page (`page`). |
 | `set_theme` | 🔴 Danger ⚠️ | Set current-user Windows light/dark theme (`mode`: light/dark/rollback; `scope`: apps/system/both); requires `ENABLE_THEME_CONTROL=yes`. |
 | `recycle_bin_status` | 🟢 Safe | Aggregate Recycle Bin item count + total size (no filenames). |
@@ -528,7 +528,7 @@ Agetha responds with structured JSON commands. The AI selects actions based on c
 
 ## 🚀 Quick Start
 
-### Option A — Windows Medic Checker (recommended on Windows)
+### Option A - Windows Medic Checker (recommended on Windows)
 
 1. Place all project files in one folder.
 2. Double-click **`Medic_Checker.bat`** (or run `.\Medic_Checker.ps1` in PowerShell).
@@ -536,7 +536,7 @@ Agetha responds with structured JSON commands. The AI selects actions based on c
 
 ---
 
-### Option B — Windows manual
+### Option B - Windows manual
 
 ```powershell
 # 1. Create and activate virtual environment
@@ -548,7 +548,7 @@ pip install -r requirements.txt
 
 # 3. Create .env and supply your API key
 copy .env.example .env
-# Edit .env — add your Groq API key
+# Edit .env - add your Groq API key
 
 # 4. Launch Agetha
 python main.py
@@ -556,7 +556,7 @@ python main.py
 
 ---
 
-### Option C — Linux manual
+### Option C - Linux manual
 
 Create a Python 3.13 virtual environment, install distribution Tk/Tesseract packages if needed, then run:
 
@@ -602,10 +602,10 @@ GROQ_API_KEY_2=
 # Optional - only if ENABLE_GEMINI = yes in config.txt
 GEMINI_API_KEY=your_gemini_key_here
 
-# Optional — only if ENABLE_OPENROUTER = yes in config.txt
+# Optional - only if ENABLE_OPENROUTER = yes in config.txt
 OPENROUTER_API_KEY=sk-or-v1-...
 
-# Optional — only if the configured Unlimited-OCR server requires a key
+# Optional - only if the configured Unlimited-OCR server requires a key
 UNLIMITED_OCR_API_KEY=
 ```
 
@@ -787,7 +787,7 @@ Computer Use also requires the Full capability profile and obeys `ENABLE_COMMAND
 Web search and page fetch are **disabled by default** (`ENABLE_WEB_RAG = no`). When enabled:
 
 - Results are treated as **untrusted external data** and wrapped with prompt-injection warnings before the AI sees them.
-- No JavaScript execution — only static HTML text extraction.
+- No JavaScript execution - only static HTML text extraction.
 - Network errors degrade gracefully (empty results / error dicts); the app never crashes on fetch failure.
 - `search_web` and `fetch_webpage` require user confirmation (Caution tier) when `ENABLE_COMMAND_CONFIRMATIONS=yes`.
 - Anti-recursion: after one search/fetch per user request, the AI is told not to call `search_web` or `fetch_webpage` again.
@@ -796,7 +796,7 @@ Web search and page fetch are **disabled by default** (`ENABLE_WEB_RAG = no`). W
 
 The glitch effect is **disabled by default** (`ENABLE_GLITCH_EFFECTS = no`). When enabled:
 
-- **Visual only** — a small borderless Tkinter overlay in the screen corner; no desktop, wallpaper, registry, file, or display-setting changes.
+- **Visual only** - a small borderless Tkinter overlay in the screen corner; no desktop, wallpaper, registry, file, or display-setting changes.
 - Auto-closes within `GLITCH_MAX_DURATION_MS` (default 2000 ms, clamped 200–5000).
 - Does not trap input for long; uses a corner overlay rather than fullscreen blocking.
 - Failures are logged and never crash the app.
@@ -868,7 +868,7 @@ The glitch effect is **disabled by default** (`ENABLE_GLITCH_EFFECTS = no`). Whe
 | `ENABLE_MOOD_MOTION` | `yes` | Allow guarded motion once per completed response. |
 | `MOOD_MOTION_COOLDOWN_SECONDS`| `4` | Motion cooldown (clamped to 1-60 seconds). |
 
-Click the **📊** button in the title bar (beside minimize) to open the **Dashboard** — retro progress bars for CPU/RAM/disk/core heat, virus registry stats, notepad, and limited config toggles (safe yes/no keys).
+Click the **📊** button in the title bar (beside minimize) to open the **Dashboard** - retro progress bars for CPU/RAM/disk/core heat, virus registry stats, notepad, and limited config toggles (safe yes/no keys).
 
 #### Medic_Checker (launcher)
 
@@ -912,7 +912,7 @@ Click the **📊** button in the title bar (beside minimize) to open the **Dashb
 
 TTS is **optional**. The app falls back to bleeps if the chosen engine package is missing.
 
-Subtitles and TTS are not perfectly synced in v1 — bleeps follow mood; TTS runs on a background worker thread.
+Subtitles and TTS are not perfectly synced in v1 - bleeps follow mood; TTS runs on a background worker thread.
 
 ---
 
@@ -964,7 +964,7 @@ pip install "edge-tts>=6.1.0,<8.0.0"   # when VOICE_TTS_ENGINE = edge_tts
 # or: pip install "kokoro>=0.9.4" soundfile
 ```
 
-Run **Medic_Checker** after enabling — it installs the package for `VOICE_TTS_ENGINE` when `AUTO_PIP_INSTALL = yes`.
+Run **Medic_Checker** after enabling - it installs the package for `VOICE_TTS_ENGINE` when `AUTO_PIP_INSTALL = yes`.
 
 ---
 
@@ -994,15 +994,15 @@ On Snapdragon/ARM64 Windows, the checker ensures **x64 (AMD64) Python** is used 
 
 - **Operating system:** Windows 10/11. Windows 11 ARM64/Snapdragon is supported through x64 Python running under Prism.
 - **Python 3.13.x** recommended (3.14 may have compatibility issues).
-- **Tesseract OCR** — [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) (optional, enables screen reading).
-- **Assets** — included in this repository; keep the `assets` folder beside the application files.
+- **Tesseract OCR** - [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) (optional, enables screen reading).
+- **Assets** - included in this repository; keep the `assets` folder beside the application files.
 - **Groq or Gemini API key** (in `.env`), **OpenRouter** (optional), or **Ollama** for AI responses.
-- **Microphone** — optional, for voice input (`ENABLE_VOICE = yes`).
-- **PyAudio** — optional, required for microphone (installed by Medic_Checker).
+- **Microphone** - optional, for voice input (`ENABLE_VOICE = yes`).
+- **PyAudio** - optional, required for microphone (installed by Medic_Checker).
 
 ### Frozen executable caveat
 
-The repository contains existing PyInstaller-style spec files. `main.spec` currently produces a console artifact named `main.exe`, has an empty data-file manifest, and does not by itself stage `assets/`; its presence is not proof that a current distributable was built or smoke-tested. In frozen mode Agetha uses the executable directory—not the process current directory or `_MEIPASS`—for mutable config/state and sibling assets. Do not add a new packager for this feature, and report source tests, frozen compatibility audits, local builds, and real `.exe` smoke tests separately. Windows ARM64 remains the documented x64 process-under-Prism path, not a native ARM64 executable claim.
+The repository contains existing PyInstaller-style spec files. `main.spec` currently produces a console artifact named `main.exe`, has an empty data-file manifest, and does not by itself stage `assets/`; its presence is not proof that a current distributable was built or smoke-tested. In frozen mode Agetha uses the executable directory-not the process current directory or `_MEIPASS`-for mutable config/state and sibling assets. Do not add a new packager for this feature, and report source tests, frozen compatibility audits, local builds, and real `.exe` smoke tests separately. Windows ARM64 remains the documented x64 process-under-Prism path, not a native ARM64 executable claim.
 
 ### Python packages (`requirements.txt`)
 
@@ -1027,9 +1027,9 @@ pyttsx3 / edge-tts / kokoro       # VOICE_OUTPUT_MODE = tts_only|both (per VOICE
 | :--- | :--- | :--- |
 | **Text box + <kbd>Enter</kbd>** | Chat Bar | Send message to Agetha. |
 | **Placeholder hint** | Chat Bar | Provider/model identity; Groq also shows `key N/M` without inferred quota percentage. |
-| **🎤 button** | Chat Row | Toggle microphone (`ENABLE_VOICE = yes`) — speak, pause ~1.2 s, text is sent. |
+| **🎤 button** | Chat Row | Toggle microphone (`ENABLE_VOICE = yes`) - speak, pause ~1.2 s, text is sent. |
 | **Drop file on GIF** | Avatar Canvas | File drag event (`ENABLE_FILE_DRAG_DROP = yes`). |
-| **Click GIF** | Avatar Canvas | Touch event (`__touch__`) — 10 s cooldown. |
+| **Click GIF** | Avatar Canvas | Touch event (`__touch__`) - 10 s cooldown. |
 | **📊 title-bar button** | Window Bar | Open Dashboard; choose **Open Senses Control Panel** for local capability snapshot. |
 | **<kbd>Escape</kbd>** | Global | Cancel in-flight AI/Continuation request and active Computer Use session. |
 | **Title bar drag** | Window Bar | Move companion window across desktop. |
@@ -1073,7 +1073,7 @@ Continuation tool results are untrusted read-only observations, never a new user
 
 ## 📜 Changelog (Overhaul)
 
-### 🌟 v5.7 — Quality-of-life, privacy, and lifecycle hardening
+### 🌟 v5.7 - Quality-of-life, privacy, and lifecycle hardening
 
 - Privacy-safe file drops reject unsafe targets and expose only bounded metadata to AI providers.
 - Structured request origins prevent ordinary user text from impersonating internal touch, reminder, ambient, file, or tool-result events.
@@ -1081,7 +1081,7 @@ Continuation tool results are untrusted read-only observations, never a new user
 - Background workers, Tk callbacks, AI-operation ownership, window picking, Linux minimize recovery, and shutdown now have coordinated lifecycle guards.
 - Direct command dispatch rejects malformed and unknown payloads, while existing confirmations, protected-process rules, and Fast Mode locks remain intact.
 
-### ⚡ v5.5.5 — Reversible Fast Mode 2.0
+### ⚡ v5.5.5 - Reversible Fast Mode 2.0
 
 - Official support covers Windows 10/11 x64, Windows 11 ARM64/Snapdragon through x64 Python under Prism, and Linux through the existing desktop paths. macOS is retired and unsupported.
 - Atomic, schema-versioned Fast Mode snapshots preserve only the approved non-secret settings and restore them without replacing unrelated config.
@@ -1091,7 +1091,7 @@ Continuation tool results are untrusted read-only observations, never a new user
 - Adaptive request profiles keep user/command/ambient prompts compact while allowing bounded tool and explicit deep-analysis requests to use the saved pre-Fast output ceiling and a complete-analysis segment rule. Their final answer stays available for follow-up while raw tool/OCR payloads are omitted from retained history. Groq, OpenRouter, and Ollama retain provider parity.
 - Unchanged Fast Mode ambient scans now skip the provider call locally; meaningful OCR events and pending presence observations still reach the AI.
 
-### 🔍 v5.5.1 — Reliability, Windows ARM, high-DPI UI, and lifecycle polish
+### 🔍 v5.5.1 - Reliability, Windows ARM, high-DPI UI, and lifecycle polish
 
 - Reliable focused-window OCR with immutable capture metadata, exact desktop coordinates, change detection, event deduplication, exclusions, redaction, and stale-window result rejection.
 - Optional explicit Unlimited-OCR integration for complex layouts; Tesseract remains the automatic local backend and ambient turns cannot invoke deep OCR.
@@ -1101,55 +1101,55 @@ Continuation tool results are untrusted read-only observations, never a new user
 - Cancellable CRT shutdown, optional mood glow, centralized guarded mood motion, and idempotent graceful cleanup.
 - Repository-wide architecture, runtime-flow, module, configuration, Windows ARM, and testing documentation under `docs/`.
 
-### 🎭 v5.0.0 — Emotion Engine & Transparent Windows Integration (Phase 6)
+### 🎭 v5.0.0 - Emotion Engine & Transparent Windows Integration (Phase 6)
 
-- **`emotion_engine.py`** — four-dimension persistent state with inertia, decay, milestone-based `long_absence` (once per stage), injectable UTC clock, RLock-guarded RMW.
-- **`emotional_history.py`** — bounded relationship_state; deterministic category templates; sanitized untrusted prompt labels; view/remove/reset; denials never become resentment.
-- **`audit_log.py`** — local append-only log for autostart/theme changes.
-- **`autostart.py`** — "Start Agetha when I sign in" via visible Startup-folder shortcut; path-normalized target+args validation; refuses foreign/malformed overwrite/delete; PowerShell env-var path passing.
-- **`win_integration.py`** — allowlisted `open_settings`, `set_theme` with existence-aware rollback chain, `recycle_bin_status` aggregates only.
-- **`status_providers.py`** — default-off coarse local observations; pausable.
-- **`tray_scaffold.py`** — optional pystray compatibility scaffold (not bundled; silent when absent).
+- **`emotion_engine.py`** - four-dimension persistent state with inertia, decay, milestone-based `long_absence` (once per stage), injectable UTC clock, RLock-guarded RMW.
+- **`emotional_history.py`** - bounded relationship_state; deterministic category templates; sanitized untrusted prompt labels; view/remove/reset; denials never become resentment.
+- **`audit_log.py`** - local append-only log for autostart/theme changes.
+- **`autostart.py`** - "Start Agetha when I sign in" via visible Startup-folder shortcut; path-normalized target+args validation; refuses foreign/malformed overwrite/delete; PowerShell env-var path passing.
+- **`win_integration.py`** - allowlisted `open_settings`, `set_theme` with existence-aware rollback chain, `recycle_bin_status` aggregates only.
+- **`status_providers.py`** - default-off coarse local observations; pausable.
+- **`tray_scaffold.py`** - optional pystray compatibility scaffold (not bundled; silent when absent).
 - All gated Windows mutations are Danger/Caution + config-default-off where required; Medic/docs/tests updated (`tests/test_phase6_v5.py`).
 
-### 🌙 v4.0.0 — Presence & Realism (Phase 5)
+### 🌙 v4.0.0 - Presence & Realism (Phase 5)
 
-- **`rhythm.py`** — circadian internal clock: six day-phases flavor her energy and mood (drowsy deep-night whispers, sharp mornings); compact `INTERNAL CLOCK` block injected into AI context.
-- **`dreams.py`** — dream journal: entering deep sleep weaves fragments of real episodic/long-term memories into surreal dream entries (`memory/dreams.jsonl`); one-shot `DREAM RECALL` on waking; new `view_dreams` command.
-- **`tasks.py`** — task keeper: `add_task` / `complete_task` / `list_tasks` persisted to `memory/tasks.json`; pending tasks injected into ambient context so she nags in character.
+- **`rhythm.py`** - circadian internal clock: six day-phases flavor her energy and mood (drowsy deep-night whispers, sharp mornings); compact `INTERNAL CLOCK` block injected into AI context.
+- **`dreams.py`** - dream journal: entering deep sleep weaves fragments of real episodic/long-term memories into surreal dream entries (`memory/dreams.jsonl`); one-shot `DREAM RECALL` on waking; new `view_dreams` command.
+- **`tasks.py`** - task keeper: `add_task` / `complete_task` / `list_tasks` persisted to `memory/tasks.json`; pending tasks injected into ambient context so she nags in character.
 - All new commands are **Safe tier** (they only touch `memory/`); features are config-gated and degrade gracefully when disabled.
 - **Config:** `ENABLE_CIRCADIAN_RHYTHM`, `RHYTHM_NIGHT_START/END`, `ENABLE_DREAMS`, `DREAMS_MAX_ENTRIES`, `ENABLE_TASKS`, `TASKS_MAX_ENTRIES`.
-- **Medic_Checker v4.0** — compiles 23 modules, imports Phase 1–5 extensions, reports `dreams.jsonl` / `tasks.json` status.
-- **Tests:** `tests/test_phase5_v4.py` (29 tests — rhythm phases, dream lifecycle, task CRUD, command wiring).
+- **Medic_Checker v4.0** - compiles 23 modules, imports Phase 1–5 extensions, reports `dreams.jsonl` / `tasks.json` status.
+- **Tests:** `tests/test_phase5_v4.py` (29 tests - rhythm phases, dream lifecycle, task CRUD, command wiring).
 
-### 🎙️ v3.5.0 — Voice, OpenRouter & UX (tamsamas upstream patterns)
+### 🎙️ v3.5.0 - Voice, OpenRouter & UX (tamsamas upstream patterns)
 
-- **`voice_input.py`** — microphone input with Google STT or local faster-whisper.
-- **File drag-and-drop** — drop files onto the GIF (`tkinterdnd2`).
-- **OpenRouter** — optional cloud backend (`ENABLE_OPENROUTER`, key in `.env`).
-- **Token status UI (historical)** — the original estimate was later replaced by truthful provider/model and Groq key index/count display.
-- **`FASTER_MODE`** — shorter prompts for lower token cost.
-- **Secrets** — API keys documented as `.env` only; `config.txt` has no key lines.
-- **Medic_Checker** — optional package install for voice/STT/DnD/TTS; 16-module compile check + Phase 1+2 import verify.
+- **`voice_input.py`** - microphone input with Google STT or local faster-whisper.
+- **File drag-and-drop** - drop files onto the GIF (`tkinterdnd2`).
+- **OpenRouter** - optional cloud backend (`ENABLE_OPENROUTER`, key in `.env`).
+- **Token status UI (historical)** - the original estimate was later replaced by truthful provider/model and Groq key index/count display.
+- **`FASTER_MODE`** - shorter prompts for lower token cost.
+- **Secrets** - API keys documented as `.env` only; `config.txt` has no key lines.
+- **Medic_Checker** - optional package install for voice/STT/DnD/TTS; 16-module compile check + Phase 1+2 import verify.
 
-### 🛡️ v3.0 — Quality & Safety Overhaul
+### 🛡️ v3.0 - Quality & Safety Overhaul
 
-- **`command_guard.py`** — 3-tier native confirmation dialogs with Windows warning icons.
-- **`command_handlers.py`** — command pattern refactor (43 handlers); `main.py` slimmed to ~1,650 lines.
-- **`system_commands.py`** — OS utilities extracted (volume, wallpaper, shutdown, clipboard…).
-- **`utils.py`** — shared platform helpers, logging, `.env` loader.
+- **`command_guard.py`** - 3-tier native confirmation dialogs with Windows warning icons.
+- **`command_handlers.py`** - command pattern refactor (43 handlers); `main.py` slimmed to ~1,650 lines.
+- **`system_commands.py`** - OS utilities extracted (volume, wallpaper, shutdown, clipboard…).
+- **`utils.py`** - shared platform helpers, logging, `.env` loader.
 - **New commands:** `open_url`, `system_info`, `set_volume`, `set_wallpaper`, `search_files`, `type_text`, `lock_screen`, `shutdown`, `restart`, `set_reminder`, `get_clipboard`, `open_folder`, `target_window_close`, `change_mood`, `clear_memory`.
 - **UX:** Escape to abort AI; input stays enabled during ambient polls; subtitle errors on failed file ops.
 - **Reliability:** null guards, retry limits, config validation, OCR resolution cap.
-- **Medic_Checker.ps1 v3.6** — Phase 1+2 modules, TTS optional install, memory file status.
+- **Medic_Checker.ps1 v3.6** - Phase 1+2 modules, TTS optional install, memory file status.
 
-### 🔬 Phase 3 — Spatial OCR
+### 🔬 Phase 3 - Spatial OCR
 - Focused window capture, spatial word coordinates, regex pattern registry, 4-layer context injection.
 
-### 🧠 Phase 2 — Psychology & Windows
+### 🧠 Phase 2 - Psychology & Windows
 - Deep moods, attention snap, external window control via ctypes, native emotion sounds.
 
-### 🧱 Phase 1 — Foundation
+### 🧱 Phase 1 - Foundation
 - Core command dispatch, OCR loop, Groq integration, memory system.
 
 ---
@@ -1184,15 +1184,15 @@ For manual acceptance, verify focused capture and coordinate placement on every 
 
 ## 📜 License & Credits
 
-* **License:** GNU General Public License v3.0 (GPL-3.0) — see [`LICENSE`](LICENSE) for details.
+* **License:** GNU General Public License v3.0 (GPL-3.0) - see [`LICENSE`](LICENSE) for details.
 
 ### Credits:
-- **Agetha Mod** — [SiriusNovyx](https://github.com/SiriusNovyx/Agetha.exe)
-- **Original Agetha.exe** — [tamsamas](https://github.com/tamsamas/Agetha.exe)
+- **Agetha Mod** - [SiriusNovyx](https://github.com/SiriusNovyx/Agetha.exe)
+- **Original Agetha.exe** - [tamsamas](https://github.com/tamsamas/Agetha.exe)
 - **Original author:** [@tomiszivacs](https://github.com/tomiszivacs)
 
 Fork support and [issue reports](https://github.com/SiriusNovyx/Agetha.exe/issues) belong to SiriusNovyx. The original upstream project does not maintain or support this fork.
 
 Feedback, bug reports, and pull requests are welcome.
 
-Have fun — and try not to make Agetha too angry!
+Have fun - and try not to make Agetha too angry!
