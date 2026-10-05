@@ -21,6 +21,29 @@
 
 ---
 
+> [!IMPORTANT]
+> ### ⚠️ Project Status Notice
+>
+> **The original [Agetha.exe](https://github.com/tamsamas/Agetha.exe) by [@tamsamas](https://github.com/tamsamas) has been discontinued.**  
+> The original author has stepped away from the project, citing the difficulty of maintaining it over time. We deeply respect that decision and are grateful for the foundation they built.
+>
+> **This fork ([Agetha Mod](https://github.com/SiriusNovyx/Agetha.exe)) will aim to continue maintenance as best as possible**, though it is maintained by a single person in their spare time — so updates may be irregular.
+>
+> ---
+>
+> ### 🙏 A Personal Note from the Fork Maintainer
+>
+> I want to sincerely apologize for the state of this project. Over time, this fork has grown in ways that weren't always planned or well-organized — features were added impulsively, things got messy, and the codebase became harder to navigate than it should be. If you've cloned this and felt confused or overwhelmed, that's on me.
+>
+> I'm sorry for:
+> - Adding features that may feel unnecessary, bloated, or out of scope
+> - The inconsistent code quality and documentation gaps
+> - Making this harder to maintain than the original ever was
+>
+> I'll do my best to clean things up over time. Thank you for your patience and for using this project at all. 💙
+
+---
+
 > [!NOTE]  
 > **Asset Notice:** The bundled files in [`assets/`](assets/) are provided so a normal clone or source download runs with the complete UI. They are not covered by this repository's GPLv3 license. See [`assets/README.md`](assets/README.md) for details.
 
@@ -28,6 +51,8 @@
 
 ## 📑 Table of Contents
 
+- [⚠️ Project Status Notice](#️-project-status-notice)
+  - [🙏 A Personal Note from the Fork Maintainer](#-a-personal-note-from-the-fork-maintainer)
 - [Developer Documentation](#developer-documentation)
 - [Platform Support](#platform-support)
 - [About](#about)
