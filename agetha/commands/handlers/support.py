@@ -57,12 +57,29 @@ def perform_authorized_effect(app, authorization: object,
     return controller.perform_authorized(authorization, effect)
 
 
-def start_app_worker(app: "CompanionApp", target: Callable[[], None], name: str) -> None:
+def start_app_worker(app: "CompanionApp", target: Callable[[], None], name: str,
+                     *, continuation_is_current: Callable[[], bool] | None = None) -> None:
     starter = getattr(type(app), "_start_worker", None)
     if callable(starter):
-        starter(app, target, name=name)
+        if continuation_is_current is None:
+            starter(app, target, name=name)
+            return
+        epoch = int(getattr(app, "_context_request_epoch", 0))
+        def _failed_start() -> None:
+            if not continuation_is_current():
+                return
+            app._report_worker_start_failure(epoch)
+        starter(app, target, name=name, on_start_failure=_failed_start)
     else:
         threading.Thread(target=target, daemon=True).start()
+
+
+def capture_context_validity(app: "CompanionApp") -> Callable[[], bool]:
+    """Retain the host's lifetime check for this captured context only."""
+    capture = getattr(type(app), "_capture_context_validity", None)
+    if callable(capture):
+        return capture(app)
+    return lambda: True
 
 
 def call_app_ui_sync(app: "CompanionApp", callback: Callable[[], object]) -> object | None:

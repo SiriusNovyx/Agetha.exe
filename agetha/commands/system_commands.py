@@ -13,6 +13,7 @@ import threading
 import webbrowser
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from agetha.utils import IS_WINDOWS, IS_LINUX, IS_MACOS, BASE_DIR, logger
 
@@ -67,24 +68,34 @@ def get_clipboard(tk_root=None) -> str:
         return f"[clipboard read error: {exc}]"
 
 
-def open_folder(path: str) -> str:
+def open_folder(
+    path: str, *,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> str:
+    """Authorize only launch when a runner is supplied; wait outside its lock."""
     if not path:
         return "[no path]"
     p = Path(path)
     if not p.exists():
         return f"[not found: {path}]"
     try:
+        folder = str(p if p.is_dir() else p.parent)
         if IS_WINDOWS:
-            os.startfile(str(p if p.is_dir() else p.parent))
+            effect = lambda: os.startfile(folder)
         elif IS_MACOS:
-            proc = subprocess.Popen(["open", str(p if p.is_dir() else p.parent)])
-            proc.wait(timeout=30)
+            effect = lambda: subprocess.Popen(["open", folder])
         else:
-            proc = subprocess.Popen(
-                ["xdg-open", str(p if p.is_dir() else p.parent)],
-                start_new_session=True,
-            )
-            proc.wait(timeout=30)
+            effect = lambda: subprocess.Popen(["xdg-open", folder], start_new_session=True)
+        performed, proc = effect_runner(effect) if effect_runner is not None else (True, effect())
+        if not performed:
+            return "[open_folder blocked: capability changed]"
+        if not IS_WINDOWS:
+            with proc:
+                try:
+                    proc.wait(timeout=30)
+                except BaseException:
+                    proc.kill()
+                    raise
         return f"[opened folder: {path}]"
     except Exception as exc:
         return f"[open_folder error: {exc}]"
@@ -156,28 +167,44 @@ def set_volume(level: int = 50, action: str = "set") -> str:
     return "[set_volume not supported on this platform]"
 
 
-def set_wallpaper(path: str) -> str:
+def set_wallpaper(
+    path: str, *,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> str:
+    """Keep preparation and child waits outside the supplied effect boundary."""
     if not path or not Path(path).exists():
         return f"[wallpaper not found: {path}]"
     try:
         if IS_WINDOWS:
             import ctypes
             SPI_SETDESKWALLPAPER = 20
-            ctypes.windll.user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, str(Path(path).resolve()), 3)
-            return f"[wallpaper set: {path}]"
-        if IS_MACOS:
+            resolved = str(Path(path).resolve())
+            effect = lambda: ctypes.windll.user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, resolved, 3)
+        elif IS_MACOS:
             script = f'tell application "System Events" to tell every desktop to set picture to POSIX file "{path}"'
-            subprocess.run(["osascript", "-e", script], timeout=10)
-            return f"[wallpaper set: {path}]"
-        if IS_LINUX and shutil.which("gsettings"):
-            subprocess.run(
-                ["gsettings", "set", "org.gnome.desktop.background", "picture-uri", f"file://{Path(path).resolve()}"],
-                timeout=5,
+            effect = lambda: subprocess.Popen(["osascript", "-e", script])
+            timeout = 10
+        elif IS_LINUX and shutil.which("gsettings"):
+            resolved = str(Path(path).resolve())
+            effect = lambda: subprocess.Popen(
+                ["gsettings", "set", "org.gnome.desktop.background", "picture-uri", f"file://{resolved}"],
             )
-            return f"[wallpaper set: {path}]"
+            timeout = 5
+        else:
+            return "[set_wallpaper not supported]"
+        performed, proc = effect_runner(effect) if effect_runner is not None else (True, effect())
+        if not performed:
+            return "[set_wallpaper blocked: capability changed]"
+        if not IS_WINDOWS:
+            with proc:
+                try:
+                    proc.wait(timeout=timeout)
+                except BaseException:
+                    proc.kill()
+                    raise
+        return f"[wallpaper set: {path}]"
     except Exception as exc:
         return f"[set_wallpaper error: {exc}]"
-    return "[set_wallpaper not supported]"
 
 
 def search_files(pattern: str, directory: str, limit: int = 50) -> list[str]:

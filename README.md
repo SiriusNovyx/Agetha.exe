@@ -1,9 +1,11 @@
 # Agetha Mod - Overhaul Edition
 
+> **v5.9 is a recovery prerelease for testing.** Read the [verified fixes, remaining risks, and usage cautions](docs/releases/v5.9.md) before upgrading.
+
 <div align="center">
 
-![Agetha Mod Version](https://img.shields.io/badge/Version-Overhaul_v5.7.5-blue?style=for-the-badge&logo=windows95&logoColor=white)
-![Medic Checker](https://img.shields.io/badge/Medic__Checker-v5.7.5-emerald?style=for-the-badge)
+![Agetha Mod Version](https://img.shields.io/badge/Version-Overhaul_v5.9-blue?style=for-the-badge&logo=windows95&logoColor=white)
+![Medic Checker](https://img.shields.io/badge/Medic__Checker-v5.9-emerald?style=for-the-badge)
 ![Python 3.13](https://img.shields.io/badge/Python-3.13.x-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![License GPLv3](https://img.shields.io/badge/License-GPLv3-red?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/Platform-Windows_10%2F11_%7C_Linux-lightgrey?style=for-the-badge)
@@ -89,7 +91,7 @@
   - [OpenRouter (optional)](#openrouter-optional)
   - [Voice + drag-and-drop (optional)](#voice--drag-and-drop-optional)
   - [Voice output / TTS (optional)](#voice-output--tts-optional)
-- [Medic_Checker v5.7.5 (PowerShell)](#medic_checker-v575-powershell)
+- [Medic_Checker v5.9 (PowerShell)](#medic_checker-v59-powershell)
 - [Requirements](#requirements)
   - [Frozen executable caveat](#frozen-executable-caveat)
   - [Python packages (requirements.txt)](#python-packages-requirementstxt)
@@ -207,7 +209,7 @@ Tesseract remains the default real-time backend; Unlimited-OCR is still used onl
 
 ### 🗣️ Polyglot Presence
 
-The current tree adds a local-first Polyglot Presence foundation without changing the public v5.7.5 release label:
+The tree includes the existing local-first Polyglot Presence foundation:
 
 - **Language-neutral multilingual voice** - Agetha mirrors the user's current language and approximate conversational register without inventing translation, transliteration, gendered speech, honorifics, cultural particles, formality, or slang. This is character guidance, not a global output filter: quoted text, documents, code, and exact text requested for typing remain unchanged. English, Thai, Japanese, Chinese, Korean, Arabic, Russian, French, mixed-script text, and emoji are validation vectors rather than personality preferences.
 - **Universal Unicode typing** - `type_text` preserves the exact string and supports `auto`, `unicode`, `paste`, `preview`, and `paced` modes. Windows uses Win32 Unicode input first; Xorg uses guarded clipboard paste where its optional desktop tools are available; Wayland copies for a manual paste when global synthetic input is restricted. It never appends <kbd>Enter</kbd>, <kbd>Return</kbd>, or <kbd>Tab</kbd>.
@@ -329,7 +331,7 @@ Agetha_Mod/
 ├── config.txt              # User settings only - no API keys
 ├── .env.example            # API key template
 ├── requirements.txt
-├── Medic_Checker.ps1       # Startup health check & launcher (v5.7.5)
+├── Medic_Checker.ps1       # Startup health check & launcher (v5.9)
 ├── Medic_Checker.bat
 ├── Run_Agetha_Admin.ps1
 ├── assets/                 # GIFs, fonts, icons
@@ -968,7 +970,7 @@ Run **Medic_Checker** after enabling - it installs the package for `VOICE_TTS_EN
 
 ---
 
-## 🩺 Medic_Checker v5.7.5 (PowerShell)
+## 🩺 Medic_Checker v5.9 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 

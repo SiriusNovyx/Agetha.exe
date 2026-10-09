@@ -6,6 +6,7 @@ Never raises to callers.
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
@@ -21,7 +22,6 @@ MEMORY_DIR = BASE_DIR / "memory"
 STATS_FILE = MEMORY_DIR / "companion_stats.json"
 
 _lock = threading.Lock()
-_cached_stats: dict[str, Any] | None = None
 _boot_time = time.monotonic()
 _FEED_SAMPLE_BYTES = 4096
 
@@ -90,75 +90,88 @@ _FLOAT_KEYS = ("infection_level", "entropy", "affection", "core_heat", "uptime_s
 _INT_KEYS = ("bytes_devoured", "last_feed_bytes")
 
 
-def _coerce_stats(raw: dict[str, Any] | None) -> dict[str, Any]:
-    """Merge raw into defaults with typed numeric/bool fields; reject poisoned values."""
+def _coerce_stats(raw: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
+    """Return semantic validity and usable fields merged over defaults."""
     out = dict(_DEFAULTS)
     if not isinstance(raw, dict):
-        return out
+        return "CORRUPT", out
+    state = "VALID"
     for key in _FLOAT_KEYS:
         if key not in raw:
             continue
         try:
-            out[key] = float(raw[key])
-        except (TypeError, ValueError):
-            pass
+            value = float(raw[key])
+            if not math.isfinite(value):
+                raise ValueError("nonfinite value")
+            out[key] = value
+        except (TypeError, ValueError, OverflowError):
+            state = "RECOVERABLE"
     for key in _INT_KEYS:
         if key not in raw:
             continue
         try:
             out[key] = int(float(raw[key]))
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError, OverflowError):
+            state = "RECOVERABLE"
     if "max_infection_reached" in raw:
-        out["max_infection_reached"] = bool(raw["max_infection_reached"])
+        if isinstance(raw["max_infection_reached"], bool):
+            out["max_infection_reached"] = raw["max_infection_reached"]
+        else:
+            state = "RECOVERABLE"
     if isinstance(raw.get("last_updated"), str):
         out["last_updated"] = raw["last_updated"]
-    return out
+    elif "last_updated" in raw:
+        state = "RECOVERABLE"
+    return state, out
 
-def _load_stats_unlocked() -> dict[str, Any]:
-    """Load stats; caller must hold `_lock`."""
-    global _cached_stats
-    if _cached_stats is not None:
-        return dict(_cached_stats)
+def _load_stats_unlocked() -> tuple[str, dict[str, Any]]:
+    """Read state without repairing or hiding disk changes; caller holds `_lock`."""
     try:
-        if not STATS_FILE.exists():
-            return dict(_DEFAULTS)
-        raw = json.loads(STATS_FILE.read_text(encoding="utf-8", errors="replace"))
-        if not isinstance(raw, dict):
-            raise ValueError("expected a JSON object")
-        _cached_stats = _coerce_stats(raw)
-        return dict(_cached_stats)
-    except Exception as exc:
-        logger.warning(f"companion_stats: load failed: {exc}")
-        repaired = dict(_DEFAULTS)
-        _save_stats_unlocked(repaired)
-        return dict(_cached_stats or repaired)
+        raw = json.loads(STATS_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "ABSENT", dict(_DEFAULTS)
+    except OSError:
+        logger.warning("companion_stats: UNREADABLE; no replacement attempted")
+        return "UNREADABLE", dict(_DEFAULTS)
+    except (ValueError, UnicodeError, RecursionError):
+        logger.warning("companion_stats: CORRUPT; original file preserved")
+        return "CORRUPT", dict(_DEFAULTS)
+    state, usable = _coerce_stats(raw)
+    if state != "VALID":
+        logger.warning("companion_stats: %s; original file preserved; mutations unavailable", state)
+    return state, usable
 
 
-def _save_stats_unlocked(stats: dict[str, Any]) -> None:
-    """Persist stats; caller must hold `_lock`."""
-    global _cached_stats
-    payload = _coerce_stats(stats)
+def _save_stats_unlocked(stats: dict[str, Any]) -> bool:
+    """Persist only over absent/valid state; caller must hold `_lock`."""
+    state, _ = _load_stats_unlocked()
+    if state not in ("ABSENT", "VALID"):
+        return False
+    state, payload = _coerce_stats(stats)
+    if state != "VALID":
+        logger.warning("companion_stats: %s save input; no replacement attempted", state)
+        return False
     payload["last_updated"] = datetime.now(timezone.utc).isoformat()
     try:
         write_atomic(STATS_FILE, json.dumps(payload, indent=2, ensure_ascii=False))
-        _cached_stats = dict(payload)
+        return True
     except Exception as exc:
         logger.warning(f"companion_stats: save failed: {exc}")
+        return False
 
 
 def load_stats() -> dict[str, Any]:
     """Load stats from disk; returns defaults on any failure."""
     _ensure_dir()
     with _lock:
-        return _load_stats_unlocked()
+        return _load_stats_unlocked()[1]
 
 
-def save_stats(stats: dict[str, Any]) -> None:
-    """Persist stats dict; failures are logged only."""
+def save_stats(stats: dict[str, Any]) -> bool:
+    """Return success; refuse to replace damaged or unreadable persistent state."""
     _ensure_dir()
     with _lock:
-        _save_stats_unlocked(stats)
+        return _save_stats_unlocked(stats)
 
 def classify_user_tone(text: str) -> str | None:
     """Return 'user_polite', 'user_hostile', or None."""
@@ -262,7 +275,9 @@ def update_stats(event_type: str, **kwargs: Any) -> None:
 
         _ensure_dir()
         with _lock:
-            stats = _load_stats_unlocked()
+            state, stats = _load_stats_unlocked()
+            if state not in ("ABSENT", "VALID"):
+                return
 
             if et == "file_drop":
                 stats["last_feed_bytes"] = int(sampled)
