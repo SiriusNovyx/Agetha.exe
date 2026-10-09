@@ -14,7 +14,7 @@ import threading
 import time
 import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agetha.utils import logger
 
@@ -114,8 +114,18 @@ def _resolve_kokoro_voice(voice_name: str) -> str:
     return _DEFAULT_KOKORO_VOICE
 
 
-def _play_audio_file(path: str, stop_event: threading.Event) -> None:
+def _speech_is_current(result_is_current: Callable[[], bool] | None) -> bool:
+    try:
+        return result_is_current is None or bool(result_is_current())
+    except Exception:
+        return False
+
+
+def _play_audio_file(path: str, stop_event: threading.Event, *,
+                     result_is_current: Callable[[], bool] | None = None) -> None:
     """Play an audio file via pygame mixer (already used by BleepPlayer)."""
+    if stop_event.is_set() or not _speech_is_current(result_is_current):
+        return
     try:
         import pygame
     except ImportError as exc:
@@ -124,6 +134,8 @@ def _play_audio_file(path: str, stop_event: threading.Event) -> None:
     if not pygame.mixer.get_init():
         pygame.mixer.init()
     sound = pygame.mixer.Sound(path)
+    if stop_event.is_set() or not _speech_is_current(result_is_current):
+        return
     channel = sound.play()
     if channel is None:
         return
@@ -163,7 +175,7 @@ class TTSPlayer:
         self._rate = rate
         self._volume = max(0.0, min(1.0, volume))
         self._voice_name = (voice_name or "").strip()
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._queue: queue.Queue[str | tuple[str, Callable[[], bool]] | None] = queue.Queue()
         self._shutdown = threading.Event()
         self._paused = threading.Event()
         self._engine: Any = None
@@ -254,29 +266,51 @@ class TTSPlayer:
                 continue
             if item is None:
                 break
-            text = item.strip()
+            text, result_is_current = item if isinstance(item, tuple) else (item, None)
+            text = text.strip()
             if not text or not self._engine_ready or self._engine is None:
                 continue
             try:
-                while self._paused.is_set() and not self._shutdown.is_set():
+                current = lambda: not self._shutdown.is_set() and _speech_is_current(result_is_current)
+                while self._paused.is_set() and current():
                     time.sleep(0.05)
-                if self._shutdown.is_set():
+                if not current():
                     continue
                 if self._engine_name == "pyttsx3":
-                    self._speak_pyttsx3(text)
+                    self._speak_pyttsx3(text, result_is_current=current)
                 elif self._engine_name == "edge_tts":
-                    self._speak_edge_tts(text)
+                    self._speak_edge_tts(text, result_is_current=current)
                 elif self._engine_name == "kokoro":
-                    self._speak_kokoro(text)
+                    self._speak_kokoro(text, result_is_current=current)
             except Exception as exc:
                 logger.warning(f"TTSPlayer: speak failed ({self._engine_name}): {exc}")
 
-    def _speak_pyttsx3(self, text: str) -> None:
-        self._engine.say(text)
-        self._engine.runAndWait()
+    def _speak_pyttsx3(self, text: str, *, result_is_current: Callable[[], bool] | None = None) -> None:
+        if not _speech_is_current(result_is_current):
+            return
+        if result_is_current is None:
+            self._engine.say(text)
+            self._engine.runAndWait()
+            return
+        started = threading.Event()
+        subscription = self._engine.connect("started-utterance", lambda **_: started.set())
+        try:
+            if not _speech_is_current(result_is_current):
+                return
+            self._engine.say(text)
+            if not _speech_is_current(result_is_current) and not started.is_set():
+                self._engine.stop()
+                return
+            self._engine.runAndWait()
+        except Exception:
+            if not started.is_set():
+                self._engine.stop()
+            raise
+        finally:
+            self._engine.disconnect(subscription)
 
-    def _speak_edge_tts(self, text: str) -> None:
-        if edge_tts is None:
+    def _speak_edge_tts(self, text: str, *, result_is_current: Callable[[], bool] | None = None) -> None:
+        if edge_tts is None or not _speech_is_current(result_is_current):
             return
         cfg = self._engine
         communicate = edge_tts.Communicate(
@@ -290,8 +324,8 @@ class TTSPlayer:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
             communicate.save_sync(tmp_path)
-            if not self._shutdown.is_set():
-                _play_audio_file(tmp_path, self._shutdown)
+            if not self._shutdown.is_set() and _speech_is_current(result_is_current):
+                _play_audio_file(tmp_path, self._shutdown, result_is_current=result_is_current)
         finally:
             if tmp_path:
                 try:
@@ -299,7 +333,9 @@ class TTSPlayer:
                 except Exception:
                     pass
 
-    def _speak_kokoro(self, text: str) -> None:
+    def _speak_kokoro(self, text: str, *, result_is_current: Callable[[], bool] | None = None) -> None:
+        if not _speech_is_current(result_is_current):
+            return
         import numpy as np
 
         cfg = self._engine
@@ -310,7 +346,7 @@ class TTSPlayer:
             voice=cfg["voice"],
             speed=cfg["speed"],
         ):
-            if self._shutdown.is_set():
+            if self._shutdown.is_set() or not _speech_is_current(result_is_current):
                 return
             chunks.append(np.asarray(audio, dtype=np.float32))
         if not chunks:
@@ -321,8 +357,8 @@ class TTSPlayer:
             fd, tmp_path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
             _write_wav_int16(Path(tmp_path), audio, _KOKORO_SAMPLE_RATE)
-            if not self._shutdown.is_set():
-                _play_audio_file(tmp_path, self._shutdown)
+            if not self._shutdown.is_set() and _speech_is_current(result_is_current):
+                _play_audio_file(tmp_path, self._shutdown, result_is_current=result_is_current)
         finally:
             if tmp_path:
                 try:
@@ -330,24 +366,27 @@ class TTSPlayer:
                 except Exception:
                     pass
 
-    def speak_text(self, text: str) -> None:
+    def speak_text(self, text: str, *, result_is_current: Callable[[], bool] | None = None) -> None:
         try:
             if not text or not text.strip():
                 return
             if not self._package_ok:
                 return
-            self._queue.put(str(text))
+            self._queue.put(str(text) if result_is_current is None else (str(text), result_is_current))
         except Exception as exc:
             logger.warning(f"TTSPlayer.speak_text failed: {exc}")
 
-    def speak_segments(self, segments: list[dict[str, Any]]) -> None:
+    def speak_segments(self, segments: list[dict[str, Any]], *, result_is_current: Callable[[], bool] | None = None) -> None:
         try:
             for seg in segments:
                 if not isinstance(seg, dict):
                     continue
                 chunk = str(seg.get("text", "")).strip()
                 if chunk:
-                    self.speak_text(chunk)
+                    if result_is_current is None:
+                        self.speak_text(chunk)
+                    else:
+                        self.speak_text(chunk, result_is_current=result_is_current)
         except Exception as exc:
             logger.warning(f"TTSPlayer.speak_segments failed: {exc}")
 
@@ -392,6 +431,8 @@ class VoiceOutputCoordinator:
     """Routes speech audio per VOICE_OUTPUT_MODE: bleeps_only | tts_only | both."""
 
     def __init__(self, bleep_player: Any, settings: Any) -> None:
+        self._pause_lock = threading.RLock()
+        self._pause_is_current = None
         self._bleep = bleep_player
         self._settings = settings
         raw_mode = str(getattr(settings, "voice_output_mode", "bleeps_only")).strip().lower()
@@ -415,8 +456,15 @@ class VoiceOutputCoordinator:
     def uses_tts(self) -> bool:
         return self._mode in ("tts_only", "both") and self._tts is not None
 
-    def start_speech(self, segments: list[dict[str, Any]], mood: str) -> None:
+    def start_speech(self, segments: list[dict[str, Any]], mood: str, *, result_is_current: Callable[[], bool] | None = None) -> None:
         try:
+            if not _speech_is_current(result_is_current):
+                return
+            # Release only a pause owned by an expired subtitle operation.
+            with self._pause_lock:
+                pause_is_current = self._pause_is_current
+                if pause_is_current is not None and not _speech_is_current(pause_is_current):
+                    self.resume()
             use_bleeps = self.uses_bleeps()
             use_tts = self._mode in ("tts_only", "both")
 
@@ -434,50 +482,69 @@ class VoiceOutputCoordinator:
 
             if use_bleeps and self._bleep is not None:
                 try:
-                    self._bleep.start_talking(tone=mood)
+                    if result_is_current is None:
+                        self._bleep.start_talking(tone=mood)
+                    else:
+                        self._bleep.start_talking(tone=mood, result_is_current=result_is_current)
                 except Exception as exc:
                     logger.warning(f"VoiceOutputCoordinator: bleep start failed: {exc}")
 
             # TTS is driven per subtitle segment via speak_segment() for realistic sync.
             if use_tts and self._mode == "tts_only" and self._tts is not None:
                 try:
-                    self._tts.speak_segments(segments)
+                    if result_is_current is None:
+                        self._tts.speak_segments(segments)
+                    else:
+                        self._tts.speak_segments(segments, result_is_current=result_is_current)
                 except Exception as exc:
                     logger.warning(f"VoiceOutputCoordinator: TTS batch failed: {exc}")
                     if self._bleep is not None:
                         try:
-                            self._bleep.start_talking(tone=mood)
+                            if _speech_is_current(result_is_current):
+                                if result_is_current is None:
+                                    self._bleep.start_talking(tone=mood)
+                                else:
+                                    self._bleep.start_talking(tone=mood, result_is_current=result_is_current)
                         except Exception:
                             pass
         except Exception as exc:
             logger.warning(f"VoiceOutputCoordinator.start_speech failed: {exc}")
 
-    def speak_segment(self, text: str) -> None:
+    def speak_segment(self, text: str, *, result_is_current: Callable[[], bool] | None = None) -> None:
         """Queue one subtitle segment for TTS (used in both/tts_only sync)."""
         try:
             if not text or not text.strip():
                 return
             if self._mode not in ("tts_only", "both") or self._tts is None:
                 return
-            self._tts.speak_text(text.strip())
+            if result_is_current is None:
+                self._tts.speak_text(text.strip())
+            else:
+                self._tts.speak_text(text.strip(), result_is_current=result_is_current)
         except Exception as exc:
             logger.warning(f"VoiceOutputCoordinator.speak_segment failed: {exc}")
 
-    def pause(self) -> None:
+    def pause(self, *, result_is_current: Callable[[], bool] | None = None) -> None:
         try:
-            if self.uses_bleeps() and self._bleep is not None:
-                self._bleep.pause()
-            if self._tts is not None:
-                self._tts.pause()
+            with self._pause_lock:
+                if not _speech_is_current(result_is_current):
+                    return
+                self._pause_is_current = result_is_current
+                if self.uses_bleeps() and self._bleep is not None:
+                    self._bleep.pause()
+                if self._tts is not None:
+                    self._tts.pause()
         except Exception as exc:
             logger.warning(f"VoiceOutputCoordinator.pause failed: {exc}")
 
     def resume(self) -> None:
         try:
-            if self.uses_bleeps() and self._bleep is not None:
-                self._bleep.resume()
-            if self._tts is not None:
-                self._tts.resume()
+            with self._pause_lock:
+                self._pause_is_current = None
+                if self.uses_bleeps() and self._bleep is not None:
+                    self._bleep.resume()
+                if self._tts is not None:
+                    self._tts.resume()
         except Exception as exc:
             logger.warning(f"VoiceOutputCoordinator.resume failed: {exc}")
 

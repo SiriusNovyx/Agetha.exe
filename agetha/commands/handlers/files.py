@@ -76,7 +76,7 @@ def handle_create_file(app, response, ctx):
                 parent = os.path.dirname(file_path)
                 if parent:
                     os.makedirs(parent, exist_ok=True)
-                with open(file_path, "w", encoding="utf-8") as fh:
+                with open(file_path, "x", encoding="utf-8") as fh:
                     fh.write(response.get("content", ""))
 
             performed, _value = _perform_authorized_effect(
@@ -241,15 +241,34 @@ def handle_run_command(app, response, ctx):
                 result = "[command error: shell metacharacters are not allowed]"
             else:
                 args = shlex.split(cmd_str, posix=not IS_WINDOWS)
-                r = subprocess.run(
-                    args, shell=False,
-                    capture_output=True, text=True, timeout=15,
+                performed, process = _perform_authorized_effect(
+                    app, response.get(_CAPABILITY_AUTHORIZATION),
+                    lambda: subprocess.Popen(
+                        args, shell=False, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True,
+                    ),
                 )
-                logger.info("run_command completed: exit=%s", r.returncode)
-                result = (
-                    "[command completed]" if r.returncode == 0
-                    else f"[command error: exit {r.returncode}]"
-                )
+                if not performed:
+                    result = "[command blocked: capability changed]"
+                else:
+                    with process:
+                        try:
+                            process.communicate(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            if IS_WINDOWS:
+                                process.communicate()
+                            else:
+                                process.wait()
+                            raise
+                        except BaseException:
+                            process.kill()
+                            raise
+                    logger.info("run_command completed: exit=%s", process.returncode)
+                    result = (
+                        "[command completed]" if process.returncode == 0
+                        else f"[command error: exit {process.returncode}]"
+                    )
         except Exception as exc:
             result = f"[command error: {type(exc).__name__}]"
     _finish_verified_command(app, ctx, result)
@@ -261,12 +280,20 @@ def handle_open_file(app, response, ctx):
     file_path = response.get("path", "").strip()
     if file_path:
         try:
-            if IS_WINDOWS:
-                os.startfile(file_path)
-            elif platform.system() == "Darwin":
-                subprocess.Popen(["open", file_path])
-            else:
-                subprocess.Popen(["xdg-open", file_path])
+            def _open():
+                if IS_WINDOWS:
+                    os.startfile(file_path)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", file_path])
+                else:
+                    subprocess.Popen(["xdg-open", file_path])
+
+            performed, _value = _perform_authorized_effect(
+                app, response.get(_CAPABILITY_AUTHORIZATION), _open,
+            )
+            if not performed:
+                _finish_verified_command(app, ctx, "[open blocked: capability changed]")
+                return True
         except Exception as exc:
             app._show_op_error(f"Open failed: {exc}")
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
@@ -275,7 +302,15 @@ def handle_open_file(app, response, ctx):
 
 @register("open_folder")
 def handle_open_folder(app, response, ctx):
-    msg = open_folder(response.get("path", "").strip())
+    msg = open_folder(
+        response.get("path", "").strip(),
+        effect_runner=lambda effect: _perform_authorized_effect(
+            app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+        ),
+    )
+    if msg.startswith("[open_folder blocked:"):
+        _finish_verified_command(app, ctx, msg)
+        return True
     if "error" in msg.lower():
         app._show_op_error(msg)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)

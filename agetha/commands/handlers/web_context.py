@@ -5,34 +5,26 @@ from agetha.utils import logger
 
 from .registry import register
 from .support import start_app_worker as _start_app_worker
+from .support import capture_context_validity as _capture_context_validity
 
 
-def _set_web_rag_pending(app, context: str, suppress: bool = True) -> None:
-    if app._ai is not None:
-        app._ai._pending_web_rag_context = context
-        app._ai._pending_suppress_web_rag = suppress
-
-
-def _clear_web_rag_pending(app) -> None:
-    if app._ai is not None:
-        app._ai._pending_web_rag_context = ""
-        app._ai._pending_suppress_web_rag = False
-
-
-def _requery_with_web_context(app, ctx, web_context: str) -> None:
-    _set_web_rag_pending(app, web_context, suppress=True)
-    try:
-        follow = app._ai_query(
-            ctx.user_message or "", request_profile="fast_tool_result",
-        )
-        if follow:
-            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-    finally:
-        _clear_web_rag_pending(app)
+def _requery_with_web_context(app, ctx, web_context: str, *, context_is_current=None) -> None:
+    if context_is_current is None:
+        context_is_current = _capture_context_validity(app)
+    if not context_is_current():
+        return
+    follow = app._ai_query(
+        ctx.user_message or "", request_profile="fast_tool_result",
+        web_rag_context=web_context, suppress_web_rag=True,
+    )
+    if follow:
+        app._dispatch_response(follow, ctx.user_message, origin="tool_result",
+                               speech_is_current=context_is_current)
 
 
 @register("search_web")
 def handle_search_web(app, response, ctx):
+    context_is_current = _capture_context_validity(app)
     if ctx.segments:
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
 
@@ -40,9 +32,9 @@ def handle_search_web(app, response, ctx):
         web_context = "[web search is disabled in config (ENABLE_WEB_RAG=no)]"
 
         def _requery_disabled():
-            _requery_with_web_context(app, ctx, web_context)
+            _requery_with_web_context(app, ctx, web_context, context_is_current=context_is_current)
 
-        _start_app_worker(app, _requery_disabled, "web-search-requery")
+        _start_app_worker(app, _requery_disabled, "web-search-requery", continuation_is_current=context_is_current)
         return True
 
     query = (response.get("query") or ctx.user_message or "").strip()
@@ -60,14 +52,15 @@ def handle_search_web(app, response, ctx):
         web_context = f"[web search error: {exc}]"
 
     def _requery():
-        _requery_with_web_context(app, ctx, web_context)
+        _requery_with_web_context(app, ctx, web_context, context_is_current=context_is_current)
 
-    _start_app_worker(app, _requery, "web-search-requery")
+    _start_app_worker(app, _requery, "web-search-requery", continuation_is_current=context_is_current)
     return True
 
 
 @register("fetch_webpage")
 def handle_fetch_webpage(app, response, ctx):
+    context_is_current = _capture_context_validity(app)
     if ctx.segments:
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
 
@@ -75,9 +68,9 @@ def handle_fetch_webpage(app, response, ctx):
         web_context = "[web fetch is disabled in config (ENABLE_WEB_RAG=no)]"
 
         def _requery_disabled():
-            _requery_with_web_context(app, ctx, web_context)
+            _requery_with_web_context(app, ctx, web_context, context_is_current=context_is_current)
 
-        _start_app_worker(app, _requery_disabled, "web-fetch-requery")
+        _start_app_worker(app, _requery_disabled, "web-fetch-requery", continuation_is_current=context_is_current)
         return True
 
     url = (response.get("url") or "").strip()
@@ -85,9 +78,9 @@ def handle_fetch_webpage(app, response, ctx):
         web_context = "[web fetch error: no url provided]"
 
         def _requery_empty():
-            _requery_with_web_context(app, ctx, web_context)
+            _requery_with_web_context(app, ctx, web_context, context_is_current=context_is_current)
 
-        _start_app_worker(app, _requery_empty, "web-fetch-requery")
+        _start_app_worker(app, _requery_empty, "web-fetch-requery", continuation_is_current=context_is_current)
         return True
 
     try:
@@ -99,7 +92,7 @@ def handle_fetch_webpage(app, response, ctx):
         web_context = f"[web fetch error: {exc}]"
 
     def _requery():
-        _requery_with_web_context(app, ctx, web_context)
+        _requery_with_web_context(app, ctx, web_context, context_is_current=context_is_current)
 
-    _start_app_worker(app, _requery, "web-fetch-requery")
+    _start_app_worker(app, _requery, "web-fetch-requery", continuation_is_current=context_is_current)
     return True

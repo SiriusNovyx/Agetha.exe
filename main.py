@@ -82,6 +82,9 @@ from agetha.core.continuation import (
     ContinuationEngine,
     DecisionKind,
 )
+from agetha.core.continuation_lifecycle import (
+    BoundedContinuationAdapter, ContinuationLifecycle, RequestIdentity, RequestState,
+)
 from agetha.core.context_dependencies import (
     ContextKind,
     ContextOutcome,
@@ -114,7 +117,7 @@ from agetha.utils import (
 )
 from agetha.app_config import get_settings
 from agetha.platform.window_control import ease_out_cubic
-from agetha.features.tts_player import VoiceOutputCoordinator
+from agetha.features.tts_player import VoiceOutputCoordinator, _speech_is_current
 from agetha.ui.mood_effects import MoodGlowController
 from agetha.ui.motion_effects import MoodMotionController
 from agetha.ui.window_effects import CRTCloseController
@@ -330,16 +333,18 @@ class BleepPlayer:
         self._cache[key] = sound
         return sound
 
-    def start_talking(self, tone: str = "neutral"):
-        if not self._mixer_ready:
+    def start_talking(self, tone: str = "neutral", *, result_is_current=None):
+        if not self._mixer_ready or not _speech_is_current(result_is_current):
             return
         self.stop()
+        if not _speech_is_current(result_is_current):
+            return
         self._stop_event.clear()
         self._current_tone = tone
-        self._thread = threading.Thread(target=self._loop, args=(tone,), daemon=True)
+        self._thread = threading.Thread(target=self._loop, args=(tone, result_is_current), daemon=True)
         self._thread.start()
 
-    def _loop(self, tone: str):
+    def _loop(self, tone: str, result_is_current=None):
         """Drive audio playback. Each mood has a distinct pattern:
         - manic:       hyper random pitch bursts
         - melancholic: slow low drone
@@ -347,44 +352,46 @@ class BleepPlayer:
         - dominant:    deep resonant slow hits
         - all others:  standard steady bleep
         """
+        if not _speech_is_current(result_is_current):
+            return
         profile = self._MOOD_PROFILES.get(tone, self._MOOD_PROFILES["neutral"])
         base_freq, min_int, max_int, vol = profile
 
         if tone == "manic":
             # Randomise pitch between 600–900 Hz at hyper-speed to evoke instability
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and _speech_is_current(result_is_current):
                 if self._paused:
                     time.sleep(0.01)
                     continue
                 freq = random.randint(600, 900)
                 snd = self._make_bleep(freq, vol)
-                if snd:
+                if snd and _speech_is_current(result_is_current):
                     snd.play()
                 time.sleep(random.uniform(min_int, max_int))
 
         elif tone == "melancholic":
             # Ultra-slow, ultra-low drone — barely alive
             snd = self._make_bleep(base_freq, vol)
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and _speech_is_current(result_is_current):
                 if self._paused:
                     time.sleep(0.05)
                     continue
-                if snd:
+                if snd and _speech_is_current(result_is_current):
                     snd.play()
                 time.sleep(random.uniform(min_int, max_int))
 
         elif tone == "paranoid":
             # Rapid bursts (2–6 bleeps) then sudden silence — anxious, erratic
             snd = self._make_bleep(base_freq, vol)
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and _speech_is_current(result_is_current):
                 if self._paused:
                     time.sleep(0.02)
                     continue
                 burst = random.randint(2, 6)
                 for _ in range(burst):
-                    if self._stop_event.is_set():
+                    if self._stop_event.is_set() or not _speech_is_current(result_is_current):
                         break
-                    if snd:
+                    if snd and _speech_is_current(result_is_current):
                         snd.play()
                     time.sleep(random.uniform(0.008, 0.022))
                 # Sudden silence gap — the paranoia breath
@@ -393,11 +400,11 @@ class BleepPlayer:
         elif tone == "dominant":
             # Deep, slow, resonant — each bleep is a statement
             snd = self._make_bleep(base_freq, vol)
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and _speech_is_current(result_is_current):
                 if self._paused:
                     time.sleep(0.03)
                     continue
-                if snd:
+                if snd and _speech_is_current(result_is_current):
                     snd.play()
                 time.sleep(random.uniform(min_int, max_int))
 
@@ -407,11 +414,12 @@ class BleepPlayer:
             snd = self._make_bleep(base_freq, vol)
             if snd is None:
                 return
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and _speech_is_current(result_is_current):
                 if self._paused:
                     time.sleep(0.02)
                     continue
-                snd.play()
+                if _speech_is_current(result_is_current):
+                    snd.play()
                 time.sleep(random.uniform(min_int, max_int))
 
     def pause(self):
@@ -687,11 +695,19 @@ class SubtitleRenderer:
         except Exception:
             pass
 
-    def speak(self, segments: list, on_done=None, *, allow_audio: bool = True):
+    def speak(self, segments: list, on_done=None, *, allow_audio: bool = True, result_is_current=None):
+        if not _speech_is_current(result_is_current):
+            if on_done:
+                on_done()
+            return
         self.stop()
+        if not _speech_is_current(result_is_current):
+            if on_done:
+                on_done()
+            return
         self._stop_event.clear()
         self._thread = threading.Thread(
-            target=self._run, args=(segments, on_done, bool(allow_audio)), daemon=True
+            target=self._run, args=(segments, on_done, bool(allow_audio), result_is_current), daemon=True
         )
         self._thread.start()
 
@@ -700,11 +716,15 @@ class SubtitleRenderer:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
 
-    def _run(self, segments: list, on_done, allow_audio: bool = True):
-        self._canvas.after(0, self.clear)
+    def _run(self, segments: list, on_done, allow_audio: bool = True, result_is_current=None):
+        if not _speech_is_current(result_is_current):
+            if on_done:
+                on_done()
+            return
+        self._canvas.after(0, lambda: self.clear() if _speech_is_current(result_is_current) else None)
         full_text = ""
         for seg in segments:
-            if self._stop_event.is_set():
+            if self._stop_event.is_set() or not _speech_is_current(result_is_current):
                 break
             chunk = seg.get("text", "").strip()
             pause = seg.get("pause", 0.0)
@@ -712,44 +732,50 @@ class SubtitleRenderer:
                 full_text += " "
             # Typewriter timing per character; redraw only at word boundaries
             for i, ch in enumerate(chunk):
-                if self._stop_event.is_set():
+                if self._stop_event.is_set() or not _speech_is_current(result_is_current):
                     break
                 full_text += ch
                 at_word_end = ch.isspace() or i == len(chunk) - 1
                 if at_word_end:
                     self._schedule_draw(full_text)
                 time.sleep(self.CHAR_DELAY)
-            if allow_audio and chunk and not self._stop_event.is_set():
+            if allow_audio and chunk and not self._stop_event.is_set() and _speech_is_current(result_is_current):
                 if self._voice_out and hasattr(self._voice_out, "speak_segment"):
                     try:
-                        self._voice_out.speak_segment(chunk)
+                        self._voice_out.speak_segment(chunk) if result_is_current is None else self._voice_out.speak_segment(chunk, result_is_current=result_is_current)
                     except Exception:
                         pass
-            if pause > 0 and not self._stop_event.is_set():
-                if allow_audio and self._voice_out:
+            if pause > 0 and not self._stop_event.is_set() and _speech_is_current(result_is_current):
+                if allow_audio and self._voice_out and _speech_is_current(result_is_current):
                     try:
-                        self._voice_out.pause()
+                        if result_is_current is None:
+                            self._voice_out.pause()
+                        else:
+                            self._voice_out.pause(result_is_current=result_is_current)
                     except Exception:
                         pass
-                elif allow_audio and self._bleep:
+                elif allow_audio and self._bleep and _speech_is_current(result_is_current):
                     self._bleep.pause()
                 time.sleep(pause)
-                if allow_audio and self._voice_out:
+                if allow_audio and self._voice_out and _speech_is_current(result_is_current):
                     try:
                         self._voice_out.resume()
                     except Exception:
                         pass
-                elif allow_audio and self._bleep:
+                elif allow_audio and self._bleep and _speech_is_current(result_is_current):
                     self._bleep.resume()
         try:
-            if self._voice_out:
+            if self._voice_out and _speech_is_current(result_is_current):
                 self._voice_out.stop_bleeps()
-            elif self._bleep:
+            elif self._bleep and _speech_is_current(result_is_current):
                 self._bleep.stop()
         except Exception:
             pass
         if on_done:
-            self._canvas.after(0, on_done)
+            if _speech_is_current(result_is_current):
+                self._canvas.after(0, on_done)
+            else:
+                on_done()
 
     def _compute_layout(self, text: str, color: str) -> dict | None:
         cw = self._canvas_w
@@ -1204,6 +1230,7 @@ class CompanionApp:
         self._ai_tick_lock = threading.Lock()
         self._ai_operation_token: object | None = None
         self._pending_user_message: str | None = None
+        self._pending_request_context_epoch: int | None = None
         self._pending_user_origin: RequestOrigin = "user"
         self._pending_screen_context: str | None = None
         self._pending_capability_authorization: object | None = None
@@ -1213,6 +1240,7 @@ class CompanionApp:
         self._workers: set[threading.Thread] = set()
         self._active_picker_cancellers: set[Callable[[], None]] = set()
         self._speech_active = False
+        self._speech_operation_token = None
         self._state_lock = threading.Lock()
         self._voice: VoiceInput | None = None
         self._mic_active = False
@@ -1238,8 +1266,10 @@ class CompanionApp:
             if _SETTINGS.enable_agent_continuation
             else None
         )
+        self._continuation_lifecycle = ContinuationLifecycle()
         self._continuation_tools = None
         self._continuation_ui_epoch = 0
+        self._context_request_epoch = 0
         self._unresolved_context_objectives = UnresolvedContextObjectiveStore()
         self._completed_context_history_sessions: set[tuple[str, int]] = set()
         self._context_capture_target_lock = threading.Lock()
@@ -1433,13 +1463,31 @@ class CompanionApp:
                 return
 
     def _call_ui_sync(self, callback: Callable[[], object], timeout: float = 5.0) -> object | None:
-        """Run a short Tk operation on the owner thread and return its result."""
+        """Expire pending UI work at timeout; wait for work already started."""
+        delivery_epoch = int(getattr(self, "_continuation_ui_epoch", 0))
+        cancel_event = getattr(self, "_cancel_event", None)
+        if getattr(self, "_closing", False) or (cancel_event is not None and cancel_event.is_set()):
+            return None
         if threading.current_thread() is threading.main_thread():
             return callback()
         done = threading.Event()
         result: list[object | None] = [None]
+        claim_lock = threading.Lock()
+        pending = True
 
         def _run() -> None:
+            nonlocal pending
+            with claim_lock:
+                if not pending:
+                    return
+                pending = False
+                if (
+                    getattr(self, "_closing", False)
+                    or (cancel_event is not None and cancel_event.is_set())
+                    or delivery_epoch != int(getattr(self, "_continuation_ui_epoch", 0))
+                ):
+                    done.set()
+                    return
             try:
                 result[0] = callback()
             finally:
@@ -1447,8 +1495,14 @@ class CompanionApp:
 
         if self._schedule_ui(_run) is None:
             return None
-        done.wait(timeout=max(0.0, float(timeout)))
-        return result[0] if done.is_set() else None
+        if not done.wait(timeout=max(0.0, float(timeout))):
+            with claim_lock:
+                if pending:
+                    pending = False
+                    return None
+            # Execution won the claim: returning a timeout would be untruthful.
+            done.wait()
+        return result[0]
 
     def _start_worker(
         self,
@@ -1457,32 +1511,63 @@ class CompanionApp:
         name: str,
         args: tuple = (),
         kwargs: dict | None = None,
+        on_start_failure: Callable[[], None] | None = None,
     ) -> threading.Thread | None:
         """Start and track one application-owned daemon worker."""
-        if getattr(self, "_closing", False):
-            return None
         if not hasattr(self, "_worker_lock"):
             self._worker_lock = threading.Lock()
             self._workers = set()
-        worker: threading.Thread
+        worker: threading.Thread | None = None
+        pending = True
+
+        def _withdraw() -> None:
+            nonlocal pending
+            with self._worker_lock:
+                withdrawn = pending
+                pending = False
+                if withdrawn and worker is not None:
+                    self._workers.discard(worker)
+            if withdrawn and on_start_failure is not None:
+                on_start_failure()
 
         def _run() -> None:
+            nonlocal pending
+            # Entry and failed-start withdrawal compete under the same lock.
+            with self._worker_lock:
+                if not pending:
+                    return
+                pending = False
+                self._workers.add(worker)
             try:
                 target(*args, **(kwargs or {}))
             finally:
                 with self._worker_lock:
                     self._workers.discard(worker)
 
-        worker = threading.Thread(target=_run, daemon=True)
+        if getattr(self, "_closing", False):
+            _withdraw()
+            return None
+        try:
+            worker = threading.Thread(target=_run, daemon=True)
+        except BaseException:
+            _withdraw()
+            raise
         try:
             worker.name = f"agetha-{name}"
         except Exception:
             pass
         with self._worker_lock:
-            if getattr(self, "_closing", False):
-                return None
-            self._workers.add(worker)
-        worker.start()
+            closing = getattr(self, "_closing", False)
+            if not closing:
+                self._workers.add(worker)
+        if closing:
+            _withdraw()
+            return None
+        try:
+            worker.start()
+        except BaseException:
+            _withdraw()
+            raise
         return worker
 
     def _join_workers(self, timeout: float = 0.75) -> None:
@@ -1964,11 +2049,17 @@ class CompanionApp:
         self._set_state(self.STATE_IDLE)
         if self._input_box["state"] == "disabled":
             return
+        self._invalidate_request_context()
+        continuation = getattr(self, "_continuation", None)
+        if continuation is not None:
+            self._invalidate_continuation_ui_delivery()
+            continuation.cancel_active("preempted_by_new_user_input")
+            self._clear_context_capture_targets()
         context = prepared.provider_context.text or "metadata withheld locally"
         self._start_worker(
             self._ai_tick,
             name="file-drop-ai",
-            kwargs={"user_message": context, "origin": "file_drop"},
+            kwargs={"user_message": context, "origin": "file_drop", "accepted_context_epoch": int(getattr(self, "_context_request_epoch", 0))},
         )
 
     def _update_token_status(self) -> None:
@@ -2223,11 +2314,17 @@ class CompanionApp:
             note("touch", summary="user touched the avatar")
         except Exception:
             pass
+        self._invalidate_request_context()
+        continuation = getattr(self, "_continuation", None)
+        if continuation is not None:
+            self._invalidate_continuation_ui_delivery()
+            continuation.cancel_active("preempted_by_new_user_input")
+            self._clear_context_capture_targets()
         self._persistent_mood = None
         self._start_worker(
             self._ai_tick,
             name="touch-ai",
-            kwargs={"user_message": "avatar touched", "origin": "touch"},
+            kwargs={"user_message": "avatar touched", "origin": "touch", "accepted_context_epoch": int(getattr(self, "_context_request_epoch", 0))},
         )
 
     def _on_user_input(self, event=None):
@@ -2238,6 +2335,7 @@ class CompanionApp:
             return
         if self._input_box["state"] == "disabled":
             return
+        self._invalidate_request_context()
         continuation = getattr(self, "_continuation", None)
         if continuation is not None:
             self._invalidate_continuation_ui_delivery()
@@ -2266,7 +2364,7 @@ class CompanionApp:
         self._start_worker(
             self._ai_tick,
             name="user-ai",
-            kwargs={"user_message": text, "origin": "user"},
+            kwargs={"user_message": text, "origin": "user", "accepted_context_epoch": int(getattr(self, "_context_request_epoch", 0))},
         )
 
     def _re_enable_input(self, *, request_focus: bool = True):
@@ -3546,21 +3644,26 @@ class CompanionApp:
         self._current_display_mood = mood or "neutral"
         self._refresh_mood_glow()
 
-    def _play_response_motion(self, mood: str) -> None:
+    def _play_response_motion(self, mood: str, *, result_is_current=None) -> None:
         """Schedule at most one motion for this completed response."""
-        if self._closing or not hasattr(self, "_motion"):
+        if self._closing or not _speech_is_current(result_is_current) or not hasattr(self, "_motion"):
             return
         if not self._presence_decision().allow_window_motion:
             return
-        if self._motion_request_job is not None:
-            return
-
         def _play() -> None:
-            self._motion_request_job = None
-            if not self._closing:
+            with self._ai_tick_lock:
+                if self._motion_request_job is not job:
+                    return
+                self._motion_request_job = None
+            if not self._closing and _speech_is_current(result_is_current):
                 self._motion.play_mood(mood)
 
-        self._motion_request_job = self._schedule_ui(_play)
+        # The UI queue does not execute inline; claim only after publishing its job.
+        with self._ai_tick_lock:
+            if self._motion_request_job is not None:
+                return
+            job = self._schedule_ui(_play)
+            self._motion_request_job = job
 
     def _set_state(self, state: str, mood: str = "neutral"):
         if self._closing:
@@ -4060,7 +4163,11 @@ class CompanionApp:
 
     def _on_cancel_ai(self, event=None):
         """Escape — cancel an in-flight AI request."""
+        lifecycle = getattr(self, "_continuation_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.cancel("escape")
         self._cancel_event.set()
+        self._invalidate_request_context()
         consent = getattr(self, "_capability_consent", None)
         if consent is not None and consent.snapshot.state not in {
             ConsentState.COMPACT,
@@ -4086,9 +4193,13 @@ class CompanionApp:
         )
 
     def _invalidate_continuation_ui_delivery(self) -> None:
+        lifecycle = getattr(self, "_continuation_lifecycle", None)
+        request = lifecycle.current if lifecycle is not None else None
         self._continuation_ui_epoch = (
             int(getattr(self, "_continuation_ui_epoch", 0)) + 1
         )
+        if request is not None:
+            request.revoke(RequestState.INVALIDATED, "ui_generation_changed")
 
     @staticmethod
     def _fast_ambient_is_local_idle(
@@ -4163,9 +4274,17 @@ class CompanionApp:
         explicit_screen_context: str | None = None,
         capability_authorization: object | None = None,
         noninterruptible: bool = False,
+        request_context_epoch: int | None = None,
     ) -> object | None:
         """Reserve the single provider slot or safely queue direct input."""
         with self._ai_tick_lock:
+            if self._closing:
+                return None
+            if (
+                request_context_epoch is not None
+                and request_context_epoch != int(getattr(self, "_context_request_epoch", 0))
+            ):
+                return None
             deferred_inflight = getattr(
                 self, "_deferred_ai_callbacks_inflight", False,
             )
@@ -4178,12 +4297,19 @@ class CompanionApp:
                     if not deferred_inflight and not self._ai_busy_noninterruptible:
                         self._cancel_event.set()
                     self._pending_user_message = user_message
+                    self._pending_request_context_epoch = (
+                        int(getattr(self, "_context_request_epoch", 0))
+                        if request_context_epoch is None else request_context_epoch
+                    )
                     self._pending_user_origin = origin
                     self._pending_screen_context = explicit_screen_context
                     self._pending_capability_authorization = capability_authorization
                 return None
             token = object()
             self._cancel_event.clear()
+            if self._closing:
+                self._cancel_event.set()
+                return None
             self._ai_busy = True
             self._ai_busy_noninterruptible = noninterruptible
             self._ai_operation_token = token
@@ -4347,6 +4473,7 @@ class CompanionApp:
         origin: RequestOrigin | None = None,
         explicit_screen_context: str | None = None,
         capability_authorization: object | None = None,
+        accepted_context_epoch: int | None = None,
     ):
         if self._closing:
             return
@@ -4411,424 +4538,464 @@ class CompanionApp:
             self._reschedule_screen_poll()
             return
 
+        with self._ai_tick_lock:
+            if accepted_context_epoch is None:
+                accepted_context_epoch = int(getattr(self, "_context_request_epoch", 0))
+            if accepted_context_epoch != int(getattr(self, "_context_request_epoch", 0)):
+                return
+        context_is_current = self._capture_context_validity()
+        speech_is_current = lambda: (
+            accepted_context_epoch == int(getattr(self, "_context_request_epoch", 0))
+            and context_is_current()
+        )
+        speech_delivery_epoch = int(getattr(self, "_continuation_ui_epoch", 0))
         operation_token = self._reserve_ai_operation(
             direct=is_user,
             user_message=user_message,
             origin=origin,
             explicit_screen_context=explicit_screen_context,
             capability_authorization=capability_authorization,
+            request_context_epoch=accepted_context_epoch,
         )
         if operation_token is None:
             if not is_user:
                 self._reschedule_screen_poll()
             return
 
-        def _discard_stale_ambient() -> None:
-            self._release_ai_operation(operation_token)
-            self._reschedule_screen_poll()
-            self._drain_pending_user_message()
-
-        if not _ambient_generation_is_current():
-            _discard_stale_ambient()
-            return
-
-        if not self._ai:
-            self._release_ai_operation(operation_token)
-            if origin != "terminal_sentinel":
-                self._schedule_ui(self._re_enable_input)
-            self._reschedule_screen_poll()
-            self._drain_pending_user_message()
-            return
-
-        if self._closing:
-            self._release_ai_operation(operation_token)
-            return
-        continuation_owner: tuple[str, int] | None = None
-        continuation = getattr(self, "_continuation", None)
-        if origin == "user" and provider_user_message and continuation is not None:
-            started = continuation.start(
-                provider_user_message,
-                authority_origin="user",
-                authorized_resources=self._continuation_resources_from_user(
-                    provider_user_message,
-                ),
-                allow_sensitive_outbound=(
-                    self._allows_sensitive_outbound_continuation(user_message)
-                ),
-            )
-            if started.kind is DecisionKind.STARTED:
-                continuation_owner = (started.session_id, started.generation)
-                self._preserve_context_capture_target(continuation_owner)
-        if is_user and origin != "terminal_sentinel":
-            self._schedule_ui(lambda: self._input_box.config(state="disabled"))
-            if origin == "user" and user_message:
-                try:
-                    from agetha.core.companion_stats import classify_user_tone, update_stats
-                    update_stats("user_chat")
-                    tone = classify_user_tone(user_message)
-                    if tone:
-                        update_stats(tone)
-                except Exception:
-                    tone = None
-                try:
-                    from agetha.core.emotion_engine import note
-                    note(tone or "user_chat")
-                except Exception:
-                    pass
-            self._schedule_ui(self._wake_from_presence_rest)
-
-        screen_text = str(explicit_screen_context or "")
-        raw_screen_text = screen_text
-        process_context = ""
-        sensitive_foreground = False
-        process_awareness = getattr(self, "_process_awareness", None)
-        if (
-            process_awareness is not None
-            and self._capabilities.is_allowed(Capability.PROCESS_AWARENESS)
-        ):
-            try:
-                if not _ambient_generation_is_current():
-                    _discard_stale_ambient()
-                    return
-                process_awareness.poll()
-                if not _ambient_generation_is_current():
-                    _discard_stale_ambient()
-                    return
-                process_snapshot = process_awareness.last_snapshot
-                foreground = (
-                    process_snapshot.foreground if process_snapshot is not None else None
-                )
-                sensitive_foreground = bool(
-                    foreground is not None and foreground.sensitive
-                )
-                if origin == "user":
-                    process_context = process_awareness.provider_context(process_snapshot)
-            except Exception as exc:
-                logger.debug("Process awareness poll failed: %s", type(exc).__name__)
-        monitor_status = ""
-        repeated_event = False
-        has_new_pattern_event = False
-        sentinel_consumed = False
-        previous_screen_text = self._last_screen_text
-        screen_reader = self._screen
-        if (
-            screen_reader
-            and explicit_screen_context is None
-            and not sensitive_foreground
-            and (
-                is_user
-                or _ambient_generation_is_current()
-            )
-        ):
-            own_hwnd = None
-            try:
-                if not _ambient_generation_is_current():
-                    _discard_stale_ambient()
-                    return
-                own_hwnd = screen_reader._get_own_hwnd()
-            except Exception:
-                pass
-
-            active_title = ""
-            if _SETTINGS.include_window_title_in_context:
-                if not _ambient_generation_is_current():
-                    _discard_stale_ambient()
-                    return
-                active_title = screen_reader.get_active_window_title(skip_hwnd=own_hwnd)
-
-            typing_pause = _SETTINGS.ocr_pause_while_typing_sec
-            # User messages bypass typing pause — they just typed and expect fresh screen context.
-            recently_active = (
-                not is_user
-                and typing_pause > 0
-                and (time.time() - self._last_direct_interaction_time) < typing_pause
-            )
-
-            if get_settings().enable_screen_reader and not recently_active:
-                if screen_reader.automatic_capture_supported:
-                    if not _ambient_generation_is_current():
-                        _discard_stale_ambient()
-                        return
-                    screen_text = screen_reader.capture_text(
-                        focused_only=_SETTINGS.ocr_focused_window_only,
-                    )
-                    if not _ambient_generation_is_current():
-                        _discard_stale_ambient()
-                        return
-                raw_screen_text = screen_text
-                monitor_status = getattr(screen_reader, "last_monitor_status", "")
-                if monitor_status in {"ocr_complete", "ocr_empty", "unchanged"}:
-                    self._last_safe_scan_time = datetime.now().astimezone()
-                if not _ambient_generation_is_current():
-                    _discard_stale_ambient()
-                    return
-                self._observe_capture_target()
-                preserve_previous_context = False
-                if monitor_status == "skipped_excluded_window":
-                    active_title = ""
-                    screen_text = "[Screen OCR skipped for an excluded window.]"
-                    preserve_previous_context = True
-                elif monitor_status == "skipped_own_window":
-                    active_title = ""
-                    screen_text = "[Screen OCR skipped while Agetha has focus.]"
-                    preserve_previous_context = True
-                elif monitor_status == "ocr_empty":
-                    screen_text = "[Screen OCR found no readable text.]"
-                    preserve_previous_context = True
-                elif monitor_status == "unchanged" and not is_user:
-                    screen_text = "[Screen unchanged; no new OCR event.]"
-                    preserve_previous_context = True
-                elif monitor_status in {
-                    "skipped_capture_unavailable",
-                    "skipped_wayland_capture_restricted",
-                    "skipped_minimized",
-                    "skipped_unmapped",
-                    "skipped_invalid_geometry",
-                    "skipped_fully_offscreen",
-                    "capture_backend_unavailable",
-                    "capture_failed",
-                }:
-                    self._last_screen_text = ""
-                if screen_text and not preserve_previous_context:
-                    self._last_screen_text = screen_text
-
-                _matches = getattr(
-                    screen_reader,
-                    "last_pattern_matches" if is_user else "last_new_pattern_events",
-                    [],
-                )
-                _current_matches = getattr(screen_reader, "last_pattern_matches", [])
-                if not is_user and _current_matches and not _matches:
-                    screen_text = "[Repeated screen event suppressed; no new OCR event.]"
-                    preserve_previous_context = True
-                    repeated_event = True
-                    if (
-                        fast_mode
-                        and (raw_screen_text or "").strip()
-                        != (previous_screen_text or "").strip()
-                    ):
-                        # The old pattern is repeated, but other OCR text changed;
-                        # keep that meaningful new event for the tiny Fast prompt.
-                        screen_text = raw_screen_text
-                        preserve_previous_context = False
-                if _matches:
-                    has_new_pattern_event = True
-                    tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
-                    screen_text = tags + "\n" + screen_text
-                elif is_user and getattr(screen_reader, "has_angry_trigger", False):
-                    kws = ", ".join(screen_reader.last_angry_keywords[:3])
-                    screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
-
-                if active_title:
-                    screen_text = f"[Active: {active_title}]\n" + screen_text
-
-                _KEY_WORDS = {
-                    "error", "warning", "failed", "exception", "traceback",
-                    "fatal", "crash", "denied", "undefined", "null", "critical",
-                }
-                _positions = getattr(screen_reader, "last_word_positions", [])
-                _important = [p for p in _positions if p.get("text", "").lower() in _KEY_WORDS][:5]
-                if _important and (is_user or bool(_matches)) and not preserve_previous_context:
-                    pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
-                    screen_text = f"[Error positions: {pos_str}]\n" + screen_text
-                if not is_user and _matches:
-                    if not _ambient_generation_is_current():
-                        _discard_stale_ambient()
-                        return
-                    sentinel_consumed = self._evaluate_terminal_sentinel_events(
-                        list(_matches),
-                        raw_screen_text,
-                    )
-            elif active_title:
-                screen_text = f"[Active: {active_title}]"
-                self._last_screen_text = screen_text
-
-        if sensitive_foreground:
-            screen_text = "[Sensitive application active; title and OCR withheld.]"
-            raw_screen_text = screen_text
-            self._last_screen_text = ""
-
-        if sentinel_consumed:
-            logger.info("Terminal Sentinel kept a validated event local pending user action")
-            self._release_ai_operation(operation_token)
-
-            def _finish_sentinel_local() -> None:
+        try:
+            def _discard_stale_ambient() -> None:
+                self._release_ai_operation(operation_token)
                 self._reschedule_screen_poll()
                 self._drain_pending_user_message()
 
-            self._schedule_ui(_finish_sentinel_local)
-            return
-
-        if (
-            fast_mode
-            and not is_user
-            and self._fast_ambient_is_local_idle(
-                monitor_status,
-                raw_screen_text,
-                previous_screen_text,
-                repeated_event=repeated_event,
-                has_new_pattern_event=has_new_pattern_event,
-            )
-            and not self._has_pending_fast_ambient_context()
-        ):
-            logger.debug(f"Fast ambient local idle: {monitor_status or 'repeated'}")
-            self._release_ai_operation(operation_token)
-
-            def _finish_local_idle() -> None:
-                self._reschedule_screen_poll()
-                self._drain_pending_user_message()
-
-            self._schedule_ui(_finish_local_idle)
-            return
-
-        ai_screen_context = screen_text or self._last_screen_text
-        if process_context:
-            ai_screen_context = (
-                f"[LOCAL APPLICATION CONTEXT]\n{process_context}\n"
-                f"[END LOCAL APPLICATION CONTEXT]\n{ai_screen_context}"
-            )
-        if fast_mode and not is_user:
-            ai_screen_context = self._compact_fast_ambient_context(ai_screen_context)
-        screen_redactor = (
-            screen_reader.redact_for_external_context if screen_reader else None
-        )
-        ai_screen_context = prepare_external_context(
-            ai_screen_context,
-            source="screen",
-            max_chars=4000,
-            redactor=screen_redactor,
-        ).text
-
-        self._schedule_owned_ai_ui(
-            operation_token,
-            lambda: self._set_state(self.STATE_THINKING),
-            result_is_current=_ambient_generation_is_current,
-        )
-
-        def _on_token(raw_so_far: str):
-            self._schedule_owned_ai_ui(
-                operation_token,
-                lambda r=raw_so_far: self._subtitle.show_thinking(r),
-                result_is_current=_ambient_generation_is_current,
-            )
-
-        provider_message = render_request_message(origin, provider_user_message)
-        request_profile = request_profile_for_origin(origin)
-        provider_kwargs = {
-            "screen_context": ai_screen_context,
-            "user_message": provider_message,
-            "request_profile": request_profile,
-            "request_origin": origin,
-            "recent_objective_context": self._recent_unresolved_context_for_prompt(
-                origin,
-            ),
-        }
-        if not is_user or origin == "terminal_sentinel":
             if not _ambient_generation_is_current():
                 _discard_stale_ambient()
                 return
-            provider_kwargs["provider_authorization"] = _ambient_generation_is_current
 
-        try:
-            if _SETTINGS.enable_streaming:
-                response = self._ai.query_streaming(
-                    on_token=_on_token,
-                    **provider_kwargs,
-                )
-            else:
-                response = self._ai.query(**provider_kwargs)
-        except Exception as exc:
+            if not self._ai:
+                self._release_ai_operation(operation_token)
+                if origin != "terminal_sentinel":
+                    self._schedule_ui(self._re_enable_input)
+                self._reschedule_screen_poll()
+                self._drain_pending_user_message()
+                return
+
             if self._closing:
                 self._release_ai_operation(operation_token)
                 return
+            continuation_owner: tuple[str, int] | None = None
+            continuation_request_owner = None
+            continuation = getattr(self, "_continuation", None)
+            if origin == "user" and provider_user_message and continuation is not None:
+                lifecycle = getattr(self, "_continuation_lifecycle", None)
+                if lifecycle is not None:
+                    lifecycle.invalidate("new_direct_request")
+                started = continuation.start(
+                    provider_user_message,
+                    authority_origin="user",
+                    authorized_resources=self._continuation_resources_from_user(
+                        provider_user_message,
+                    ),
+                    allow_sensitive_outbound=(
+                        self._allows_sensitive_outbound_continuation(user_message)
+                    ),
+                )
+                if started.kind is DecisionKind.STARTED:
+                    continuation_owner = (started.session_id, started.generation)
+                    self._preserve_context_capture_target(continuation_owner)
+            if is_user and origin != "terminal_sentinel":
+                self._schedule_ui(lambda: self._input_box.config(state="disabled"))
+                if origin == "user" and user_message:
+                    try:
+                        from agetha.core.companion_stats import classify_user_tone, update_stats
+                        update_stats("user_chat")
+                        tone = classify_user_tone(user_message)
+                        if tone:
+                            update_stats(tone)
+                    except Exception:
+                        tone = None
+                    try:
+                        from agetha.core.emotion_engine import note
+                        note(tone or "user_chat")
+                    except Exception:
+                        pass
+                self._schedule_ui(self._wake_from_presence_rest)
+
+            screen_text = str(explicit_screen_context or "")
+            raw_screen_text = screen_text
+            process_context = ""
+            sensitive_foreground = False
+            process_awareness = getattr(self, "_process_awareness", None)
+            if (
+                process_awareness is not None
+                and self._capabilities.is_allowed(Capability.PROCESS_AWARENESS)
+            ):
+                try:
+                    if not _ambient_generation_is_current():
+                        _discard_stale_ambient()
+                        return
+                    process_awareness.poll()
+                    if not _ambient_generation_is_current():
+                        _discard_stale_ambient()
+                        return
+                    process_snapshot = process_awareness.last_snapshot
+                    foreground = (
+                        process_snapshot.foreground if process_snapshot is not None else None
+                    )
+                    sensitive_foreground = bool(
+                        foreground is not None and foreground.sensitive
+                    )
+                    if origin == "user":
+                        process_context = process_awareness.provider_context(process_snapshot)
+                except Exception as exc:
+                    logger.debug("Process awareness poll failed: %s", type(exc).__name__)
+            monitor_status = ""
+            repeated_event = False
+            has_new_pattern_event = False
+            sentinel_consumed = False
+            previous_screen_text = self._last_screen_text
+            screen_reader = self._screen
+            if (
+                screen_reader
+                and explicit_screen_context is None
+                and not sensitive_foreground
+                and (
+                    is_user
+                    or _ambient_generation_is_current()
+                )
+            ):
+                own_hwnd = None
+                try:
+                    if not _ambient_generation_is_current():
+                        _discard_stale_ambient()
+                        return
+                    own_hwnd = screen_reader._get_own_hwnd()
+                except Exception:
+                    pass
+
+                active_title = ""
+                if _SETTINGS.include_window_title_in_context:
+                    if not _ambient_generation_is_current():
+                        _discard_stale_ambient()
+                        return
+                    active_title = screen_reader.get_active_window_title(skip_hwnd=own_hwnd)
+
+                typing_pause = _SETTINGS.ocr_pause_while_typing_sec
+                # User messages bypass typing pause — they just typed and expect fresh screen context.
+                recently_active = (
+                    not is_user
+                    and typing_pause > 0
+                    and (time.time() - self._last_direct_interaction_time) < typing_pause
+                )
+
+                if get_settings().enable_screen_reader and not recently_active:
+                    if screen_reader.automatic_capture_supported:
+                        if not _ambient_generation_is_current():
+                            _discard_stale_ambient()
+                            return
+                        screen_text = screen_reader.capture_text(
+                            focused_only=_SETTINGS.ocr_focused_window_only,
+                        )
+                        if not _ambient_generation_is_current():
+                            _discard_stale_ambient()
+                            return
+                    raw_screen_text = screen_text
+                    monitor_status = getattr(screen_reader, "last_monitor_status", "")
+                    if monitor_status in {"ocr_complete", "ocr_empty", "unchanged"}:
+                        self._last_safe_scan_time = datetime.now().astimezone()
+                    if not _ambient_generation_is_current():
+                        _discard_stale_ambient()
+                        return
+                    self._observe_capture_target()
+                    preserve_previous_context = False
+                    if monitor_status == "skipped_excluded_window":
+                        active_title = ""
+                        screen_text = "[Screen OCR skipped for an excluded window.]"
+                        preserve_previous_context = True
+                    elif monitor_status == "skipped_own_window":
+                        active_title = ""
+                        screen_text = "[Screen OCR skipped while Agetha has focus.]"
+                        preserve_previous_context = True
+                    elif monitor_status == "ocr_empty":
+                        screen_text = "[Screen OCR found no readable text.]"
+                        preserve_previous_context = True
+                    elif monitor_status == "unchanged" and not is_user:
+                        screen_text = "[Screen unchanged; no new OCR event.]"
+                        preserve_previous_context = True
+                    elif monitor_status in {
+                        "skipped_capture_unavailable",
+                        "skipped_wayland_capture_restricted",
+                        "skipped_minimized",
+                        "skipped_unmapped",
+                        "skipped_invalid_geometry",
+                        "skipped_fully_offscreen",
+                        "capture_backend_unavailable",
+                        "capture_failed",
+                    }:
+                        self._last_screen_text = ""
+                    if screen_text and not preserve_previous_context:
+                        self._last_screen_text = screen_text
+
+                    _matches = getattr(
+                        screen_reader,
+                        "last_pattern_matches" if is_user else "last_new_pattern_events",
+                        [],
+                    )
+                    _current_matches = getattr(screen_reader, "last_pattern_matches", [])
+                    if not is_user and _current_matches and not _matches:
+                        screen_text = "[Repeated screen event suppressed; no new OCR event.]"
+                        preserve_previous_context = True
+                        repeated_event = True
+                        if (
+                            fast_mode
+                            and (raw_screen_text or "").strip()
+                            != (previous_screen_text or "").strip()
+                        ):
+                            # The old pattern is repeated, but other OCR text changed;
+                            # keep that meaningful new event for the tiny Fast prompt.
+                            screen_text = raw_screen_text
+                            preserve_previous_context = False
+                    if _matches:
+                        has_new_pattern_event = True
+                        tags = "\n".join(f"[{m.label}: {m.snippet[:80]}]" for m in _matches[:4])
+                        screen_text = tags + "\n" + screen_text
+                    elif is_user and getattr(screen_reader, "has_angry_trigger", False):
+                        kws = ", ".join(screen_reader.last_angry_keywords[:3])
+                        screen_text = f"[ANGRY_TRIGGER: {kws}]\n" + screen_text
+
+                    if active_title:
+                        screen_text = f"[Active: {active_title}]\n" + screen_text
+
+                    _KEY_WORDS = {
+                        "error", "warning", "failed", "exception", "traceback",
+                        "fatal", "crash", "denied", "undefined", "null", "critical",
+                    }
+                    _positions = getattr(screen_reader, "last_word_positions", [])
+                    _important = [p for p in _positions if p.get("text", "").lower() in _KEY_WORDS][:5]
+                    if _important and (is_user or bool(_matches)) and not preserve_previous_context:
+                        pos_str = " | ".join(f"{p['text']}@({p['screen_x']},{p['screen_y']})" for p in _important)
+                        screen_text = f"[Error positions: {pos_str}]\n" + screen_text
+                    if not is_user and _matches:
+                        if not _ambient_generation_is_current():
+                            _discard_stale_ambient()
+                            return
+                        sentinel_consumed = self._evaluate_terminal_sentinel_events(
+                            list(_matches),
+                            raw_screen_text,
+                        )
+                elif active_title:
+                    screen_text = f"[Active: {active_title}]"
+                    self._last_screen_text = screen_text
+
+            if sensitive_foreground:
+                screen_text = "[Sensitive application active; title and OCR withheld.]"
+                raw_screen_text = screen_text
+                self._last_screen_text = ""
+
+            if sentinel_consumed:
+                logger.info("Terminal Sentinel kept a validated event local pending user action")
+                self._release_ai_operation(operation_token)
+
+                def _finish_sentinel_local() -> None:
+                    self._reschedule_screen_poll()
+                    self._drain_pending_user_message()
+
+                self._schedule_ui(_finish_sentinel_local)
+                return
+
+            if (
+                fast_mode
+                and not is_user
+                and self._fast_ambient_is_local_idle(
+                    monitor_status,
+                    raw_screen_text,
+                    previous_screen_text,
+                    repeated_event=repeated_event,
+                    has_new_pattern_event=has_new_pattern_event,
+                )
+                and not self._has_pending_fast_ambient_context()
+            ):
+                logger.debug(f"Fast ambient local idle: {monitor_status or 'repeated'}")
+                self._release_ai_operation(operation_token)
+
+                def _finish_local_idle() -> None:
+                    self._reschedule_screen_poll()
+                    self._drain_pending_user_message()
+
+                self._schedule_ui(_finish_local_idle)
+                return
+
+            ai_screen_context = screen_text or self._last_screen_text
+            if process_context:
+                ai_screen_context = (
+                    f"[LOCAL APPLICATION CONTEXT]\n{process_context}\n"
+                    f"[END LOCAL APPLICATION CONTEXT]\n{ai_screen_context}"
+                )
+            if fast_mode and not is_user:
+                ai_screen_context = self._compact_fast_ambient_context(ai_screen_context)
+            screen_redactor = (
+                screen_reader.redact_for_external_context if screen_reader else None
+            )
+            ai_screen_context = prepare_external_context(
+                ai_screen_context,
+                source="screen",
+                max_chars=4000,
+                redactor=screen_redactor,
+            ).text
+
+            self._schedule_owned_ai_ui(
+                operation_token,
+                lambda: self._set_state(self.STATE_THINKING),
+                result_is_current=_ambient_generation_is_current,
+            )
+
+            def _on_token(raw_so_far: str):
+                self._schedule_owned_ai_ui(
+                    operation_token,
+                    lambda r=raw_so_far: self._subtitle.show_thinking(r),
+                    result_is_current=_ambient_generation_is_current,
+                )
+
+            provider_message = render_request_message(origin, provider_user_message)
+            request_profile = request_profile_for_origin(origin)
+            provider_kwargs = {
+                "screen_context": ai_screen_context,
+                "user_message": provider_message,
+                "request_profile": request_profile,
+                "request_origin": origin,
+                "recent_objective_context": self._recent_unresolved_context_for_prompt(
+                    origin,
+                ),
+            }
+            if not is_user or origin == "terminal_sentinel":
+                if not _ambient_generation_is_current():
+                    _discard_stale_ambient()
+                    return
+                provider_kwargs["provider_authorization"] = _ambient_generation_is_current
+
+            try:
+                if _SETTINGS.enable_streaming:
+                    response = self._ai.query_streaming(
+                        on_token=_on_token,
+                        **provider_kwargs,
+                    )
+                else:
+                    response = self._ai.query(**provider_kwargs)
+            except Exception as exc:
+                if self._closing:
+                    self._release_ai_operation(operation_token)
+                    return
+                if not _ambient_generation_is_current():
+                    _discard_stale_ambient()
+                    return
+                err_str = str(exc)
+                logger.error("AI tick failed: %s", type(exc).__name__)
+                _groq_limit_keywords = ("rate_limit", "rate limit", "429", "quota", "groq_exhausted")
+                if origin == "terminal_sentinel":
+                    self._schedule_ui(
+                        lambda: self._subtitle.show_message(
+                            "Explanation is unavailable right now.", "#888888",
+                        ),
+                    )
+                elif not any(kw in err_str.lower() for kw in _groq_limit_keywords):
+                    _short = err_str[:200] if len(err_str) > 200 else err_str
+                    message = f"An error occurred:\n{_short}"
+                    self._schedule_ui(
+                        lambda msg=message: native_error_popup("Agetha — Error", msg),
+                    )
+                if origin != "terminal_sentinel":
+                    self._schedule_ui(self._re_enable_input)
+                self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
+                self._release_ai_operation(operation_token)
+                if continuation_owner is not None and continuation is not None:
+                    continuation.provider_failed(
+                        continuation_owner[0], continuation_owner[1], "provider_error",
+                    )
+                self._reschedule_screen_poll()
+                self._drain_pending_user_message()
+                return
+
             if not _ambient_generation_is_current():
                 _discard_stale_ambient()
                 return
-            err_str = str(exc)
-            logger.error("AI tick failed: %s", type(exc).__name__)
-            _groq_limit_keywords = ("rate_limit", "rate limit", "429", "quota", "groq_exhausted")
-            if origin == "terminal_sentinel":
-                self._schedule_ui(
-                    lambda: self._subtitle.show_message(
-                        "Explanation is unavailable right now.", "#888888",
-                    ),
-                )
-            elif not any(kw in err_str.lower() for kw in _groq_limit_keywords):
-                _short = err_str[:200] if len(err_str) > 200 else err_str
-                message = f"An error occurred:\n{_short}"
-                self._schedule_ui(
-                    lambda msg=message: native_error_popup("Agetha — Error", msg),
-                )
-            if origin != "terminal_sentinel":
-                self._schedule_ui(self._re_enable_input)
-            self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
-            self._release_ai_operation(operation_token)
-            if continuation_owner is not None and continuation is not None:
-                continuation.provider_failed(
-                    continuation_owner[0], continuation_owner[1], "provider_error",
-                )
-            self._reschedule_screen_poll()
-            self._drain_pending_user_message()
-            return
 
-        if not _ambient_generation_is_current():
-            _discard_stale_ambient()
-            return
+            if self._cancel_event.is_set():
+                self._release_ai_operation(operation_token)
+                if continuation_owner is not None and continuation is not None:
+                    continuation.cancel_active("cancelled")
+                if origin != "terminal_sentinel":
+                    self._schedule_ui(self._re_enable_input)
+                self._drain_pending_user_message()
+                return
 
-        if self._cancel_event.is_set():
-            self._release_ai_operation(operation_token)
-            if continuation_owner is not None and continuation is not None:
-                continuation.cancel_active("cancelled")
-            if origin != "terminal_sentinel":
-                self._schedule_ui(self._re_enable_input)
-            self._drain_pending_user_message()
-            return
-
-        logger.info(
-            "AI response received: origin=%s command=%s",
-            origin,
-            response.get("command", "invalid") if isinstance(response, dict) else "invalid",
-        )
-        if origin == "user":
-            self._clear_unresolved_context_if_topic_changed(response)
-
-        if origin != "terminal_sentinel":
-            self._schedule_ui(self._re_enable_input)
-        self._schedule_ui(self._update_token_status)
-        continuation_decision: ContinuationDecision | None = None
-        if continuation_owner is not None and continuation is not None:
-            command = (
-                str(response.get("command", "")).strip().lower()
-                if isinstance(response, dict)
-                else ""
+            logger.info(
+                "AI response received: origin=%s command=%s",
+                origin,
+                response.get("command", "invalid") if isinstance(response, dict) else "invalid",
             )
-            context_request = self._context_request_from_model_response(response)
-            if (
-                command in AUTOMATIC_READ_ONLY_COMMANDS | {"speak", "idle"}
-                or context_request is not None
-            ):
-                continuation_decision = self._accept_continuation_response(
-                    continuation,
-                    continuation_owner,
-                    response,
-                    request_origin="user",
+            if origin == "user":
+                self._clear_unresolved_context_if_topic_changed(response)
+
+            if origin != "terminal_sentinel":
+                self._schedule_ui(self._re_enable_input)
+            self._schedule_ui(self._update_token_status)
+            continuation_decision: ContinuationDecision | None = None
+            if continuation_owner is not None and continuation is not None:
+                command = (
+                    str(response.get("command", "")).strip().lower()
+                    if isinstance(response, dict)
+                    else ""
                 )
-            else:
-                # Stateful direct-user commands retain the existing dispatcher,
-                # feature gates, previews, and Command Guard confirmations.
-                continuation.cancel_active("delegated_to_direct_dispatch")
+                context_request = self._context_request_from_model_response(response)
+                if (
+                    command in AUTOMATIC_READ_ONLY_COMMANDS | {"speak", "idle"}
+                    or context_request is not None
+                ):
+                    if command == "read_notepad" and context_request is None:
+                        continuation_request_owner = self._admit_bounded_continuation(started, validity=lambda: (
+                            speech_is_current()
+                            and speech_delivery_epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+                        ))
+                    continuation_decision = self._accept_continuation_response(
+                        continuation,
+                        continuation_owner,
+                        response,
+                        request_origin="user",
+                    )
+                else:
+                    # Stateful direct-user commands retain the existing dispatcher,
+                    # feature gates, previews, and Command Guard confirmations.
+                    continuation.cancel_active("delegated_to_direct_dispatch")
 
-        if continuation_decision is not None:
-            self._release_ai_operation(operation_token)
-            self._run_deferred_ai_tick_callbacks()
-            self._handle_continuation_decision(continuation_decision)
-            return
+            if continuation_decision is not None:
+                self._release_ai_operation(operation_token)
+                self._run_deferred_ai_tick_callbacks()
+                self._handle_continuation_decision(
+                    continuation_decision, delivery_epoch=speech_delivery_epoch,
+                    result_is_current=speech_is_current, request_owner=continuation_request_owner,
+                )
+                return
 
-        try:
-            self._dispatch_response(response, user_message, origin=origin)
+            try:
+                self._dispatch_response(response, user_message, origin=origin,
+                                        speech_is_current=speech_is_current)
+            finally:
+                self._release_ai_operation(operation_token)
+                self._run_deferred_ai_tick_callbacks()
         finally:
-            self._release_ai_operation(operation_token)
-            self._run_deferred_ai_tick_callbacks()
+            # Explicit earlier releases preserve handoffs; recover only our slot.
+            if self._release_ai_operation(operation_token):
+                def _restore_failed_tick_ui() -> None:
+                    with self._ai_tick_lock:
+                        if self._closing or self._ai_operation_token is not None or self._speech_active:
+                            return
+                        if origin != "terminal_sentinel":
+                            self._re_enable_input()
+                        self._set_state(self.STATE_IDLE)
+                    self._reschedule_screen_poll()
+
+                self._schedule_ui(_restore_failed_tick_ui)
+                self._run_deferred_ai_tick_callbacks()
 
     def _defer_after_ai_tick(self, callback: Callable[[], None]) -> None:
         """Run callback after the current _ai_tick releases _ai_busy (avoids _ai_query races)."""
@@ -4837,31 +5004,73 @@ class CompanionApp:
 
     def _defer_exclusive_ai_operation(self, callback: Callable[[], None]) -> None:
         """Run one deferred operation while retaining the app-wide AI slot."""
+        with self._ai_tick_lock:
+            request_epoch = int(getattr(self, "_context_request_epoch", 0))
+        context_is_current = self._capture_context_validity()
         def _start() -> None:
-            if self._closing:
+            if not context_is_current():
                 return
             token = self._reserve_ai_operation(
                 direct=False,
                 user_message=None,
                 origin="tool_result",
                 noninterruptible=True,
+                request_context_epoch=request_epoch,
             )
             if token is None:
                 logger.warning("Deferred exclusive AI operation could not reserve its slot")
                 return
-            self._schedule_ui(lambda: self._input_box.config(state="disabled"))
+            def _disable_input() -> None:
+                with self._ai_tick_lock:
+                    if not self._closing and self._ai_operation_token is token:
+                        self._input_box.config(state="disabled")
+
+            def _restore_input() -> None:
+                with self._ai_tick_lock:
+                    if not self._closing and self._ai_operation_token is None and not self._speech_active:
+                        self._re_enable_input()
+
+            def _finish() -> None:
+                if self._release_ai_operation(token, noninterruptible=True):
+                    self._schedule_ui(_restore_input)
+                    self._run_deferred_ai_tick_callbacks()
+
+            # Failed handoff cleanup may withdraw only unclaimed work.
+            claim_lock = threading.Lock()
+            pending = True
 
             def _run() -> None:
+                nonlocal pending
+                with claim_lock:
+                    if not pending:
+                        return
+                    pending = False
+                    closing = self._closing
+                if closing or not context_is_current():
+                    _finish()
+                    return
                 try:
                     callback()
                 except Exception as exc:
                     logger.warning(f"Deferred exclusive AI operation failed: {exc}")
                 finally:
-                    self._release_ai_operation(token, noninterruptible=True)
-                    self._schedule_ui(self._re_enable_input)
-                    self._run_deferred_ai_tick_callbacks()
+                    _finish()
 
-            self._start_worker(_run, name="exclusive-ai")
+            handed_off = False
+            try:
+                self._schedule_ui(_disable_input)
+                handed_off = self._start_worker(_run, name="exclusive-ai") is not None
+            finally:
+                if not handed_off:
+                    with claim_lock:
+                        cancel_pending = pending
+                        pending = False
+                    if cancel_pending:
+                        try:
+                            if context_is_current():
+                                self._report_worker_start_failure(request_epoch)
+                        finally:
+                            _finish()
 
         self._defer_after_ai_tick(_start)
 
@@ -4914,6 +5123,7 @@ class CompanionApp:
         if self._closing:
             with self._ai_tick_lock:
                 self._pending_user_message = None
+                self._pending_request_context_epoch = None
                 self._pending_user_origin = "user"
                 self._pending_screen_context = None
                 self._pending_capability_authorization = None
@@ -4927,17 +5137,21 @@ class CompanionApp:
             ):
                 return
             pending = self._pending_user_message
+            pending_context_epoch = getattr(self, "_pending_request_context_epoch", None)
             pending_origin = getattr(self, "_pending_user_origin", "user")
             pending_screen_context = getattr(self, "_pending_screen_context", None)
             pending_capability_authorization = getattr(
                 self, "_pending_capability_authorization", None,
             )
             self._pending_user_message = None
+            self._pending_request_context_epoch = None
             self._pending_user_origin = "user"
             self._pending_screen_context = None
             self._pending_capability_authorization = None
         if pending is not None:
             kwargs = {"user_message": pending, "origin": pending_origin}
+            if pending_context_epoch is not None:
+                kwargs["accepted_context_epoch"] = pending_context_epoch
             if pending_screen_context is not None:
                 kwargs["explicit_screen_context"] = pending_screen_context
             if pending_capability_authorization is not None:
@@ -5027,42 +5241,83 @@ class CompanionApp:
         allow_audio: bool = True,
         on_done: Callable[[], None] | None = None,
         reschedule: bool = True,
+        result_is_current: Callable[[], bool] | None = None,
+        show_mood_glitch: bool = True,
     ):
+        if self._closing or not _speech_is_current(result_is_current):
+            return
         if segments:
-            self._speech_active = True
-
-            def _begin_speech() -> None:
-                self._set_state(self.STATE_TALKING, mood)
+            with self._ai_tick_lock:
+                context_epoch = int(getattr(self, "_context_request_epoch", 0))
+            context_is_current = self._capture_context_validity()
+            epoch = int(getattr(self, "_continuation_ui_epoch", 0))
+            token = object()
+            def _current() -> bool:
                 try:
-                    from agetha.ui.glitch_overlay import maybe_mood_glitch
-                    maybe_mood_glitch(self.root, mood)
+                    return (
+                        context_is_current()
+                        and epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+                        and (result_is_current is None or result_is_current())
+                    )
                 except Exception:
-                    pass
-                if allow_audio and self._voice_out:
-                    try:
-                        self._voice_out.start_speech(segments, mood)
-                    except Exception:
-                        if self._bleep:
-                            try:
-                                self._bleep.start_talking(tone=mood)
-                            except Exception:
-                                pass
-                elif allow_audio and self._bleep:
-                    try:
-                        self._bleep.start_talking(tone=mood)
-                    except Exception:
-                        pass
-                self._subtitle.speak(
-                    segments,
-                    on_done=lambda: self._on_speech_done(
-                        shutdown_requested,
-                        on_done=on_done,
-                        reschedule=reschedule,
-                    ),
-                    allow_audio=allow_audio,
+                    return False
+
+            if not _current():
+                return
+            with self._ai_tick_lock:
+                if (
+                    self._closing or self._cancel_event.is_set()
+                    or context_epoch != int(getattr(self, "_context_request_epoch", 0))
+                    or epoch != int(getattr(self, "_continuation_ui_epoch", 0))
+                ):
+                    return
+                self._speech_operation_token = token
+                self._speech_active = True
+
+            def _finish() -> None:
+                self._on_speech_done(
+                    shutdown_requested, on_done=on_done, reschedule=reschedule,
+                    operation_token=token, result_is_current=_current,
                 )
 
-            self._schedule_ui(_begin_speech)
+            def _begin_speech() -> None:
+                if not _current():
+                    _finish()
+                    return
+                try:
+                    self._set_state(self.STATE_TALKING, mood)
+                    try:
+                        from agetha.ui.glitch_overlay import maybe_mood_glitch
+                        if show_mood_glitch:
+                            maybe_mood_glitch(self.root, mood)
+                    except Exception:
+                        pass
+                    if not _current():
+                        _finish()
+                        return
+                    if allow_audio and self._voice_out:
+                        try:
+                            self._voice_out.start_speech(segments, mood, result_is_current=_current)
+                        except Exception:
+                            if self._bleep and _current():
+                                self._bleep.start_talking(tone=mood, result_is_current=_current)
+                    elif allow_audio and self._bleep:
+                        self._bleep.start_talking(tone=mood, result_is_current=_current)
+                    if not _current():
+                        _finish()
+                        return
+                    self._subtitle.speak(
+                        segments,
+                        on_done=_finish,
+                        allow_audio=allow_audio,
+                        result_is_current=_current,
+                    )
+                except Exception:
+                    _finish()
+                    raise
+
+            if self._schedule_ui(_begin_speech) is None:
+                _finish()
         else:
             self._schedule_ui(lambda: self._set_state(self.STATE_IDLE, mood))
             if reschedule:
@@ -5361,6 +5616,32 @@ class CompanionApp:
             response,
         )
 
+    def _get_continuation_lifecycle(self) -> ContinuationLifecycle:
+        with self._ai_tick_lock:
+            lifecycle = getattr(self, "_continuation_lifecycle", None)
+            if lifecycle is None:
+                lifecycle = self._continuation_lifecycle = ContinuationLifecycle()
+            return lifecycle
+
+    def _admit_bounded_continuation(self, started, *, validity):
+        def cleanup(request):
+            identity = request.identity
+            owner = (identity.request_id, identity.generation)
+            self._take_context_capture_target(owner)
+            if request.reason == "worker_start_failed":
+                store = getattr(self, "_unresolved_context_objectives", None)
+                if store is not None:
+                    store.clear(owner=owner)
+        adapter = BoundedContinuationAdapter(self._get_continuation_lifecycle(), self._continuation)
+        return adapter.admit(started, validity=validity, cleanup=cleanup,
+                             on_failure=lambda decision, request: self._handle_continuation_decision(
+                                 decision, request_owner=request))
+
+    def _continuation_request_for(self, decision):
+        lifecycle = getattr(self, "_continuation_lifecycle", None)
+        return (lifecycle.find(RequestIdentity(decision.session_id, decision.generation))
+                if lifecycle is not None else None)
+
     def _request_read_only_context_dependency(
         self,
         request: ContextRequest,
@@ -5374,6 +5655,9 @@ class CompanionApp:
         continuation = getattr(self, "_continuation", None)
         if continuation is None or not str(user_message or "").strip():
             return False
+        lifecycle = getattr(self, "_continuation_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.invalidate("new_context_request")
         started = continuation.start(
             user_message,
             authority_origin="user",
@@ -5399,33 +5683,61 @@ class CompanionApp:
         decision: ContinuationDecision,
         *,
         delivery_epoch: int | None = None,
+        result_is_current: Callable[[], bool] | None = None,
+        request_owner=None,
     ) -> None:
         """Advance one state-machine decision without recursion or provider overlap."""
+        request = request_owner if request_owner is not None else self._continuation_request_for(decision)
         if self._closing or decision.kind is DecisionKind.IGNORED:
             return
+        if not _speech_is_current(result_is_current):
+            if request is not None:
+                request.revoke(RequestState.INVALIDATED, "producer_invalidated")
+            return
+        if request is not None:
+            producer_is_current = result_is_current
+            result_is_current = lambda: (
+                request.delivery_is_current() and _speech_is_current(producer_is_current)
+            )
+            if not result_is_current():
+                return
+        if delivery_epoch is None:
+            delivery_epoch = int(getattr(self, "_continuation_ui_epoch", 0))
         if threading.current_thread() is not threading.main_thread():
-            queued_epoch = int(getattr(self, "_continuation_ui_epoch", 0))
+            queued_epoch = delivery_epoch
             scheduled = self._schedule_ui(
                 lambda current=decision, epoch=queued_epoch: (
                     self._handle_continuation_decision(
                         current,
-                        delivery_epoch=epoch,
+                        delivery_epoch=epoch, result_is_current=result_is_current, request_owner=request,
                     )
                 ),
             )
             if scheduled is None:
-                continuation = getattr(self, "_continuation", None)
-                if continuation is not None:
-                    continuation.cancel_active("ui_schedule_failed")
+                if request is not None:
+                    request.finish(RequestState.FAILED, "ui_schedule_failed")
+                else:
+                    continuation = getattr(self, "_continuation", None)
+                    if continuation is not None:
+                        continuation.cancel_active("ui_schedule_failed")
             return
         if (
             delivery_epoch is not None
             and delivery_epoch != int(getattr(self, "_continuation_ui_epoch", 0))
         ):
+            if request is not None:
+                request.revoke(RequestState.INVALIDATED, "ui_generation_changed")
             return
         if not self._continuation_decision_is_owned(decision):
             return
-        if decision.kind in {
+        if request is not None:
+            terminal = BoundedContinuationAdapter.terminal_state(decision)
+            if terminal is not None:
+                if not request.claim_result(terminal, reason=decision.reason):
+                    return
+            elif not request.work_is_current():
+                return
+        if request is None and decision.kind in {
             DecisionKind.FINAL,
             DecisionKind.BLOCKED,
             DecisionKind.STOPPED,
@@ -5446,40 +5758,62 @@ class CompanionApp:
                 False,
                 allow_audio=allow_audio,
                 on_done=lambda: self._finish_continuation_status(
-                    session_id, generation,
+                    session_id, generation, request_owner=request,
                 ),
                 reschedule=False,
+                result_is_current=lambda: (
+                    self._continuation_decision_is_owned(decision)
+                    and delivery_epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+                    and _speech_is_current(result_is_current)
+                ),
             )
             return
-        if decision.kind is DecisionKind.RUN_TOOL:
-            self._start_worker(
-                self._run_continuation_tool,
-                name="continuation-tool",
-                args=(decision,),
-            )
-            return
-        if decision.kind is DecisionKind.RUN_CONTEXT:
-            self._start_worker(
-                self._run_continuation_context,
-                name="continuation-context",
-                args=(decision,),
-            )
-            return
-        if decision.kind is DecisionKind.CALL_PROVIDER:
-            self._start_worker(
-                self._run_continuation_provider,
-                name="continuation-provider",
-                args=(decision,),
-            )
+        if decision.kind in {DecisionKind.RUN_TOOL, DecisionKind.RUN_CONTEXT, DecisionKind.CALL_PROVIDER}:
+            continuation = self._continuation
+            owner = (decision.session_id, decision.generation)
+            def _failed_start() -> None:
+                stopped = continuation.provider_failed(*owner, "worker_start_failed")
+                self._take_context_capture_target(owner)
+                store = getattr(self, "_unresolved_context_objectives", None)
+                if store is not None:
+                    store.clear(owner=owner)
+                self._handle_continuation_decision(
+                    stopped, delivery_epoch=delivery_epoch, result_is_current=result_is_current,
+                )
+                self._drain_pending_user_message()
+
+            target, name, args = {
+                DecisionKind.RUN_TOOL: (self._run_continuation_tool, "continuation-tool", (decision,)),
+                DecisionKind.RUN_CONTEXT: (self._run_continuation_context, "continuation-context", (decision,)),
+                DecisionKind.CALL_PROVIDER: (
+                    self._run_continuation_provider, "continuation-provider",
+                    (decision, result_is_current or self._capture_context_validity()),
+                ),
+            }[decision.kind]
+            if request is not None:
+                request.handoff(
+                    lambda run, failed: self._start_worker(run, name=name, on_start_failure=failed),
+                    lambda: target(*args, request_owner=request),
+                )
+            else:
+                self._start_worker(target, name=name, args=args, on_start_failure=_failed_start)
             return
         if decision.kind is DecisionKind.FINAL:
             segments = self._continuation_segments(decision)
             snapshot = decision.snapshot
             self._commit_context_terminal_turn(snapshot, segments)
             if segments:
-                self._speak_and_continue(segments, "neutral", False)
+                self._speak_and_continue(
+                    segments, "neutral", False,
+                    result_is_current=lambda: (
+                    self._continuation_decision_is_owned(decision)
+                    and delivery_epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+                    and _speech_is_current(result_is_current)
+                ),
+                )
             else:
-                self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
+                self._schedule_ui(lambda: self._set_state(self.STATE_IDLE)
+                    if request is None or _speech_is_current(result_is_current) else None)
                 self._reschedule_screen_poll()
             return
         if decision.kind in {DecisionKind.BLOCKED, DecisionKind.STOPPED}:
@@ -5489,7 +5823,9 @@ class CompanionApp:
             }
             if decision.reason not in quiet_reasons:
                 message = "I stopped before the next step because it was not safely authorized."
-                if decision.reason in {"deadline_exceeded", "max_steps_reached"}:
+                if decision.reason == "worker_start_failed":
+                    message = "I couldn't start the next step. Please try again."
+                elif decision.reason in {"deadline_exceeded", "max_steps_reached"}:
                     message = "I stopped because this task reached its safety limit."
                 elif decision.reason == "repeated_context_dependency":
                     message = (
@@ -5517,10 +5853,20 @@ class CompanionApp:
                     decision.snapshot,
                     [{"text": message, "pause": 0.0}],
                 )
-                self._schedule_ui(
-                    lambda text=message: self._subtitle.show_message(text, "#ff8800"),
-                )
-            self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
+                def _show_failure(text=message) -> None:
+                    if (
+                        not self._closing
+                        and self._continuation_decision_is_owned(decision)
+                        and delivery_epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+                        and _speech_is_current(result_is_current)
+                    ):
+                        self._subtitle.show_message(text, "#ff8800")
+                self._schedule_ui(_show_failure)
+            self._schedule_ui(lambda: self._set_state(self.STATE_IDLE) if (
+                not self._closing and self._continuation_decision_is_owned(decision)
+                and delivery_epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+                and _speech_is_current(result_is_current)
+            ) else None)
             self._reschedule_screen_poll()
 
     def _commit_context_terminal_turn(
@@ -5569,6 +5915,9 @@ class CompanionApp:
         decision: ContinuationDecision,
     ) -> bool:
         """Reject queued decisions whose session was preempted before Tk ran."""
+        request = self._continuation_request_for(decision)
+        if request is not None:
+            return request.delivery_is_current()
         continuation = getattr(self, "_continuation", None)
         if continuation is None or decision.snapshot is None:
             return False
@@ -5591,20 +5940,21 @@ class CompanionApp:
             and last.generation == decision.generation
         )
 
-    def _finish_continuation_status(self, session_id: str, generation: int) -> None:
+    def _finish_continuation_status(self, session_id: str, generation: int, *, request_owner=None) -> None:
         continuation = getattr(self, "_continuation", None)
         if continuation is None or self._closing:
             return
         self._handle_continuation_decision(
-            continuation.status_finished(session_id, generation),
+            continuation.status_finished(session_id, generation), request_owner=request_owner,
         )
 
-    def _run_continuation_tool(self, decision: ContinuationDecision) -> None:
+    def _run_continuation_tool(self, decision: ContinuationDecision, *, request_owner=None) -> None:
         """Run one validated read-only tool for the current continuation owner."""
         continuation = getattr(self, "_continuation", None)
         tools = getattr(self, "_continuation_tools", None)
         snapshot = decision.snapshot
         request = decision.tool_request
+        request_owner = request_owner if request_owner is not None else self._continuation_request_for(decision)
         if (
             continuation is None
             or tools is None
@@ -5618,7 +5968,7 @@ class CompanionApp:
                         snapshot.session_id,
                         snapshot.generation,
                         "read_only_tools_unavailable",
-                    ),
+                    ), request_owner=request_owner,
                 )
             return
         session_id, generation = snapshot.session_id, snapshot.generation
@@ -5626,7 +5976,8 @@ class CompanionApp:
         def _cancelled() -> bool:
             return (
                 self._closing
-                or not continuation.is_current(session_id, generation)
+                or (not request_owner.work_is_current() if request_owner is not None
+                    else not continuation.is_current(session_id, generation))
             )
 
         if _cancelled():
@@ -5639,10 +5990,10 @@ class CompanionApp:
         if _cancelled():
             return
         self._handle_continuation_decision(
-            continuation.accept_tool_outcome(session_id, generation, outcome),
+            continuation.accept_tool_outcome(session_id, generation, outcome), request_owner=request_owner,
         )
 
-    def _run_continuation_context(self, decision: ContinuationDecision) -> None:
+    def _run_continuation_context(self, decision: ContinuationDecision, *, request_owner=None) -> None:
         """Resolve one typed dependency, then resume the same direct-user goal."""
         continuation = getattr(self, "_continuation", None)
         snapshot = decision.snapshot
@@ -5653,10 +6004,12 @@ class CompanionApp:
         session_id, generation = snapshot.session_id, snapshot.generation
         capture_target = self._take_context_capture_target((session_id, generation))
 
+        request_owner = request_owner if request_owner is not None else self._continuation_request_for(decision)
         def _cancelled() -> bool:
             return bool(
                 self._closing
-                or not continuation.is_current(session_id, generation)
+                or (not request_owner.work_is_current() if request_owner is not None
+                    else not continuation.is_current(session_id, generation))
             )
 
         if _cancelled():
@@ -5680,7 +6033,7 @@ class CompanionApp:
                 owner=(session_id, generation),
             )
         self._handle_continuation_decision(
-            continuation.accept_context_outcome(session_id, generation, outcome),
+            continuation.accept_context_outcome(session_id, generation, outcome), request_owner=request_owner,
         )
 
     def _acquire_read_only_context(
@@ -5838,15 +6191,26 @@ class CompanionApp:
             "Ask the user to bring the relevant window forward, then answer from known context.]",
         )
 
-    def _run_continuation_provider(self, decision: ContinuationDecision) -> None:
+    def _run_continuation_provider(
+        self, decision: ContinuationDecision, producer_is_current=None, *, request_owner=None,
+    ) -> None:
         continuation = getattr(self, "_continuation", None)
         snapshot = decision.snapshot
         if continuation is None or snapshot is None or self._closing:
             return
         session_id, generation = snapshot.session_id, snapshot.generation
+        if producer_is_current is None:
+            producer_is_current = self._capture_context_validity()
+        delivery_epoch = int(getattr(self, "_continuation_ui_epoch", 0))
 
+        request_owner = request_owner if request_owner is not None else self._continuation_request_for(decision)
         def _current() -> bool:
-            return continuation.is_current(session_id, generation) and not self._closing
+            return (
+                (request_owner.work_is_current() if request_owner is not None
+                 else continuation.is_current(session_id, generation))
+                and producer_is_current()
+                and delivery_epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+            )
 
         if not _current():
             return
@@ -5858,12 +6222,13 @@ class CompanionApp:
             origin="tool_result",
             preserve_user_message=True,
             result_is_current=_current,
+            continuation_request=request_owner,
         )
         if not _current():
             return
         if not isinstance(follow, dict):
             self._handle_continuation_decision(
-                continuation.provider_failed(session_id, generation),
+                continuation.provider_failed(session_id, generation), request_owner=request_owner,
             )
             return
         next_decision = self._accept_continuation_response(
@@ -5872,7 +6237,54 @@ class CompanionApp:
             follow,
             request_origin="tool_result",
         )
-        self._handle_continuation_decision(next_decision)
+        self._handle_continuation_decision(
+            next_decision, delivery_epoch=delivery_epoch,
+            result_is_current=producer_is_current, request_owner=request_owner,
+        )
+
+    def _report_worker_start_failure(self, request_epoch: int) -> None:
+        """End only this unstarted legacy request and restore its UI on Tk."""
+        failed_token = getattr(self, "_ai_operation_token", None)
+        if not self._invalidate_request_context(expected_epoch=request_epoch):
+            return
+        current = self._capture_context_validity()
+        def _show_failure() -> None:
+            if (
+                not current()
+                or request_epoch + 1 != int(getattr(self, "_context_request_epoch", 0))
+                or getattr(self, "_ai_operation_token", None) not in (None, failed_token)
+            ):
+                return
+            self._subtitle.show_message("I couldn't start the next step. Please try again.", "#ff8800")
+            self._set_state(self.STATE_IDLE)
+            self._reschedule_screen_poll()
+        self._schedule_ui(_show_failure)
+
+    def _invalidate_request_context(self, *, expected_epoch: int | None = None) -> bool:
+        with self._ai_tick_lock:
+            if expected_epoch is not None and expected_epoch != int(getattr(self, "_context_request_epoch", 0)):
+                return False
+            lifecycle = getattr(self, "_continuation_lifecycle", None)
+            request = lifecycle.current if lifecycle is not None else None
+            self._context_request_epoch = int(getattr(self, "_context_request_epoch", 0)) + 1
+        if request is not None:
+            request.revoke(RequestState.INVALIDATED, "context_generation_changed")
+        return True
+
+    def _capture_context_validity(self) -> Callable[[], bool]:
+        """Validate queued context without changing UI or profile lifetimes."""
+        with self._ai_tick_lock:
+            epoch = int(getattr(self, "_context_request_epoch", 0))
+
+        def _current() -> bool:
+            with self._ai_tick_lock:
+                return (
+                    epoch == int(getattr(self, "_context_request_epoch", 0))
+                    and not self._closing
+                    and not self._cancel_event.is_set()
+                )
+
+        return _current
 
     def _ai_query(
         self,
@@ -5886,7 +6298,18 @@ class CompanionApp:
         origin: RequestOrigin = "tool_result",
         preserve_user_message: bool = False,
         result_is_current: Callable[[], bool] | None = None,
+        *,
+        web_rag_context: str = "",
+        suppress_web_rag: bool = False,
+        notepad_context: str = "",
+        suppress_read_notepad: bool = False,
+        continuation_request=None,
     ):
+        if continuation_request is not None:
+            producer_is_current = result_is_current
+            result_is_current = lambda: (
+                continuation_request.work_is_current() and _speech_is_current(producer_is_current)
+            )
         if (
             self._cancel_event.is_set()
             or not self._ai
@@ -5910,12 +6333,14 @@ class CompanionApp:
             if operation_token is None:
                 return None
             stream_operation_token = operation_token
-        self._schedule_owned_ai_ui(
-            stream_operation_token,
-            lambda: self._set_state(self.STATE_THINKING),
-            result_is_current=result_is_current,
-        )
-
+        reservation = None
+        if continuation_request is not None and owns_ai_slot:
+            def release_reservation():
+                self._release_ai_operation(operation_token)
+                self._drain_pending_user_message()
+            reservation = continuation_request.reserve(operation_token, release_reservation, running=True)
+            if reservation is None:
+                return None
         def _on_token(raw):
             self._schedule_owned_ai_ui(
                 stream_operation_token,
@@ -5924,6 +6349,11 @@ class CompanionApp:
             )
 
         try:
+            self._schedule_owned_ai_ui(
+                stream_operation_token,
+                lambda: self._set_state(self.STATE_THINKING),
+                result_is_current=result_is_current,
+            )
             selected_screen_context = (
                 self._last_screen_text if screen_context is None else screen_context
             )
@@ -5949,6 +6379,10 @@ class CompanionApp:
                     memory_search_context=memory_search_context,
                     suppress_search_memory=suppress_search_memory,
                     on_token=_on_token,
+                    web_rag_context=web_rag_context,
+                    suppress_web_rag=suppress_web_rag,
+                    notepad_context=notepad_context,
+                    suppress_read_notepad=suppress_read_notepad,
                     request_profile=request_profile,
                     request_origin=normalized_origin,
                     provider_authorization=result_is_current,
@@ -5960,6 +6394,10 @@ class CompanionApp:
                     doc_content=doc_content,
                     memory_search_context=memory_search_context,
                     suppress_search_memory=suppress_search_memory,
+                    web_rag_context=web_rag_context,
+                    suppress_web_rag=suppress_web_rag,
+                    notepad_context=notepad_context,
+                    suppress_read_notepad=suppress_read_notepad,
                     request_profile=request_profile,
                     request_origin=normalized_origin,
                     provider_authorization=result_is_current,
@@ -5971,11 +6409,13 @@ class CompanionApp:
             logger.error("_ai_query failed: %s", type(exc).__name__)
             return None
         finally:
-            if owns_ai_slot and operation_token is not None:
+            if reservation is not None:
+                reservation.release()
+            elif owns_ai_slot and operation_token is not None:
                 self._release_ai_operation(operation_token)
                 self._drain_pending_user_message()
 
-    def _try_short_mood_speak(self, command: str, ctx) -> bool:
+    def _try_short_mood_speak(self, command: str, ctx, *, result_is_current=None) -> bool:
         try:
             short_moods = {"happy", "excited", "surprised"}
             segments = ctx.segments
@@ -5993,32 +6433,25 @@ class CompanionApp:
             if not static_name or static_name not in self._gif_cache:
                 return False
 
-            def _begin_short_speech() -> None:
-                self._set_state(self.STATE_TALKING, mood)
-                if self._voice_out:
-                    try:
-                        self._voice_out.start_speech(segments, mood)
-                    except Exception:
-                        if self._bleep:
-                            try:
-                                self._bleep.start_talking(tone=mood)
-                            except Exception:
-                                pass
-                elif self._bleep:
-                    try:
-                        self._bleep.start_talking(tone=mood)
-                    except Exception:
-                        pass
-                self._subtitle.speak(
-                    segments,
-                    on_done=lambda: self._on_speech_done(ctx.shutdown_requested),
+            context_is_current = self._capture_context_validity()
+            epoch = int(getattr(self, "_continuation_ui_epoch", 0))
+
+            def _current():
+                return (
+                    context_is_current()
+                    and epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+                    and _speech_is_current(result_is_current)
                 )
 
-            self._speech_active = True
-            self._schedule_ui(
-                lambda: self.root.after(12, lambda: self._play_gif(static_name)),
+            def _cue():
+                if _current():
+                    self.root.after(12, lambda: self._play_gif(static_name) if _current() else None)
+
+            self._schedule_ui(_cue)
+            self._speak_and_continue(
+                segments, mood, ctx.shutdown_requested,
+                result_is_current=_current, show_mood_glitch=False,
             )
-            self._schedule_ui(_begin_short_speech)
             return True
         except Exception:
             return False
@@ -6029,9 +6462,11 @@ class CompanionApp:
         user_message: str | None = None,
         *,
         origin: RequestOrigin | None = None,
+        speech_is_current: Callable[[], bool] | None = None,
     ):
         from agetha.commands.command_handlers import dispatch
-        dispatch(self, response, user_message, origin=origin)
+        dispatch(self, response, user_message, origin=origin,
+                 speech_is_current=speech_is_current)
 
     def _on_speech_done(
         self,
@@ -6039,18 +6474,33 @@ class CompanionApp:
         *,
         on_done: Callable[[], None] | None = None,
         reschedule: bool = True,
+        operation_token=None,
+        result_is_current=None,
     ):
-        self._speech_active = False
-        # _persistent_mood already set — _set_state(STATE_IDLE) picks it up
-        self._schedule_ui(lambda: self._set_state(self.STATE_IDLE))
-        if shutdown:
-            self.root.after(50, self._shutdown)
-        else:
+        with self._ai_tick_lock:
+            if operation_token is not None:
+                if getattr(self, "_speech_operation_token", None) is not operation_token:
+                    return
+                self._speech_operation_token = None
+            self._speech_active = False
+
+        def _current():
+            return (
+                not self._closing
+                and _speech_is_current(result_is_current)
+                and (operation_token is None or getattr(self, "_speech_operation_token", None) is None)
+            )
+
+        if _current():
+            self._schedule_ui(lambda: self._set_state(self.STATE_IDLE) if _current() else None)
+            if shutdown:
+                self.root.after(50, lambda: self._shutdown() if _current() else None)
+                return
             if reschedule:
-                self._schedule_ui(self._reschedule_screen_poll)
-            if on_done is not None and not self._closing:
-                self._schedule_ui(on_done)
-            self._drain_pending_user_message()
+                self._schedule_ui(lambda: self._reschedule_screen_poll() if _current() else None)
+            if on_done is not None:
+                self._schedule_ui(lambda: on_done() if _current() else None)
+        self._drain_pending_user_message()
 
     def _restore_from_tray(self) -> None:
         if self._closing:
@@ -6072,6 +6522,9 @@ class CompanionApp:
         self._refresh_mood_glow()
 
     def _disable_input_for_close(self) -> None:
+        lifecycle = getattr(self, "_continuation_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.shutdown()
         self._closing = True
         self._cancel_event.set()
         bootstrap_cancel = getattr(self, "_computer_use_start_cancel", None)
@@ -6121,6 +6574,9 @@ class CompanionApp:
         if self._shutdown_complete:
             return
         self._shutdown_complete = True
+        lifecycle = getattr(self, "_continuation_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.shutdown()
         self._closing = True
         self._cancel_event.set()
         bootstrap_cancel = getattr(self, "_computer_use_start_cancel", None)

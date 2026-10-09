@@ -677,13 +677,17 @@ class ContinuationEngine:
             assert session is not None
             return self._stop_locked(session, str(reason or "provider_error")[:120])
 
-    def cancel_active(self, reason: str = "cancelled") -> ContinuationDecision:
+    def cancel_active(self, reason: str = "cancelled", *,
+                      session_id: str | None = None, generation: int | None = None) -> ContinuationDecision:
         """Cancel the current session and invalidate all outstanding callbacks."""
 
         with self._lock:
             if self._active is None:
                 return ContinuationDecision(DecisionKind.IGNORED, "no_active_session")
             session = self._active
+            if ((session_id is not None and session.session_id != session_id)
+                or (generation is not None and session.generation != generation)):
+                return self._ignored_locked(session, "stale_session_callback")
             session.cancel_event.set()
             session.state = ContinuationState.CANCELLED
             snapshot = self._snapshot_locked(session)

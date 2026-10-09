@@ -223,7 +223,7 @@ def create_default_config(config_path: Path = None) -> None:
     logger.info(f"Created config.txt at {config_path or CONFIG_PATH}")
 
 # ── Named Constants (from config.txt) ─────────────────────────────────────────
-from agetha.app_config import get_settings
+from agetha.app_config import _CONFIG_WRITE_LOCK, get_settings
 
 _cfg = get_settings()
 TOUCH_COOLDOWN_SEC = _cfg.touch_cooldown_sec
@@ -240,8 +240,11 @@ GIF_H = 300
 def refresh_config_constants() -> None:
     """Re-read config.txt and update module-level timing constants."""
     global TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS, SCREEN_POLL_INTERVAL_MS
-    cfg = get_settings(reload=True)
-    TOUCH_COOLDOWN_SEC = cfg.touch_cooldown_sec
-    WAKE_DELAY_MS = cfg.wake_delay_ms
-    LOAF_TIMER_MS = cfg.loaf_timer_ms
-    SCREEN_POLL_INTERVAL_MS = cfg.screen_poll_interval_ms
+    get_settings(reload=True)
+    # A later reload may have published since this refresh finished loading.
+    with _CONFIG_WRITE_LOCK:
+        cfg = get_settings()
+        TOUCH_COOLDOWN_SEC = cfg.touch_cooldown_sec
+        WAKE_DELAY_MS = cfg.wake_delay_ms
+        LOAF_TIMER_MS = cfg.loaf_timer_ms
+        SCREEN_POLL_INTERVAL_MS = cfg.screen_poll_interval_ms

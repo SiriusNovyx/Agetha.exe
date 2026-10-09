@@ -108,11 +108,8 @@ def _load_entries_unlocked() -> list[dict[str, Any]]:
 
 def _save_entries_unlocked(entries: list[dict[str, Any]]) -> None:
     """Rewrite the dream file; caller must hold `_lock`."""
-    try:
-        lines = [json.dumps(e, ensure_ascii=False) for e in entries]
-        write_atomic(DREAMS_FILE, "\n".join(lines) + ("\n" if lines else ""))
-    except Exception as exc:
-        logger.warning(f"dreams: write failed: {exc}")
+    lines = [json.dumps(e, ensure_ascii=False) for e in entries]
+    write_atomic(DREAMS_FILE, "\n".join(lines) + ("\n" if lines else ""))
 
 
 def generate_dream(now: datetime | None = None) -> dict[str, Any] | None:

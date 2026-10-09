@@ -336,6 +336,7 @@ class TestFullModeMainIntegration(unittest.TestCase):
         app._re_enable_input = lambda: None
         app._set_state = lambda _state: None
         app._subtitle = SimpleNamespace(show_message=lambda *_args: None)
+        app._ai_tick_lock = threading.Lock()
 
         with self._runtime_settings(self.compact_settings, self.full_settings):
             old_generation = self._begin_and_accept_first(app)

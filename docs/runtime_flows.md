@@ -19,8 +19,20 @@ code; private names may move, but the ownership boundaries should remain.
 | Voice workers | Listen, recognize, and emit text callbacks | Modify Tk widgets directly |
 | TTS/audio workers | Generate/play audio and observe stop/pause events | Own application shutdown or UI state |
 
-The handoff back to Tk is normally `root.after(0, callback)`. Repeating
-callbacks must retain an ID and be canceled by their owner.
+Workers hand UI actions to `CompanionApp._schedule_ui`; the Tk owner drains
+its queue and owns `root.after` calls. Owners retain timer IDs and cancel
+repeating callbacks during teardown. Tray open/settings delivery checks the current
+tray instance and closing state; tray Exit stops the icon and queues shutdown.
+
+Deferred exclusive AI work retains its reservation until its callback finishes.
+A failed worker handoff withdraws pending work under a lock and releases its
+token; a callback that claims execution retains ownership. Delayed
+input updates cannot disable or re-enable input belonging to a successor.
+
+Folder and wallpaper handlers pass the existing effect-time authorization
+runner into their OS helpers. The helpers prepare paths before that boundary,
+guard the launch/native primitive, and wait for children outside the lock.
+Profile transitions reject effects that have not started.
 
 ## Startup
 

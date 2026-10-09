@@ -1976,20 +1976,6 @@ class AIEngine:
 
     # ── Prompt builder ────────────────────────────────────────────────────────
 
-    def _resolve_web_rag_kwargs(
-        self,
-        web_rag_context: str,
-        suppress_web_rag: bool,
-    ) -> tuple[str, bool]:
-        ctx = web_rag_context or getattr(self, "_pending_web_rag_context", "") or ""
-        suppress = suppress_web_rag or bool(getattr(self, "_pending_suppress_web_rag", False))
-        return ctx, suppress
-
-    def _resolve_notepad_kwargs(self, notepad_context: str, suppress_read_notepad: bool) -> tuple[str, bool]:
-        ctx = notepad_context or getattr(self, "_pending_notepad_context", "") or ""
-        suppress = suppress_read_notepad or bool(getattr(self, "_pending_suppress_read_notepad", False))
-        return ctx, suppress
-
     def _build_prompt(
         self,
         screen_context: str,
@@ -2418,6 +2404,9 @@ class AIEngine:
         request_origin: RequestOrigin | None = None,
         provider_authorization: Callable[[], bool] | None = None,
         recent_objective_context: str = "",
+        *,
+        notepad_context: str = "",
+        suppress_read_notepad: bool = False,
     ) -> dict:
         if not self._ensure_provider_initialized(provider_authorization):
             return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
@@ -2432,10 +2421,6 @@ class AIEngine:
             normalized_origin == "user" and bool(str(user_message or "").strip())
         )
         is_user = direct_user_request
-        web_rag_context, suppress_web_rag = self._resolve_web_rag_kwargs(
-            web_rag_context, suppress_web_rag,
-        )
-        notepad_context, suppress_read_notepad = self._resolve_notepad_kwargs("", False)
         profile = self._resolve_request_profile(
             request_profile,
             user_message=user_message,
@@ -2712,7 +2697,8 @@ class AIEngine:
               request_profile: str | RequestProfile | None = None,
               request_origin: RequestOrigin | None = None,
               provider_authorization: Callable[[], bool] | None = None,
-              recent_objective_context: str = "") -> dict:
+              recent_objective_context: str = "", *,
+              notepad_context: str = "", suppress_read_notepad: bool = False) -> dict:
         if not self._ensure_provider_initialized(provider_authorization):
             return {"command": "idle", "mood": "neutral", "segments": [], "shutdown": False}
         if getattr(self, "_show_error_gif", False):
@@ -2726,10 +2712,6 @@ class AIEngine:
             normalized_origin == "user" and bool(str(user_message or "").strip())
         )
         is_user = direct_user_request
-        web_rag_context, suppress_web_rag = self._resolve_web_rag_kwargs(
-            web_rag_context, suppress_web_rag,
-        )
-        notepad_context, suppress_read_notepad = self._resolve_notepad_kwargs("", False)
         profile = self._resolve_request_profile(
             request_profile,
             user_message=user_message,
