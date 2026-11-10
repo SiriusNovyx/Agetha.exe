@@ -333,10 +333,9 @@ class ConfigurationCharacterization(unittest.TestCase):
         self.assertTrue(old.compact_mode_on)
         self.assertNotIn('System Monitor', old.tabs)
 
-    def test_refresh_constants_does_not_update_wake_delay_imported_by_main(self):
+    def test_reload_updates_the_next_wake_sequence_delay(self):
         self.write(WAKE_DELAY_SEC='1')
-        old = config.get_settings().wake_delay_ms
-        self.enterContext(patch.object(main, 'WAKE_DELAY_MS', old))
+        config.get_settings()
         self.write(WAKE_DELAY_SEC='4')
         utils.refresh_config_constants()
         app = main.CompanionApp.__new__(main.CompanionApp)
@@ -346,7 +345,64 @@ class ConfigurationCharacterization(unittest.TestCase):
         app._finish_wake = Mock()
         app._start_wake_sequence()
         self.assertEqual(utils.WAKE_DELAY_MS, 4000)
-        app.root.after.assert_called_once_with(1000, app._finish_wake)
+        app.root.after.assert_called_once_with(4000, app._finish_wake)
+
+    def test_reloaded_touch_cooldown_controls_click_admission(self):
+        self.write(TOUCH_COOLDOWN_SEC='0')
+        config.get_settings()
+        self.write(TOUCH_COOLDOWN_SEC='15')
+        config.get_settings(reload=True)
+        app = main.CompanionApp.__new__(main.CompanionApp)
+        app._last_touch_time = 10
+        app._wake_from_presence_rest = Mock()
+        app._input_box = {'state': 'disabled'}
+        with patch.object(main.time, 'time', return_value=20):
+            app._on_gif_click()
+            self.assertEqual(app._last_touch_time, 10)
+            self.write(TOUCH_COOLDOWN_SEC='0')
+            config.get_settings(reload=True)
+            app._on_gif_click()
+        self.assertEqual(app._last_touch_time, 20)
+
+    def presence_app(self):
+        app = main.CompanionApp.__new__(main.CompanionApp)
+        app.root = SimpleNamespace(after=Mock(return_value='job'), after_cancel=Mock())
+        app._status_var = Mock()
+        app._stop_talking_rotation = Mock()
+        app._bleep = None
+        app._persistent_mood = None
+        app._gif_cache = {'loaf.gif': object()}
+        app._pick_idle_gif = Mock(return_value='idle.gif')
+        app._play_gif = Mock()
+        app._set_display_mood = Mock()
+        return app
+
+    def test_reloaded_loaf_delay_applies_on_next_idle_scheduling(self):
+        self.write(LOAF_TIMER_MIN='2')
+        config.get_settings()
+        app = self.presence_app()
+        app._apply_state(app.STATE_IDLE)
+        app.root.after.assert_called_once_with(120000, app._enter_loaf)
+        self.write(LOAF_TIMER_MIN='3')
+        config.get_settings(reload=True)
+        app.root.after.assert_called_once_with(120000, app._enter_loaf)
+        app.root.after_cancel.assert_not_called()
+        self.assertEqual(app._loaf_job, 'job')
+        app._apply_state(app.STATE_IDLE)
+        self.assertEqual(
+            [call.args[0] for call in app.root.after.call_args_list],
+            [120000, 180000],
+        )
+
+    def test_reloaded_loaf_delay_applies_to_next_sleep_scheduling(self):
+        self.write(LOAF_TIMER_MIN='2')
+        config.get_settings()
+        app = self.presence_app()
+        app._state = app.STATE_IDLE
+        self.write(LOAF_TIMER_MIN='3')
+        config.get_settings(reload=True)
+        app._enter_loaf()
+        app.root.after.assert_called_once_with(180000, app._enter_deep_sleep)
 
     def test_animation_helper_reads_current_snapshot_while_audio_coordinator_keeps_mode(self):
         self.write(ANIMATION_SPEED='1', VOICE_OUTPUT_MODE='bleeps_only')

@@ -23,6 +23,8 @@ class DispatchCtx:
     segments: list
     shutdown_requested: bool
     origin: RequestOrigin = "user"
+    speech_is_current: Callable[[], bool] | None = None
+    release_parent_slot: Callable[[], bool] | None = None
 
 
 def command_result_ok(result: str) -> bool:

@@ -22,6 +22,12 @@ def response(text):
     return {'command': 'speak', 'mood': 'neutral', 'segments': [{'text': text, 'pause': 0.0}], 'shutdown': False}
 
 
+def subtitle_renderer():
+    canvas = SimpleNamespace(config=lambda **kw: None, bind=lambda *a, **kw: None)
+    with patch.object(fixtures.main.SubtitleRenderer, '_load_font', return_value=object()):
+        return fixtures.main.SubtitleRenderer(canvas, schedule_ui=lambda callback: None)
+
+
 def guarded_call(method, *args, result_is_current, **kwargs):
     """Exercise original APIs for RED; new optional ownership args for GREEN."""
     if 'result_is_current' in inspect.signature(method).parameters:
@@ -521,11 +527,11 @@ class QueuedPlaybackLifetime(unittest.TestCase):
         self.assertEqual(self.audio, ['B'])
 
     def test_held_subtitle_worker_cannot_queue_audio_after_invalidation(self):
-        subtitle = fixtures.main.SubtitleRenderer.__new__(fixtures.main.SubtitleRenderer)
+        subtitle = subtitle_renderer()
         subtitle._thread = None
         subtitle._stop_event = threading.Event()
         subtitle._canvas = SimpleNamespace(after=lambda delay, callback: None)
-        subtitle.clear = subtitle._schedule_draw = lambda *a: None
+        subtitle.clear = subtitle._schedule_draw = lambda *a, **kw: None
         subtitle._bleep = None
         subtitle._voice_out = SimpleNamespace(speak_segment=lambda text, **kw: self.audio.append(text), stop_bleeps=lambda: None)
         with patch.object(fixtures.main.threading, 'Thread', HeldThread), patch.object(fixtures.main.time, 'sleep'):
@@ -577,10 +583,10 @@ class QueuedPlaybackLifetime(unittest.TestCase):
         self.assertEqual(self.audio, [])
 
     def test_old_subtitle_completion_cannot_stop_newer_audio(self):
-        subtitle = fixtures.main.SubtitleRenderer.__new__(fixtures.main.SubtitleRenderer)
+        subtitle = subtitle_renderer()
         subtitle._stop_event = threading.Event()
         subtitle._canvas = SimpleNamespace(after=lambda delay, callback: None)
-        subtitle.clear = subtitle._schedule_draw = lambda *a: None
+        subtitle.clear = subtitle._schedule_draw = lambda *a, **kw: None
         subtitle._bleep = None
         def queue_audio(text, **kwargs):
             self.audio.append(text)
@@ -593,7 +599,7 @@ class QueuedPlaybackLifetime(unittest.TestCase):
         self.assertEqual(self.audio, ['A'])
 
     def test_subtitle_wait_cannot_start_expired_worker(self):
-        subtitle = fixtures.main.SubtitleRenderer.__new__(fixtures.main.SubtitleRenderer)
+        subtitle = subtitle_renderer()
         subtitle._stop_event = threading.Event()
         subtitle.stop = lambda: setattr(self, 'valid', False)
         starts = []
@@ -667,10 +673,10 @@ class QueuedPlaybackLifetime(unittest.TestCase):
         voice._pause_lock = threading.RLock()
         voice._pause_is_current = None
         voice._mode, voice._tts, voice._bleep = 'tts_only', self.player, None
-        subtitle = fixtures.main.SubtitleRenderer.__new__(fixtures.main.SubtitleRenderer)
+        subtitle = subtitle_renderer()
         subtitle._stop_event = threading.Event()
         subtitle._canvas = SimpleNamespace(after=lambda delay, callback: None)
-        subtitle.clear = subtitle._schedule_draw = lambda *a: None
+        subtitle.clear = subtitle._schedule_draw = lambda *a, **kw: None
         subtitle._bleep, subtitle._voice_out = None, voice
         def invalidate_at_pause(delay):
             if delay == 0.25:

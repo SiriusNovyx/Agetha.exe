@@ -42,25 +42,24 @@ class StorageFailureCharacterization(unittest.TestCase):
             return original(path, mode, *args, **kwargs)
         return patch.object(Path, 'open', denied)
 
-    def test_episodic_read_denial_preserves_bytes_but_next_append_can_replace_them(self):
+    def test_episodic_read_denial_and_next_append_preserve_bytes(self):
         self.episodic.write_text('[{"summary":"PRIOR_SYNTHETIC_FACT"}]', encoding='utf-8')
         before = self.episodic.read_bytes()
         with self.deny_open(self.episodic, 'r'):
             self.assertEqual(memory.get_recent_memories(), [])
             self.assertEqual(self.episodic.read_bytes(), before)
             memory.log_memory('NEW_SYNTHETIC_FACT')
-        self.assertEqual(self.episodic_summaries(), ['NEW_SYNTHETIC_FACT'])
+        self.assertEqual(self.episodic.read_bytes(), before)
+        self.assertEqual(self.episodic_summaries(), ['PRIOR_SYNTHETIC_FACT'])
 
-    def test_episodic_rows_have_no_semantic_validation_on_read_or_append(self):
+    def test_partially_valid_episodic_rows_remain_readable_and_unwritable(self):
         rows = [None, {'summary': 42}, {'summary': 'PRIOR_SYNTHETIC_FACT'}]
         self.episodic.write_text(json.dumps(rows), encoding='utf-8')
         before = self.episodic.read_bytes()
-        self.assertEqual(memory.get_recent_memories(0), rows)
+        self.assertEqual(memory.get_recent_memories(0), [rows[-1]])
         self.assertEqual(self.episodic.read_bytes(), before)
         memory.log_memory('NEW_SYNTHETIC_FACT')
-        after = json.loads(self.episodic.read_text(encoding='utf-8'))
-        self.assertEqual(after[:-1], rows)
-        self.assertEqual(after[-1]['summary'], 'NEW_SYNTHETIC_FACT')
+        self.assertEqual(self.episodic.read_bytes(), before)
 
     def test_flat_append_failure_does_not_stop_episodic_and_archive_writes(self):
         self.flat.write_text('PRIOR_SYNTHETIC_FACT\n', encoding='utf-8')

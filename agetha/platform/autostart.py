@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 from agetha.utils import IS_WINDOWS, ICON_PATH, logger
 from agetha.app_config import BASE_DIR
@@ -114,7 +115,10 @@ def targets_match(actual_target: str, actual_args: str) -> bool:
 
 # ── PowerShell IO (Windows only; injected paths via env, never source) ────────
 
-def _run_powershell(script: str, extra_env: dict[str, str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+def _run_powershell(
+    script: str, extra_env: dict[str, str], *, timeout: int,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     env = dict(os.environ)
     env.update(extra_env)
     kwargs: dict = {
@@ -127,11 +131,28 @@ def _run_powershell(script: str, extra_env: dict[str, str], *, timeout: int) -> 
     }
     if IS_WINDOWS:
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-    return subprocess.run(**kwargs)
+    if effect_runner is None:
+        return subprocess.run(**kwargs)
+    kwargs.pop("timeout")
+    kwargs.pop("capture_output")
+    kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    performed, proc = effect_runner(lambda: subprocess.Popen(**kwargs))
+    if not performed:
+        return None
+    with proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except BaseException:
+            proc.kill()
+            raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
 
-def _write_lnk(path: Path, target: str, args: str, workdir: str, icon: str) -> bool:
-    """Create/overwrite the shortcut. Paths passed via env vars, not source."""
+def _write_lnk(
+    path: Path, target: str, args: str, workdir: str, icon: str, *,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> bool | None:
+    """Create/overwrite via env paths; None means the launch was refused."""
     if not IS_WINDOWS:
         return False
     script = (
@@ -155,7 +176,9 @@ def _write_lnk(path: Path, target: str, args: str, workdir: str, icon: str) -> b
         "AGETHA_DESC": _DESCRIPTION,
     }
     try:
-        proc = _run_powershell(script, env, timeout=30)
+        proc = _run_powershell(script, env, timeout=30, effect_runner=effect_runner)
+        if proc is None:
+            return None
         return path.is_file() and (proc.returncode == 0 or "OK" in (proc.stdout or ""))
     except Exception as exc:
         logger.warning(f"autostart: shortcut write failed: {exc}")
@@ -226,7 +249,9 @@ def describe_change(action: str) -> str:
     )
 
 
-def enable() -> tuple[bool, str]:
+def enable(
+    *, effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> tuple[bool, str]:
     """Create the startup shortcut. Idempotent. Returns (ok, message).
 
     Refuses to overwrite a foreign or malformed shortcut that happens to share
@@ -244,18 +269,26 @@ def enable() -> tuple[bool, str]:
             "then try again."
         )
     try:
-        startup_dir().mkdir(parents=True, exist_ok=True)
+        directory = startup_dir()
+        effect = lambda: directory.mkdir(parents=True, exist_ok=True)
+        performed, _value = effect_runner(effect) if effect_runner is not None else (True, effect())
+        if not performed:
+            return False, "[autostart blocked: capability changed]"
     except Exception as exc:
         return False, f"Could not access the Startup folder: {exc}"
     target, args, workdir = expected_launcher()
     icon = str(ICON_PATH.resolve()) if ICON_PATH.is_file() else ""
-    ok = _write_lnk(shortcut_path(), target, args, workdir, icon)
+    ok = _write_lnk(shortcut_path(), target, args, workdir, icon, effect_runner=effect_runner)
+    if ok is None:
+        return False, "[autostart blocked: capability changed]"
     if ok and is_enabled():
         return True, "Agetha will now start when you sign in."
     return False, "Could not create the startup shortcut."
 
 
-def disable() -> tuple[bool, str]:
+def disable(
+    *, effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> tuple[bool, str]:
     """Remove ONLY Agetha's own valid shortcut. Refuses foreign/malformed ones."""
     if not IS_WINDOWS:
         return False, "Sign-in startup is only available on Windows."
@@ -268,7 +301,11 @@ def disable() -> tuple[bool, str]:
             "launcher, so it was left untouched. Remove it manually if you created it."
         )
     try:
-        shortcut_path().unlink()
+        path = shortcut_path()
+        effect = lambda: path.unlink()
+        performed, _value = effect_runner(effect) if effect_runner is not None else (True, effect())
+        if not performed:
+            return False, "[autostart blocked: capability changed]"
         return True, "Agetha will no longer start when you sign in."
     except Exception as exc:
         return False, f"Could not remove the startup shortcut: {exc}"

@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Protocol
 
@@ -35,7 +35,6 @@ MAX_SHAKE_DURATION_MS = SHAKE_INTERVAL_MS * len(SHAKE_OFFSETS_PX)
 
 class ConsentDialogKind(str, Enum):
     FIRST_CONFIRMATION = "first_confirmation"
-    DEMO_FALLBACK = "demo_fallback"
     FINAL_CONFIRMATION = "final_confirmation"
 
 
@@ -98,25 +97,6 @@ DialogFactory = Callable[
 ]
 
 
-def _fallback_spec(safe_reason: object) -> ConsentDialogSpec:
-    reason = " ".join(str(safe_reason or "").split())[:240]
-    if not reason:
-        reason = "The fixed Notepad warning could not be completed."
-    return ConsentDialogSpec(
-        kind=ConsentDialogKind.DEMO_FALLBACK,
-        title="Agetha - Full Mode Warning",
-        heading="Notepad warning unavailable",
-        message=(
-            f"{reason}\n\nARE YOU REALLY SURE YOU WANT TO CONTINUE THIS?\n\n"
-            "No warning was typed outside Agetha. You can cancel now or continue "
-            "to the final confirmation in this window. Full Mode remains disabled "
-            "unless you explicitly enable it there."
-        ),
-        negative_label="Cancel",
-        affirmative_label="Continue",
-    )
-
-
 class FullModeConsentUI:
     """Own one non-blocking consent dialog and every scheduled attention job."""
 
@@ -154,15 +134,16 @@ class FullModeConsentUI:
     def show_first_confirmation(self, on_decision: DecisionCallback) -> bool:
         return self._show(FIRST_CONFIRMATION_SPEC, on_decision)
 
-    def show_demo_fallback(
-        self,
-        safe_reason: object,
-        on_decision: DecisionCallback,
+    def show_final_confirmation(
+        self, on_decision: DecisionCallback, *, demo_failure_reason: object | None = None,
     ) -> bool:
-        return self._show(_fallback_spec(safe_reason), on_decision)
-
-    def show_final_confirmation(self, on_decision: DecisionCallback) -> bool:
-        return self._show(FINAL_CONFIRMATION_SPEC, on_decision)
+        spec = FINAL_CONFIRMATION_SPEC
+        if demo_failure_reason is not None:
+            reason = " ".join(str(demo_failure_reason).split())[:240]
+            if not reason:
+                reason = "The fixed Notepad warning could not be completed."
+            spec = replace(spec, message=f"{reason}\n\n{spec.message}")
+        return self._show(spec, on_decision)
 
     def cancel_all(self) -> None:
         """Silently invalidate the active dialog and all of its late callbacks."""

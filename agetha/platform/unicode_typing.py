@@ -1216,8 +1216,6 @@ def _normalize_platform_name(value: str) -> str:
         return "windows"
     if key.startswith("linux"):
         return "linux"
-    if key in {"darwin", "mac", "macos"}:
-        return "macos"
     return key or "unknown"
 
 
@@ -1547,18 +1545,6 @@ def _x11_activate_target(target: TypingTarget) -> bool:
         return False
 
 
-def _mac_clipboard_dependencies() -> tuple[ClipboardReader | None, ClipboardWriter | None]:
-    reader_exe = shutil.which("pbpaste")
-    writer_exe = shutil.which("pbcopy")
-    reader = (
-        (lambda: _command_clipboard_reader([reader_exe])) if reader_exe else None
-    )
-    writer = (
-        (lambda text: _command_clipboard_writer([writer_exe], text)) if writer_exe else None
-    )
-    return reader, writer
-
-
 def default_dependencies() -> UnicodeTypingDependencies:
     """Create conservative platform callbacks without optional dependencies."""
 
@@ -1603,15 +1589,6 @@ def default_dependencies() -> UnicodeTypingDependencies:
             write_clipboard=writer,
             send_paste_shortcut=_x11_paste_shortcut if session == "x11" else None,
             activate_target=_x11_activate_target if session == "x11" else None,
-        )
-    if platform_name == "macos":
-        reader, writer = _mac_clipboard_dependencies()
-        return UnicodeTypingDependencies(
-            platform_name="macos",
-            session_type="desktop",
-            get_focused_target=lambda: None,
-            read_clipboard=reader,
-            write_clipboard=writer,
         )
     return UnicodeTypingDependencies(
         platform_name=platform_name,

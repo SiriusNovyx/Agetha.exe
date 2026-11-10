@@ -617,22 +617,21 @@ class SubtitleBoundaryComparison(unittest.TestCase):
         voice._tts=SimpleNamespace(package_ok=True,
             speak_segments=lambda segs,**kw:self.tts.extend(s['text'] for s in segs),
             speak_text=lambda text,**kw:self.tts.append(text),pause=lambda:None,resume=lambda:None)
-        renderer=main.SubtitleRenderer.__new__(main.SubtitleRenderer)
-        renderer._stop_event=threading.Event()
-        renderer._thread=None
-        renderer._voice_out=voice
-        renderer._bleep=bleep
-        renderer._canvas=SimpleNamespace(after=lambda delay,cb:self.jobs.append((delay,cb)))
-        renderer._draw_pending=False
-        renderer._pending_text=''
-        renderer._pending_color=''
+        canvas=SimpleNamespace(config=lambda **kw:None,bind=lambda *a,**kw:None,
+            delete=lambda tag:self.draws.append('CLEAR'),
+            after=lambda delay,cb:self.jobs.append((delay,cb)))
+        def schedule_ui(callback):
+            self.jobs.append((0,callback))
+            return callback
+        with patch.object(main.SubtitleRenderer,'_load_font',return_value=object()):
+            renderer=main.SubtitleRenderer(canvas,bleep_player=bleep,voice_out=voice,
+                schedule_ui=schedule_ui)
         renderer._draw=lambda text,color:self.draws.append(text)
-        renderer.clear=lambda:self.draws.append('CLEAR')
         return renderer,voice
 
-    def test_current_tts_only_batch_plus_segments_duplicates_enqueue_in_both_paths(self):
+    def test_audio_modes_enqueue_each_subtitle_segment_once(self):
         segments=[{'text':'A','pause':0},{'text':'B','pause':0}]
-        for mode,expected in [('bleeps_only',[]),('both',['A','B']),('tts_only',['A','B','A','B'])]:
+        for mode,expected in [('bleeps_only',[]),('both',['A','B']),('tts_only',['A','B'])]:
             with self.subTest(mode=mode):
                 renderer,voice=self.renderer(mode)
                 voice.start_speech(segments,'happy',result_is_current=lambda:True)
@@ -640,7 +639,7 @@ class SubtitleBoundaryComparison(unittest.TestCase):
                     renderer._run(segments,lambda:None,result_is_current=lambda:True)
                 self.assertEqual(self.tts,expected)
 
-    def test_retained_draw_has_no_request_guard_although_initial_clear_does(self):
+    def test_retained_draw_rechecks_request_at_delivery(self):
         renderer,_=self.renderer()
         valid=[True]
         done=[]
@@ -649,26 +648,31 @@ class SubtitleBoundaryComparison(unittest.TestCase):
         valid[0]=False
         for _,callback in self.jobs:
             callback()
-        self.assertEqual(self.draws,['OLD'])
+        self.assertEqual(self.draws,[])
         self.assertEqual(done,['done'])  # App wrapper separately guards user-facing completion.
 
-    def test_subtitle_worker_schedules_tk_directly_without_app_queue(self):
+    def test_subtitle_worker_posts_through_host_queue(self):
         renderer,_=self.renderer()
         observed=[]
         renderer._canvas.after=lambda delay,cb:observed.append(threading.current_thread())
         worker=object()
         with patch('main.threading.current_thread',return_value=worker),patch('main.time.sleep',return_value=None):
             renderer._run([{'text':'A','pause':0}],lambda:None,result_is_current=lambda:True)
-        self.assertEqual(observed,[worker,worker,worker])
+        self.assertEqual(observed,[])
+        self.assertTrue(self.jobs)
 
-    def test_old_static_message_clear_can_clear_newer_subtitle(self):
+    def test_old_static_message_clear_preserves_newer_subtitle(self):
         renderer,_=self.renderer()
         renderer.show_message('OLD')
-        old=list(self.jobs)
+        for _,callback in list(self.jobs):
+            callback()
+        old_timer=self.jobs[-1][1]
+        self.jobs.clear()
         renderer.show_message('NEW')
-        self.jobs[2][1]()
-        old[1][1]()
-        self.assertEqual(self.draws,['NEW','CLEAR'])
+        for _,callback in list(self.jobs):
+            callback()
+        old_timer()
+        self.assertEqual(self.draws,['OLD','NEW'])
 
     def test_held_draw_coalesces_cumulative_segments(self):
         renderer,_=self.renderer()

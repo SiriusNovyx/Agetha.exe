@@ -308,10 +308,11 @@ class MemoryRetentionCharacterization(unittest.TestCase):
         self.assertEqual({p: p.read_bytes() for p in before}, before)
         self.assertIn('same synthetic fact', search.format_session_recap_for_prompt())
 
-    def test_corrupt_episodic_read_keeps_bytes_but_next_append_replaces_them(self):
+    def test_corrupt_episodic_read_and_next_append_preserve_original(self):
         self.episodic.write_text('[{"summary":"salvage"},', encoding='utf-8')
         original = self.episodic.read_bytes()
         self.assertEqual(memory.get_recent_memories(), [])
         self.assertEqual(self.episodic.read_bytes(), original)
         memory.log_memory('new synthetic summary')
-        self.assertEqual([e['summary'] for e in memory.get_recent_memories()], ['new synthetic summary'])
+        self.assertEqual(memory.get_recent_memories(), [])
+        self.assertEqual(self.episodic.read_bytes(), original)

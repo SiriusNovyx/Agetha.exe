@@ -3,6 +3,10 @@
 This document records the existing F12 contract. It distinguishes behavior
 proved by code and tests from a proposed migration. It changes no runtime policy.
 
+The v5.9 recovery keeps the per-purpose storage roles below. The separate
+archive proposal is outside this recovery. File formats, writers, clearing
+and restart behavior follow the existing contract.
+
 For the searchable archive, JSONL on disk owns durable records. Its cache must
 include existing readable records when appending a new summary, including an
 append before the first search after startup. `log_longterm_memory` invalidates
@@ -84,11 +88,14 @@ to reach the installed module.
 - `view_memory` and the continuation recent-memory reader use episodic entries.
   `clear_memory` clears all or selected episodic entries and keeps the soul.
   It does not clear the archive, legacy text, or conversation log.
+  Archive copies can still appear in the archive part of recap after a clear.
 - `search_memory` and its continuation reader search JSONL. Search-result
   formatting preserves the existing untrusted-context boundary.
 - Session recap combines recent episodic entries with recent archive entries.
   A related fact can appear twice in recap and once in the system prompt;
   prompts do not merge or deduplicate them.
+  The long-term flag gates new archive writes and explicit search. Recap and
+  dream generation can still read existing archive rows.
 - Dream generation reads episodic entries and searches the archive, then writes
   a separate generated dream record. It is not a writer of these source stores.
 - Senses and Medic expose metadata/status for memory boundaries. They do not
@@ -103,13 +110,13 @@ found no separate production OCR caller of `log_memory`.
 
 | Classification | Behavior and reason |
 | --- | --- |
-| A: Preserve exactly | Bounded RAM history, session-log reset, profile restrictions, missing-module fallback, configurable episodic expiry, explicit episodic clear, and gated archive writes. Code, commands, and tests agree on their current contracts. |
+| A: Preserve exactly | Bounded RAM history, session-log reset, profile restrictions, missing-module fallback, the recent entry cap, age-scoped and full episodic clearing, and gated archive writes. |
 | B: Preserve semantics, simplify implementation | Document the distinct roles. Any later owner changes must retain readers, restart behavior, context bounds, and failure handling. No runtime simplification has been approved by this document. |
 | C: Deprecate with a compatibility period | Treat new flat writes as a future deprecation candidate after deciding support for old/module-missing installations. Preserve reads and current writes during that decision. |
 | D: Remove only after migration/export | Existing `memory.txt` and unique text absent from capped episodic/archive records. Preserve original bytes; require a reviewed migration/export and rollback before removing storage or readers. |
 | E: Unknown, needs a decision | Whether to retain diagnostic logs across sessions; whether condensation should enter the archive; treatment of repeated/related facts; eventual length limits; and whether legacy-only facts should join normal prompts. |
 
-## Proposed canonical model, pending migration
+## Deferred archive proposal
 
 Use RAM as the sole live dialogue-context owner. Keep the diagnostic log
 session-scoped unless a separate transcript-retention decision changes it.
@@ -132,7 +139,7 @@ No conversion or new migration format is defined here.
 
 Retiring flat writes also requires a decision on the supported missing-module
 fallback. Retiring episodic storage would change view/clear commands, prompt
-recency, configured expiry, recap, and dreams. Preserve both boundaries until
+recency, cap eviction, recap, and dreams. Preserve both boundaries until
 those consumers have a reviewed transition.
 
 The F12 investigation stops before those migrations and product decisions.
@@ -151,6 +158,7 @@ preserved bytes/metadata, and the relevant prompt/search owner.
 
 The F12 engineering report outside the repository supplies exact executed
 results, the reference inventory, protected-data verification, and remaining
-risks. Existing characterization tests continue to record unresolved behavior,
-including corruption followed by episodic replacement. This document does not
-expand F08's task/stats repair to other stores.
+risks. The recovery now rejects append and selective clear after corrupt or
+unreadable episodic loads, while retaining readable partial entries for readers.
+Explicit clear-all remains available. This preservation repair does not combine
+the stores or change their retention formats.

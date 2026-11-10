@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from agetha.utils import IS_WINDOWS, IS_LINUX, IS_MACOS, BASE_DIR, logger
+from agetha.utils import IS_WINDOWS, IS_LINUX, BASE_DIR, logger
 
 
 def open_url(url: str) -> str:
@@ -28,23 +28,33 @@ def open_url(url: str) -> str:
         return f"[open_url error: {exc}]"
 
 
-def copy_to_clipboard(text: str, tk_root=None) -> str:
+def copy_to_clipboard(
+    text: str, tk_root=None, *,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> str:
     if not text:
         return "[no text]"
     try:
         if tk_root:
-            tk_root.clipboard_clear()
-            tk_root.clipboard_append(text)
+            def _copy():
+                tk_root.clipboard_clear()
+                tk_root.clipboard_append(text)
+
+            performed, _value = effect_runner(_copy) if effect_runner is not None else (True, _copy())
+            if not performed:
+                return "[clipboard blocked: capability changed]"
+            # Tk event processing must not retain the capability lock.
             tk_root.update()
             return "[copied to clipboard]"
+        if effect_runner is not None:
+            return "[clipboard blocked: Tk root unavailable]"
         if IS_WINDOWS:
             subprocess.run(["clip"], input=text, text=True, check=True, timeout=5)
             return "[copied via clip]"
-        if IS_MACOS:
-            subprocess.run(["pbcopy"], input=text, text=True, check=True, timeout=5)
-            return "[copied via pbcopy]"
-        subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True, check=True, timeout=5)
-        return "[copied via xclip]"
+        if IS_LINUX:
+            subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True, check=True, timeout=5)
+            return "[copied via xclip]"
+        return "[clipboard not supported]"
     except Exception as exc:
         return f"[clipboard error: {exc}]"
 
@@ -59,11 +69,10 @@ def get_clipboard(tk_root=None) -> str:
                 capture_output=True, text=True, timeout=5,
             )
             return (r.stdout or "").strip() or "[empty clipboard]"
-        if IS_MACOS:
-            r = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
+        if IS_LINUX:
+            r = subprocess.run(["xclip", "-selection", "clipboard", "-o"], capture_output=True, text=True, timeout=5)
             return (r.stdout or "").strip() or "[empty clipboard]"
-        r = subprocess.run(["xclip", "-selection", "clipboard", "-o"], capture_output=True, text=True, timeout=5)
-        return (r.stdout or "").strip() or "[empty clipboard]"
+        return "[clipboard not supported]"
     except Exception as exc:
         return f"[clipboard read error: {exc}]"
 
@@ -82,10 +91,10 @@ def open_folder(
         folder = str(p if p.is_dir() else p.parent)
         if IS_WINDOWS:
             effect = lambda: os.startfile(folder)
-        elif IS_MACOS:
-            effect = lambda: subprocess.Popen(["open", folder])
-        else:
+        elif IS_LINUX:
             effect = lambda: subprocess.Popen(["xdg-open", folder], start_new_session=True)
+        else:
+            return "[open_folder not supported]"
         performed, proc = effect_runner(effect) if effect_runner is not None else (True, effect())
         if not performed:
             return "[open_folder blocked: capability changed]"
@@ -118,53 +127,49 @@ def system_info() -> str:
     return "\n".join(lines)
 
 
-def set_volume(level: int = 50, action: str = "set") -> str:
+def set_volume(
+    level: int = 50, action: str = "set", *,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> str:
     action = (action or "set").lower()
     level = max(0, min(100, int(level)))
     try:
+        timeout = 5
         if IS_WINDOWS:
-            if action == "mute":
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-Command",
-                     "(New-Object -ComObject WScript.Shell).SendKeys([char]173)"],
-                    timeout=5,
+            if action in ("mute", "unmute"):
+                script = "(New-Object -ComObject WScript.Shell).SendKeys([char]173)"
+                result = "[muted]" if action == "mute" else "[unmuted]"
+            else:
+                steps = level // 2
+                script = (
+                    f"$s=(New-Object -ComObject WScript.Shell); 1..50 | ForEach-Object {{ $s.SendKeys([char]174) }}; "
+                    f"1..{steps} | ForEach-Object {{ $s.SendKeys([char]175) }}"
                 )
-                return "[muted]"
-            if action == "unmute":
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-Command",
-                     "(New-Object -ComObject WScript.Shell).SendKeys([char]173)"],
-                    timeout=5,
-                )
-                return "[unmuted]"
-            # nircmd alternative via PowerShell AudioDeviceCmdlets not guaranteed — use key simulation steps
-            steps = level // 2
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"$s=(New-Object -ComObject WScript.Shell); 1..50 | ForEach-Object {{ $s.SendKeys([char]174) }}; "
-                 f"1..{steps} | ForEach-Object {{ $s.SendKeys([char]175) }}"],
-                timeout=10,
-            )
-            return f"[volume set ~{level}%]"
-        if IS_LINUX:
-            if shutil.which("pactl"):
-                if action == "mute":
-                    subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"], timeout=5)
-                    return "[muted]"
-                if action == "unmute":
-                    subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"], timeout=5)
-                    return "[unmuted]"
-                subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{level}%"], timeout=5)
-                return f"[volume {level}%]"
-        if IS_MACOS and shutil.which("osascript"):
-            subprocess.run(
-                ["osascript", "-e", f"set volume output volume {level}"],
-                timeout=5,
-            )
-            return f"[volume {level}%]"
+                timeout = 10
+                result = f"[volume set ~{level}%]"
+            command = ["powershell", "-NoProfile", "-Command", script]
+        elif IS_LINUX and shutil.which("pactl"):
+            if action in ("mute", "unmute"):
+                command = ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1" if action == "mute" else "0"]
+                result = "[muted]" if action == "mute" else "[unmuted]"
+            else:
+                command = ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{level}%"]
+                result = f"[volume {level}%]"
+        else:
+            return "[set_volume not supported on this platform]"
+        effect = lambda: subprocess.Popen(command)
+        performed, proc = effect_runner(effect) if effect_runner is not None else (True, effect())
+        if not performed:
+            return "[set_volume blocked: capability changed]"
+        with proc:
+            try:
+                proc.wait(timeout=timeout)
+            except BaseException:
+                proc.kill()
+                raise
+        return result
     except Exception as exc:
         return f"[set_volume error: {exc}]"
-    return "[set_volume not supported on this platform]"
 
 
 def set_wallpaper(
@@ -180,10 +185,6 @@ def set_wallpaper(
             SPI_SETDESKWALLPAPER = 20
             resolved = str(Path(path).resolve())
             effect = lambda: ctypes.windll.user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, resolved, 3)
-        elif IS_MACOS:
-            script = f'tell application "System Events" to tell every desktop to set picture to POSIX file "{path}"'
-            effect = lambda: subprocess.Popen(["osascript", "-e", script])
-            timeout = 10
         elif IS_LINUX and shutil.which("gsettings"):
             resolved = str(Path(path).resolve())
             effect = lambda: subprocess.Popen(
@@ -241,109 +242,92 @@ def type_text(text: str) -> str:
     return "[type_text refused: use guarded command dispatch]"
 
 
-def lock_screen() -> str:
+def lock_screen(
+    *, effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> str:
     try:
         if IS_WINDOWS:
-            subprocess.run(
-                ["rundll32.exe", "user32.dll,LockWorkStation"],
-                timeout=5,
-                check=True,
-            )
-            return "[screen locked]"
-        if IS_LINUX and shutil.which("loginctl"):
-            subprocess.run(["loginctl", "lock-session"], timeout=5, check=True)
-            return "[screen locked]"
-        if IS_MACOS:
-            subprocess.run(
-                ["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession",
-                 "-suspend"],
-                timeout=5, check=True,
-            )
-            return "[screen locked]"
+            command = ["rundll32.exe", "user32.dll,LockWorkStation"]
+        elif IS_LINUX and shutil.which("loginctl"):
+            command = ["loginctl", "lock-session"]
+        else:
+            return "[lock_screen not supported]"
+        effect = lambda: subprocess.Popen(command)
+        performed, proc = effect_runner(effect) if effect_runner is not None else (True, effect())
+        if not performed:
+            return "[lock_screen blocked: capability changed]"
+        with proc:
+            try:
+                code = proc.wait(timeout=5)
+            except BaseException:
+                proc.kill()
+                raise
+            if code:
+                raise subprocess.CalledProcessError(code, command)
+        return "[screen locked]"
     except Exception as exc:
         return f"[lock_screen error: {exc}]"
-    return "[lock_screen not supported]"
 
 
-def _schedule_delayed_shutdown(delay: int, *, reboot: bool = False) -> None:
+def _schedule_delayed_shutdown(
+    delay: int, *, reboot: bool = False,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> bool:
     """Schedule shutdown/restart with second precision where possible."""
+    if not (IS_WINDOWS or IS_LINUX):
+        return False
     flag = "-r" if reboot else "-h"
-    if delay <= 0:
-        subprocess.run(["shutdown", flag, "now"], timeout=5, check=True)
-        return
-    if IS_LINUX:
-        if shutil.which("systemd-run"):
-            subprocess.run(
-                [
-                    "systemd-run", f"--on-active={delay}s", "--unit=agetha-shutdown",
-                    "shutdown", flag, "now",
-                ],
-                timeout=5, check=True,
-            )
-            return
-        if shutil.which("at"):
-            cmd = "reboot" if reboot else "shutdown -h now"
-            subprocess.run(
-                ["bash", "-c", f"echo '{cmd}' | at now + {delay} seconds"],
-                timeout=5, check=True,
-            )
-            return
-    if IS_MACOS and shutil.which("at"):
-        cmd = "sudo reboot" if reboot else "sudo shutdown -h now"
-        subprocess.run(
-            ["bash", "-c", f"echo '{cmd}' | at now + {delay} seconds"],
-            timeout=5, check=True,
-        )
-        return
-    subprocess.run(
-        ["shutdown", flag, f"+{max(1, (delay + 59) // 60)}"],
-        timeout=5,
-        check=True,
-    )
+    if IS_WINDOWS:
+        command = ["shutdown", "/r" if reboot else "/s", "/t", str(delay)]
+    elif delay <= 0:
+        command = ["shutdown", flag, "now"]
+    elif IS_LINUX and shutil.which("systemd-run"):
+        command = ["systemd-run", f"--on-active={delay}s", "--unit=agetha-shutdown",
+                   "shutdown", flag, "now"]
+    elif IS_LINUX and shutil.which("at"):
+        cmd = "reboot" if reboot else "shutdown -h now"
+        command = ["bash", "-c", f"echo '{cmd}' | at now + {delay} seconds"]
+    else:
+        command = ["shutdown", flag, f"+{max(1, (delay + 59) // 60)}"]
+    effect = lambda: subprocess.Popen(command)
+    performed, proc = effect_runner(effect) if effect_runner is not None else (True, effect())
+    if not performed:
+        return False
+    with proc:
+        try:
+            code = proc.wait(timeout=5)
+        except BaseException:
+            proc.kill()
+            raise
+        if code:
+            raise subprocess.CalledProcessError(code, command)
+    return True
 
 
-def shutdown_system(delay: int = 60) -> str:
+def shutdown_system(
+    delay: int = 60, *,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> str:
     delay = max(0, int(delay))
     try:
-        if IS_WINDOWS:
-            subprocess.run(
-                ["shutdown", "/s", "/t", str(delay)], timeout=5, check=True,
-            )
-            return f"[shutdown in {delay}s]"
-        if IS_LINUX:
-            _schedule_delayed_shutdown(delay, reboot=False)
-            return f"[shutdown in {delay}s]"
-        if IS_MACOS:
-            if delay <= 0:
-                subprocess.run(
-                    ["sudo", "shutdown", "-h", "now"], timeout=5, check=True,
-                )
-            else:
-                _schedule_delayed_shutdown(delay, reboot=False)
+        if IS_WINDOWS or IS_LINUX:
+            if not _schedule_delayed_shutdown(delay, reboot=False, effect_runner=effect_runner):
+                return "[shutdown blocked: capability changed]"
             return f"[shutdown in {delay}s]"
     except Exception as exc:
         return f"[shutdown error: {exc}]"
     return "[shutdown not supported]"
 
 
-def restart_system(delay: int = 60) -> str:
+def restart_system(
+    delay: int = 60, *,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> str:
     delay = max(0, int(delay))
     try:
-        if IS_WINDOWS:
-            subprocess.run(
-                ["shutdown", "/r", "/t", str(delay)], timeout=5, check=True,
-            )
-            return f"[restart in {delay}s]"
-        if IS_LINUX:
-            _schedule_delayed_shutdown(delay, reboot=True)
-            return f"[restart in {delay}s]"
-        if IS_MACOS:
-            if delay <= 0:
-                subprocess.run(
-                    ["sudo", "shutdown", "-r", "now"], timeout=5, check=True,
-                )
-            else:
-                _schedule_delayed_shutdown(delay, reboot=True)
+        if IS_WINDOWS or IS_LINUX:
+            if not _schedule_delayed_shutdown(delay, reboot=True, effect_runner=effect_runner):
+                return "[restart blocked: capability changed]"
             return f"[restart in {delay}s]"
     except Exception as exc:
         return f"[restart error: {exc}]"
@@ -430,12 +414,7 @@ try {{
                 **popen_kw,
             )
             return "[notification sent]"
-        if IS_MACOS:
-            safe_msg = message.replace('"', '\\"')
-            safe_title = title.replace('"', '\\"')
-            subprocess.Popen(["osascript", "-e", f'display notification "{safe_msg}" with title "{safe_title}"'])
-            return "[notification sent]"
-        if shutil.which("notify-send"):
+        if IS_LINUX and shutil.which("notify-send"):
             subprocess.Popen(["notify-send", title, message])
             return "[notification sent]"
     except Exception as exc:

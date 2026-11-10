@@ -189,8 +189,8 @@ class TestHandlerEffectAuthorization(unittest.TestCase):
         self.assertNotIn("Done.", [s["text"] for s in self.spoken])
 
     def test_authorized_file_launch_keeps_each_platform_route(self):
-        for windows, platform in ((True, "Windows"), (False, "Linux"), (False, "Darwin")):
-            with self.subTest(platform=platform), patch.object(files, "IS_WINDOWS", windows), patch.object(files.platform, "system", return_value=platform):
+        for windows, platform in ((True, "Windows"), (False, "Linux")):
+            with self.subTest(platform=platform), patch.object(files, "IS_WINDOWS", windows), patch.object(files, "IS_LINUX", not windows):
                 self.effects.clear()
                 self.spoken.clear()
                 files.handle_open_file(self.app, {"path": "fake.txt", CAPABILITY_AUTHORIZATION: self.token}, self.ctx)
@@ -242,7 +242,6 @@ class TestFolderWallpaperAuthorization(unittest.TestCase):
             return 1
 
         self.enterContext(patch.object(system_commands, "IS_WINDOWS", True))
-        self.enterContext(patch.object(system_commands, "IS_MACOS", False))
         self.enterContext(patch.object(system_commands, "IS_LINUX", False))
         self.enterContext(patch.object(system_commands.os, "startfile", create=True, side_effect=open_path))
         self.enterContext(patch.object(system_commands.subprocess, "Popen", side_effect=launch))

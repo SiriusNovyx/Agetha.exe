@@ -126,7 +126,7 @@ class TestRequestProfiles(unittest.TestCase):
             deep_system, _turn, _messages = engine._build_prompt(
                 "", "", "deep OCR payload", request_profile="deep_analysis",
             )
-        short_rule = "each 1-8 words"
+        short_rule = "stay concise by default"
         self.assertIn(short_rule, quick_system)
         self.assertNotIn(short_rule, tool_system)
         self.assertNotIn(short_rule, deep_system)

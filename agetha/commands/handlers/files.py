@@ -1,7 +1,6 @@
 """Filesystem and local OS utility handlers."""
 
 import os
-import platform
 import re
 import shlex
 import shutil
@@ -15,7 +14,7 @@ from agetha.commands.system_commands import (
     screenshot_path,
     show_notification,
 )
-from agetha.utils import IS_WINDOWS, logger
+from agetha.utils import IS_WINDOWS, IS_LINUX, logger
 
 from .registry import register
 from .support import (
@@ -170,7 +169,15 @@ def handle_list_dir(app, response, ctx):
 def handle_clipboard_set(app, response, ctx):
     text = response.get("text", "").strip()
     if text:
-        msg = _call_app_ui_sync(app, lambda: copy_to_clipboard(text, app.root))
+        msg = _call_app_ui_sync(app, lambda: copy_to_clipboard(
+            text, app.root,
+            effect_runner=lambda effect: _perform_authorized_effect(
+                app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+            ),
+        ))
+        if isinstance(msg, str) and msg.startswith("[clipboard blocked:"):
+            _finish_verified_command(app, ctx, msg)
+            return True
         if isinstance(msg, str) and msg.startswith("["):
             logger.info(msg)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
@@ -279,12 +286,13 @@ def handle_run_command(app, response, ctx):
 def handle_open_file(app, response, ctx):
     file_path = response.get("path", "").strip()
     if file_path:
+        if not (IS_WINDOWS or IS_LINUX):
+            _finish_verified_command(app, ctx, "[open file not supported on this platform]")
+            return True
         try:
             def _open():
                 if IS_WINDOWS:
                     os.startfile(file_path)
-                elif platform.system() == "Darwin":
-                    subprocess.Popen(["open", file_path])
                 else:
                     subprocess.Popen(["xdg-open", file_path])
 

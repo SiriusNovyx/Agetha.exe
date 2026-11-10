@@ -62,22 +62,20 @@ class _FakeRoot:
 class _FakeConsentUI:
     def __init__(self) -> None:
         self.first_decision = None
-        self.fallback_decision = None
         self.final_decision = None
         self.final_decisions = []
-        self.fallback_reason = ""
+        self.final_reasons = []
+        self.shown = []
         self.cancel_count = 0
 
     def show_first_confirmation(self, callback) -> bool:
+        self.shown.append("first")
         self.first_decision = callback
         return True
 
-    def show_demo_fallback(self, reason: object, callback) -> bool:
-        self.fallback_reason = str(reason)
-        self.fallback_decision = callback
-        return True
-
-    def show_final_confirmation(self, callback) -> bool:
+    def show_final_confirmation(self, callback, *, demo_failure_reason=None) -> bool:
+        self.shown.append("final")
+        self.final_reasons.append(demo_failure_reason)
         self.final_decision = callback
         self.final_decisions.append(callback)
         return True
@@ -178,9 +176,6 @@ class TestFullModeMainIntegration(unittest.TestCase):
         app._build_full_mode_consent_demo = lambda _generation: demo
         generation = self._begin_and_accept_first(app)
         self.assertEqual(demo.run_count, 1)
-        if status is not ConsentDemoStatus.TYPED:
-            self.assertIsNotNone(app._full_mode_consent_ui.fallback_decision)
-            app._full_mode_consent_ui.fallback_decision(True)
         self.assertIsNotNone(app._full_mode_consent_ui.final_decision)
         return generation
 
@@ -215,7 +210,7 @@ class TestFullModeMainIntegration(unittest.TestCase):
         ])
         self.assertEqual(app._start_full_mode_services_count, 0)
 
-    def test_demo_fallback_then_final_no_stays_compact_with_zero_provider_or_cu_use(
+    def test_failed_demo_shows_final_decision_without_extra_acknowledgement(
         self,
     ) -> None:
         app = self._app()
@@ -231,17 +226,14 @@ class TestFullModeMainIntegration(unittest.TestCase):
             self._begin_and_accept_first(app)
             self.assertEqual(
                 app._capability_consent.snapshot.state,
-                ConsentState.CONSENT_DEMO,
-            )
-            self.assertEqual(
-                app._full_mode_consent_ui.fallback_reason,
-                "Notepad could not be launched.",
-            )
-            app._full_mode_consent_ui.fallback_decision(True)
-            self.assertEqual(
-                app._capability_consent.snapshot.state,
                 ConsentState.FINAL_CONFIRMATION,
             )
+            self.assertEqual(app._full_mode_consent_ui.shown, ["first", "final"])
+            self.assertEqual(
+                app._full_mode_consent_ui.final_reasons,
+                ["Notepad could not be launched."],
+            )
+            self.assertEqual(app._capabilities.snapshot().profile, CapabilityProfile.COMPACT)
             app._full_mode_consent_ui.final_decision(False)
 
         self.assertEqual(app._capability_consent.snapshot.state, ConsentState.COMPACT)
@@ -251,27 +243,29 @@ class TestFullModeMainIntegration(unittest.TestCase):
         self.assertEqual(app._start_full_mode_services_count, 0)
 
     def test_final_yes_persists_before_committing_full_and_starting_services(self) -> None:
-        app = self._app()
-        events: list[object] = []
-        app._start_full_mode_services = lambda: events.append("services")
-        app._refresh_dashboard_after_profile_commit = lambda *_args: events.append("dashboard")
+        for status in (ConsentDemoStatus.TYPED, ConsentDemoStatus.LAUNCH_FAILED):
+            with self.subTest(status=status):
+                app = self._app()
+                events: list[object] = []
+                app._start_full_mode_services = lambda: events.append("services")
+                app._refresh_dashboard_after_profile_commit = lambda *_args: events.append("dashboard")
 
-        with self._runtime_settings(self.compact_settings, self.full_settings), patch(
-            "agetha.app_config.patch_config_key",
-            side_effect=lambda key, value: events.append((key, value)) or True,
-        ):
-            self._reach_final_confirmation(app)
-            app._full_mode_consent_ui.final_decision(True)
+                with self._runtime_settings(self.compact_settings, self.full_settings), patch(
+                    "agetha.app_config.patch_config_key",
+                    side_effect=lambda key, value: events.append((key, value)) or True,
+                ):
+                    self._reach_final_confirmation(app, status=status)
+                    app._full_mode_consent_ui.final_decision(True)
 
-        self.assertEqual(
-            events,
-            [("COMPACT_MODE", "no"), "services", "dashboard"],
-        )
-        self.assertEqual(app._capability_consent.snapshot.state, ConsentState.FULL)
-        self.assertEqual(app._capabilities.snapshot().profile, CapabilityProfile.FULL)
-        self.assertTrue(app._capabilities.is_allowed(Capability.COMPUTER_USE))
-        self.assertEqual(app._ai.accesses, [])
-        self.assertEqual(app._computer_use.accesses, [])
+                self.assertEqual(
+                    events,
+                    [("COMPACT_MODE", "no"), "services", "dashboard"],
+                )
+                self.assertEqual(app._capability_consent.snapshot.state, ConsentState.FULL)
+                self.assertEqual(app._capabilities.snapshot().profile, CapabilityProfile.FULL)
+                self.assertTrue(app._capabilities.is_allowed(Capability.COMPUTER_USE))
+                self.assertEqual(app._ai.accesses, [])
+                self.assertEqual(app._computer_use.accesses, [])
 
     def test_final_persistence_failure_remains_compact_and_starts_no_services(
         self,
@@ -350,24 +344,43 @@ class TestFullModeMainIntegration(unittest.TestCase):
         self.assertGreaterEqual(app._full_mode_consent_ui.cancel_count, 1)
 
     def test_cancelled_demo_worker_cannot_open_a_late_final_confirmation(self) -> None:
-        app = self._app(run_workers=False)
+        for status in (ConsentDemoStatus.TYPED, ConsentDemoStatus.LAUNCH_FAILED):
+            with self.subTest(status=status):
+                app = self._app(run_workers=False)
+                demo = _FakeConsentDemo(
+                    ConsentDemoResult(status, "synthetic demo outcome")
+                )
+                app._build_full_mode_consent_demo = lambda _generation: demo
+
+                with self._runtime_settings(self.compact_settings, self.full_settings):
+                    generation = self._begin_and_accept_first(app)
+                    self.assertEqual(len(app._pending_workers), 1)
+                    app._cancel_full_mode_consent(generation)
+                    app._pending_workers[0][1]()
+
+                self.assertEqual(demo.run_count, 1)
+                self.assertIsNone(app._full_mode_consent_ui.final_decision)
+                self.assertEqual(app._full_mode_consent_ui.shown, ["first"])
+                self.assertEqual(app._capability_consent.snapshot.state, ConsentState.COMPACT)
+                self.assertEqual(app._capabilities.snapshot().profile, CapabilityProfile.COMPACT)
+                self.assertEqual(app._start_full_mode_services_count, 0)
+
+    def test_failed_demo_duplicate_ui_delivery_opens_one_final_confirmation(self) -> None:
+        app = self._app()
+        queued = []
+        app._schedule_ui = queued.append
         demo = _FakeConsentDemo(
-            ConsentDemoResult(ConsentDemoStatus.TYPED, "typed")
+            ConsentDemoResult(ConsentDemoStatus.LAUNCH_FAILED, "Synthetic launch failure.")
         )
         app._build_full_mode_consent_demo = lambda _generation: demo
-
         with self._runtime_settings(self.compact_settings, self.full_settings):
-            generation = self._begin_and_accept_first(app)
-            self.assertEqual(len(app._pending_workers), 1)
-            app._cancel_full_mode_consent(generation)
-            app._pending_workers[0][1]()
-
-        self.assertEqual(demo.run_count, 1)
-        self.assertIsNone(app._full_mode_consent_ui.final_decision)
-        self.assertIsNone(app._full_mode_consent_ui.fallback_decision)
-        self.assertEqual(app._capability_consent.snapshot.state, ConsentState.COMPACT)
+            self._begin_and_accept_first(app)
+            self.assertEqual(len(queued), 1)
+            queued[0]()
+            queued[0]()
+        self.assertEqual(app._full_mode_consent_ui.shown, ["first", "final"])
+        self.assertEqual(len(app._full_mode_consent_ui.final_decisions), 1)
         self.assertEqual(app._capabilities.snapshot().profile, CapabilityProfile.COMPACT)
-        self.assertEqual(app._start_full_mode_services_count, 0)
 
     def test_stale_final_yes_cannot_write_config_or_enable_full(self) -> None:
         app = self._app()

@@ -86,7 +86,7 @@ to:
 
 The constructor builds a responsive shell first. `_init_background()` performs
 heavy or failure-prone setup away from the Tk thread and schedules completed UI
-work with `root.after(0, ...)`. `run()` starts the optional tray integration,
+work through the app dispatcher. `run()` starts the optional tray integration,
 enters `mainloop()`, and calls the same idempotent shutdown routine in `finally`.
 
 ### Threading contract
@@ -96,12 +96,22 @@ Tkinter is single-threaded. The repository follows these ownership rules:
 1. Event handlers and `root.after()` callbacks may update widgets.
 2. AI, OCR, GIF decoding, voice recognition, TTS generation, and optional
    external requests may run in workers.
-3. Workers communicate results back with `root.after(0, callback)`; they must
-   not call widget methods directly.
+3. Workers submit UI work through `CompanionApp._schedule_ui`; its owner-thread
+   dispatcher performs Tk scheduling. Workers must not call widget methods.
 4. Repeating callbacks and geometry effects retain their job IDs so shutdown or
    state changes can cancel them.
 5. Stop events and closing flags are checked before workers publish late
    results.
+
+`SubtitleRenderer` receives that dispatcher at construction. Each speech/static
+presentation captures a fresh stop event; streaming previews share their current
+preview lifetime. Stop invalidates held draws and timers, and close rejects later
+presentation admission. One pending draw record coalesces cumulative text. Raw
+Canvas clearing does not erase that pending text. The renderer validates producer
+predicates outside its local delivery lock, then orders Canvas delivery against
+local stop/close under the lock. Host completion callbacks retain their cleanup
+role after visual expiration. Audio pause/resume and bleep cleanup keep their
+existing external-validity ownership.
 
 Do not hold a core-state lock while waiting synchronously for Tk work. The
 window picker is a deliberate bridge: a worker requests a main-thread dialog
@@ -128,6 +138,21 @@ this settings system instead of maintaining a second configuration model. Some
 settings are live-readable; settings marked with `*` in the dashboard require
 restart. Consult typed properties rather than parsing strings independently in
 a feature module.
+
+Keep ownership at the existing boundaries:
+
+| Setting use | Owner and effective lifetime |
+|---|---|
+| Current parsed configuration | `app_config.get_settings()` publishes the cached typed view after reload. An older retained object remains an older snapshot. |
+| Touch cooldown, wake delay, idle/rest delay | The host reads current typed settings at click admission or timer scheduling. Reload leaves an already queued timer's deadline unchanged. |
+| Screen poll interval | The polling path reads the current settings view. |
+| Constructed provider, audio and capture services | Their documented construction/restart boundaries remain in force; a reload does not recreate these services. |
+| Compact/Full profile | The capability controller and consent transition own active authorization; a settings write alone does not grant active capabilities. |
+| Fast Mode | The existing profile transaction owns forced values and the restoration snapshot. |
+
+The dashboard's restart labels describe consumer behavior, not a promise that
+all settings become live. Do not retain another copied timing value in the host
+or add a second settings cache to a feature.
 
 Normal startup also compares the existing document with the conservative
 `SettingSpec` registry. Missing canonical non-secret settings are appended in
@@ -186,6 +211,16 @@ protected-target, target-lock, cancellation, and shutdown checks. A provider
 cannot change the policy. Effect authorizations include the mode generation and
 are rechecked at the immediate effect boundary.
 
+Clipboard, volume, lock/power, autostart, and Settings handlers pass the captured
+authorization to their platform effect runners. Preparation happens before the
+runner; child-process waits and Tk event processing happen after it releases the
+capability lock. Clipboard clear-and-append share one authorization check.
+Autostart checks directory creation, shortcut-write launch, and deletion
+separately. An admitted native child or an OS-scheduled shutdown may finish after
+a profile transition; the runner prevents new effects from starting with an
+expired authorization. Standalone helpers retain their existing behavior and
+are not an alternative to guarded command dispatch.
+
 [`capability_consent.py`](../agetha/core/capability_consent.py) contains the pure
 `COMPACT -> FIRST_CONFIRMATION -> CONSENT_DEMO -> FINAL_CONFIRMATION ->
 FULL/COMPACT` state machine. The external presentation is isolated in
@@ -197,8 +232,9 @@ inactive until final confirmation.
 
 The optional warning shake and all consent dialogs are Tk-owner-thread work,
 with bounded/cancellable `after()` jobs and a non-motion treatment under reduced
-motion. Failure to launch or validate Notepad types nothing and uses an in-app
-fallback before the same final decision.
+motion. The final dialog includes the demo's failure reason when the preview
+cannot complete. It offers the same Stay Compact/Enable Full choice without
+another acknowledgement dialog. The existing consent generation owns delivery.
 
 Returning from Full starts by publishing a transitioning Compact policy and
 invalidating the Full generation. This blocks new effects before Computer Use,
@@ -246,14 +282,19 @@ The prompt is composed from compact, bounded sections when enabled:
 - web results only for explicit gated web operations;
 - current user message, few-shot examples, and bounded conversation history.
 
-The system prompt and few shots define one language-neutral multilingual policy:
-reply primarily in the user's current language, preserve mixed-language input,
-and approximate the current conversational register without inventing
-translation, transliteration, gendered speech, honorifics, cultural particles,
-formality, or slang. This is presentation guidance rather than a
-post-processing or authority filter. The parser therefore preserves exact
+The prompts mirror the user's language and conversational register while keeping
+Agetha's own voice. Reply length follows the requested depth rather than fixed
+word or segment quotas. This is presentation guidance rather than a
+post-processing or authority filter. The parser preserves exact
 values in `type_text` and does not strip words, whitespace, combining marks, or
 other user-provided data from commands, quotations, documents, or code.
+
+Routine directory listing, file reading/search, web search, volume, Settings,
+sound, and requested-dialog commands use Safe base risk and avoid an extra confirmation.
+Their existing feature, origin, capability, and effect-time checks still apply.
+The generated command matrix records the exact entries. Saved `soul.md` files
+retain their user's rules; editing the default persona template does not migrate
+those files.
 
 The parser extracts or repairs the expected JSON object, normalizes mood and
 segments, validates commands against the `COMMAND_SPECS`-derived
@@ -351,8 +392,10 @@ guard before an explicit capture/request.
 Windows uses native foreground-window and monitor information plus available
 capture libraries. Linux desktop environments use the existing X11/desktop-tool
 paths, which are exercised with mocks in headless CI and return safe empty/error
-results when capture facilities are unavailable. Historical macOS paths may
-remain, but macOS is retired and unsupported as of v5.5.5.
+results when capture facilities are unavailable. macOS is retired and unsupported
+as of v5.5.5. Its native utility, launch, font, sound, capture, and default typing
+branches have been removed. Unsupported platforms do not inherit Linux command
+or capture fallbacks; shared portable helpers and injectable APIs remain.
 
 On Windows, focused capture starts with MSS. When that exact approved frame is
 uniform/blank and `ENABLE_PRINTWINDOW_FALLBACK=yes`, a bounded local
@@ -486,7 +529,8 @@ Optional modules must remain silent no-ops when disabled or when their optional
 dependency is absent:
 
 - `TTSPlayer` and `VoiceOutputCoordinator` add synthesized speech without
-  removing the existing bleep/subtitle path.
+  removing the existing bleep/subtitle path. TTS-only queues one batch at speech
+  admission; both mode queues audio through subtitle segment delivery.
 - `web_rag` performs bounded search/fetch with URL validation and formats text as
   untrusted prompt context.
 - `tray_scaffold` imports `pystray` lazily and only changes close behavior when
@@ -528,9 +572,12 @@ cross-feature coupling:
 
 Rewrites use `write_atomic()` or a module-local temporary-file/`os.replace()`
 equivalent where applicable. JSONL stores are append-oriented and protected by
-module locks. Corrupt or missing files should fall back to safe empty/default
-state. Do not put API keys, full OCR captures, or arbitrary command output into
-these stores.
+module locks. Episodic reads distinguish absent, valid, partial, corrupt and
+unreadable storage. Appends and selective clears refuse damaged or unreadable
+input; readers may return usable records without rewriting the file. Explicit
+clear-all retains its destructive, user-requested behavior. Missing files can
+start empty. Do not put API keys, full OCR captures, or arbitrary command output
+into these stores.
 
 ## Source and frozen path ownership
 

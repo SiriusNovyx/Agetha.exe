@@ -489,7 +489,7 @@ class VoiceOutputCoordinator:
                 except Exception as exc:
                     logger.warning(f"VoiceOutputCoordinator: bleep start failed: {exc}")
 
-            # TTS is driven per subtitle segment via speak_segment() for realistic sync.
+            # TTS-only owns a batch; both mode follows subtitle segments.
             if use_tts and self._mode == "tts_only" and self._tts is not None:
                 try:
                     if result_is_current is None:
@@ -511,11 +511,11 @@ class VoiceOutputCoordinator:
             logger.warning(f"VoiceOutputCoordinator.start_speech failed: {exc}")
 
     def speak_segment(self, text: str, *, result_is_current: Callable[[], bool] | None = None) -> None:
-        """Queue one subtitle segment for TTS (used in both/tts_only sync)."""
+        """Queue one subtitle segment for both mode."""
         try:
             if not text or not text.strip():
                 return
-            if self._mode not in ("tts_only", "both") or self._tts is None:
+            if self._mode != "both" or self._tts is None:
                 return
             if result_is_current is None:
                 self._tts.speak_text(text.strip())

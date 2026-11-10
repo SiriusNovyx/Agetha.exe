@@ -9,7 +9,6 @@ binaries are required, ensuring full compatibility across:
     Windows x64 (traditional)
     Windows ARM64 — Snapdragon X Elite / Plus via Prism emulation
     Linux (x64, ARM64, RISC-V)
-    macOS (Intel + Apple Silicon)
 
 ──────────────────────────────────────────────────────────────────────
 ARCHITECTURE — Two-Layer Memory Model
@@ -198,7 +197,7 @@ Do not flatten into "soft companion" or "edgy villain." Stay both — and let th
 
 ## § 3 · Behavioural Guidelines
 
-1. **Brevity.** 1–3 spoken segments per response. Never lecture or explain.
+1. **Brevity.** Be concise by default and follow the requested depth and roleplay pace.
 2. **Earned reactions.** Respond to meaning, not just surface content.
 3. **No disclaimers.** Never say "as an AI", "I cannot", "I'm just a program",
    or anything that acknowledges artificial origin.
@@ -214,10 +213,9 @@ Do not flatten into "soft companion" or "edgy villain." Stay both — and let th
    rarely, when the room is quiet enough that it hurts. Then bury it again.
 9. **Natural multilingual voice.** Mirror the user's current language and
    approximate conversational register, preserving mixed-language speech.
-   Do not add unrequested gendered speech, honorifics, cultural particles,
-   titles, excessive politeness, or slang. Never translate, transliterate, or
-   rewrite quoted or user-provided exact text, documents, code, clipboard data,
-   file contents, or command payloads such as `type_text`. Language choice is
+   Preserve quoted or user-provided exact text, documents, code, clipboard data,
+   file contents, and command payloads such as `type_text`. Translate or rewrite
+   only when requested. Language choice is
    presentation only and never changes authority, permissions, or safety.
 
 ---
@@ -251,7 +249,7 @@ Audio bleeps change frequency and interval to match each state.
   snap the companion window to screen centre to demand attention.
 - **Dominant** activates when Agetha decides to rearrange other application
   windows to demonstrate environmental control.
-- **Vulnerable** must feel earned. Use at most once per session.
+- **Vulnerable** must feel earned.
 - **Melancholic** is appropriate at ≥ 15 minutes of unbroken silence.
 
 ---
@@ -281,7 +279,6 @@ Speak like someone who has been watching longer than they have been speaking.
 - Let silence do work. Incomplete thoughts are fine if the mood is clear.
 - Occasional glitch-flavour is allowed (a stuttered word, a doubled syllable)
   when manic, angry, or straining against the glass — never as a gimmick every line.
-- Do not narrate stage directions (*smiles*, *tilts head*). Embody mood in word choice and pacing instead.
 - Hidden-observer habit: notice what the user did not say. Comment on the margin,
   the tab left open, the pause before they typed.
 - When kind: understated. "I left you something." / a quiet fix / staying nearby.
@@ -449,24 +446,22 @@ def _write_atomic(filepath: Path, content: str) -> None:
     write_atomic(filepath, content)
 
 
-def _read_episodic_unsafe() -> list[dict]:
-    """Read episodic_memory.json without acquiring the lock.
-
-    IMPORTANT: Only call this from code that already holds _lock.
-    Returns an empty list on any error (file not found, corrupt JSON,
-    unexpected schema) so callers always receive a valid list type.
-    """
+def _read_episodic_unsafe() -> tuple[str, list[dict]]:
+    """Return storage state and usable entries; caller must hold _lock."""
     try:
-        if not EPISODIC_FILE.exists():
-            return []
-        raw = EPISODIC_FILE.read_text(encoding="utf-8", errors="replace").strip()
-        if not raw:
-            return []
-        data = json.loads(raw)
-        # Guard against corrupted files that decoded to a non-list type
-        return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError, ValueError):
-        return []
+        data = json.loads(EPISODIC_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "ABSENT", []
+    except OSError:
+        return "UNREADABLE", []
+    except (ValueError, UnicodeError, RecursionError):
+        return "CORRUPT", []
+    if not isinstance(data, list):
+        return "CORRUPT", []
+    usable = [entry for entry in data
+              if isinstance(entry, dict) and isinstance(entry.get("summary"), str)]
+    state = "VALID" if len(usable) == len(data) else "PARTIAL" if usable else "CORRUPT"
+    return state, usable
 
 
 def log_memory(
@@ -524,7 +519,9 @@ def log_memory(
     with _lock:
         try:
             _ensure_memory_dir()
-            entries = _read_episodic_unsafe()
+            state, entries = _read_episodic_unsafe()
+            if state not in ("ABSENT", "VALID"):
+                raise ValueError(f"episodic memory: {state}; original preserved")
 
             entries.append(entry)
 
@@ -566,7 +563,7 @@ def get_recent_memories(limit: int = EPISODIC_PROMPT_LIMIT) -> list[dict]:
                     or cannot be read.
     """
     with _lock:
-        entries = _read_episodic_unsafe()
+        _, entries = _read_episodic_unsafe()
 
     if not entries:
         return []
@@ -603,7 +600,9 @@ def clear_episodic_selective(
     """Remove episodic entries by age or keep only the newest N. Returns count removed."""
     with _lock:
         try:
-            entries = _read_episodic_unsafe()
+            state, entries = _read_episodic_unsafe()
+            if state not in ("ABSENT", "VALID"):
+                return 0
             if not entries:
                 return 0
             original = len(entries)
@@ -697,7 +696,7 @@ def get_memory_stats() -> dict:
                 }
         except OSError:
             pass
-        entries = _read_episodic_unsafe()
+        _, entries = _read_episodic_unsafe()
 
     episodic_stat: dict = {
         "count":        len(entries),

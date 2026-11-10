@@ -355,7 +355,7 @@ class TestGracefulShutdown(unittest.TestCase):
 
         self.assertTrue(app._cancel_event.is_set())
         self.assertEqual(app.root.destroy_count, 1)
-        app._subtitle.stop.assert_called_once_with()
+        app._subtitle.close.assert_called_once_with()
         player.stop.assert_called_once_with()
         app._voice.stop.assert_called_once_with()
         app._voice_out.stop.assert_called_once_with()

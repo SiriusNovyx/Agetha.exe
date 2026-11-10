@@ -15,7 +15,6 @@ import time
 import random
 import math
 import os
-import platform
 import subprocess
 import webbrowser
 import queue
@@ -112,7 +111,6 @@ from agetha.platform.voice_input import (
 )
 from agetha.utils import (
     native_error_popup, native_message_box, apply_window_icon, logger, BASE_DIR, WINDOW_W, WINDOW_H,
-    TOUCH_COOLDOWN_SEC, WAKE_DELAY_MS, LOAF_TIMER_MS,
     refresh_config_constants,
 )
 from agetha.app_config import get_settings
@@ -210,14 +208,6 @@ def _register_barrio_font():
                 shutil.copy(FONT_PATH, dest)
                 subprocess.run(["fc-cache", "-f"], capture_output=True)
             print("[Font] Installed barrio.ttf to ~/.local/share/fonts")
-            return True
-        elif system == "Darwin":
-            font_dir = Path.home() / "Library/Fonts"
-            font_dir.mkdir(parents=True, exist_ok=True)
-            dest = font_dir / "barrio.ttf"
-            if not dest.exists():
-                shutil.copy(FONT_PATH, dest)
-            print("[Font] Installed barrio.ttf to ~/Library/Fonts")
             return True
         elif system == "Windows":
             import ctypes, winreg
@@ -615,22 +605,25 @@ class SubtitleRenderer:
     CHAR_DELAY = get_settings().subtitle_char_delay
     _font_cache: dict[int, tkfont.Font] = {}
 
-    def __init__(self, canvas: tk.Canvas, font_size: int = 17, bleep_player=None, voice_out=None):
+    def __init__(self, canvas: tk.Canvas, font_size: int = 17, bleep_player=None, voice_out=None,
+                 *, schedule_ui: Callable[[Callable[[], None]], object | None]):
         self._canvas     = canvas
         self._font_size  = font_size
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._bleep = bleep_player
         self._voice_out = voice_out
+        self._schedule_ui = schedule_ui
+        self._delivery_lock = threading.RLock()
+        self._closed = False
+        self._presentation_kind = None
 
         self._canvas_w = WINDOW_W
         self._canvas_h = _px(130)
         self._shadow_id: int | None = None
         self._text_id: int | None = None
         self._last_layout: dict | None = None
-        self._draw_pending = False
-        self._pending_text = ""
-        self._pending_color = "#ffffff"
+        self._pending_draw = None
 
         self._canvas.config(bg="#a0a0a0")
         self._font = self._load_font(font_size)
@@ -661,37 +654,90 @@ class SubtitleRenderer:
         self._last_layout = None
 
     def clear(self):
-        self._draw_pending = False
-        self._pending_text = ""
+        with self._delivery_lock:
+            self._pending_draw = None
+            if not self._closed:
+                self._clear_canvas()
+
+    def _clear_canvas(self):
         self._canvas.delete("all")
         self._reset_items()
 
-    def _schedule_draw(self, text: str, color: str = "#ffffff"):
-        """Coalesce redraws onto the main thread (one flush per event-loop turn)."""
-        self._pending_text = text
-        self._pending_color = color
-        if self._draw_pending:
-            return
-        self._draw_pending = True
-        self._canvas.after(0, self._flush_draw)
+    def _post_current(self, callback, stop_event, result_is_current=None, *, delay_ms=0):
+        def _deliver():
+            if not _speech_is_current(result_is_current):
+                return
+            with self._delivery_lock:
+                if not self._closed and not stop_event.is_set():
+                    callback()
 
-    def _flush_draw(self):
-        self._draw_pending = False
-        self._draw(self._pending_text, self._pending_color)
+        def _arm_timer():
+            if not _speech_is_current(result_is_current):
+                return
+            with self._delivery_lock:
+                if not self._closed and not stop_event.is_set():
+                    self._canvas.after(delay_ms, _deliver)
+
+        return self._schedule_ui(_arm_timer if delay_ms else _deliver)
+
+    def _schedule_draw(self, text: str, color: str = "#ffffff", *,
+                       stop_event=None, result_is_current=None):
+        """Coalesce redraws onto the main thread (one flush per event-loop turn)."""
+        stop_event = self._stop_event if stop_event is None else stop_event
+        if not _speech_is_current(result_is_current):
+            return
+        with self._delivery_lock:
+            if self._closed or stop_event.is_set():
+                return
+            queued = self._pending_draw is not None
+            self._pending_draw = (stop_event, result_is_current, text, color)
+        if not queued and self._schedule_ui(lambda: self._flush_draw(stop_event)) is None:
+            with self._delivery_lock:
+                if self._pending_draw is not None and self._pending_draw[0] is stop_event:
+                    self._pending_draw = None
+
+    def _flush_draw(self, stop_event):
+        with self._delivery_lock:
+            pending = self._pending_draw
+            if pending is None or pending[0] is not stop_event:
+                return
+            self._pending_draw = None
+        if not _speech_is_current(pending[1]):
+            return
+        with self._delivery_lock:
+            if not self._closed and not stop_event.is_set():
+                self._draw(pending[2], pending[3])
+
+    def _begin_presentation(self, kind):
+        if kind == "thinking":
+            self.stop(wait=False)
+        else:
+            self.stop()
+        with self._delivery_lock:
+            if self._closed:
+                return None
+            self._stop_event = threading.Event()
+            self._presentation_kind = kind
+            return self._stop_event
 
     def show_thinking(self, raw_text: str):
         """Show streaming tokens in grey while waiting for a response."""
+        if self._presentation_kind != "thinking":
+            if self._begin_presentation("thinking") is None:
+                return
         texts = re.findall(r'"text"\s*:\s*"([^"]*)', raw_text)
         preview = " ".join(texts).strip() or "…"
         self._schedule_draw(preview, color="#888899")
 
     def show_message(self, text: str, color: str = "#ffffff", duration: float = 6.0):
         """Immediately show a static subtitle message (optionally auto-clears)."""
-        self.stop()
-        self._canvas.after(0, lambda: self._draw(text, color))
+        stop_event = self._begin_presentation("message")
+        if stop_event is None:
+            return
+        self._post_current(lambda: self._draw(text, color), stop_event)
         try:
             if duration and duration > 0:
-                self._canvas.after(int(duration * 1000), self.clear)
+                self._post_current(self.clear, stop_event, delay_ms=int(duration * 1000))
         except Exception:
             pass
 
@@ -700,31 +746,43 @@ class SubtitleRenderer:
             if on_done:
                 on_done()
             return
-        self.stop()
-        if not _speech_is_current(result_is_current):
+        stop_event = self._begin_presentation("speech")
+        if stop_event is None or not _speech_is_current(result_is_current):
             if on_done:
                 on_done()
             return
-        self._stop_event.clear()
         self._thread = threading.Thread(
-            target=self._run, args=(segments, on_done, bool(allow_audio), result_is_current), daemon=True
+            target=self._run, args=(segments, on_done, bool(allow_audio), result_is_current, stop_event), daemon=True
         )
         self._thread.start()
 
-    def stop(self):
-        self._stop_event.set()
-        if self._thread and self._thread.is_alive():
+    def stop(self, *, wait=True):
+        with self._delivery_lock:
+            self._stop_event.set()
+            self._pending_draw = None
+            self._presentation_kind = None
+        if wait and self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
             self._thread.join(timeout=1.0)
 
-    def _run(self, segments: list, on_done, allow_audio: bool = True, result_is_current=None):
-        if not _speech_is_current(result_is_current):
+    def close(self):
+        with self._delivery_lock:
+            self._closed = True
+        self.stop()
+
+    def _run(self, segments: list, on_done, allow_audio: bool = True, result_is_current=None,
+             stop_event=None):
+        stop_event = self._stop_event if stop_event is None else stop_event
+        if stop_event.is_set() or not _speech_is_current(result_is_current):
             if on_done:
-                on_done()
+                if _speech_is_current(result_is_current):
+                    self._schedule_ui(on_done)
+                else:
+                    on_done()
             return
-        self._canvas.after(0, lambda: self.clear() if _speech_is_current(result_is_current) else None)
+        self._post_current(self._clear_canvas, stop_event, result_is_current)
         full_text = ""
         for seg in segments:
-            if self._stop_event.is_set() or not _speech_is_current(result_is_current):
+            if stop_event.is_set() or not _speech_is_current(result_is_current):
                 break
             chunk = seg.get("text", "").strip()
             pause = seg.get("pause", 0.0)
@@ -732,21 +790,21 @@ class SubtitleRenderer:
                 full_text += " "
             # Typewriter timing per character; redraw only at word boundaries
             for i, ch in enumerate(chunk):
-                if self._stop_event.is_set() or not _speech_is_current(result_is_current):
+                if stop_event.is_set() or not _speech_is_current(result_is_current):
                     break
                 full_text += ch
                 at_word_end = ch.isspace() or i == len(chunk) - 1
                 if at_word_end:
-                    self._schedule_draw(full_text)
+                    self._schedule_draw(full_text, stop_event=stop_event, result_is_current=result_is_current)
                 time.sleep(self.CHAR_DELAY)
-            if allow_audio and chunk and not self._stop_event.is_set() and _speech_is_current(result_is_current):
+            if allow_audio and chunk and not stop_event.is_set() and _speech_is_current(result_is_current):
                 if self._voice_out and hasattr(self._voice_out, "speak_segment"):
                     try:
                         self._voice_out.speak_segment(chunk) if result_is_current is None else self._voice_out.speak_segment(chunk, result_is_current=result_is_current)
                     except Exception:
                         pass
-            if pause > 0 and not self._stop_event.is_set() and _speech_is_current(result_is_current):
-                if allow_audio and self._voice_out and _speech_is_current(result_is_current):
+            if pause > 0 and not stop_event.is_set() and _speech_is_current(result_is_current):
+                if allow_audio and self._voice_out and not stop_event.is_set() and _speech_is_current(result_is_current):
                     try:
                         if result_is_current is None:
                             self._voice_out.pause()
@@ -754,7 +812,7 @@ class SubtitleRenderer:
                             self._voice_out.pause(result_is_current=result_is_current)
                     except Exception:
                         pass
-                elif allow_audio and self._bleep and _speech_is_current(result_is_current):
+                elif allow_audio and self._bleep and not stop_event.is_set() and _speech_is_current(result_is_current):
                     self._bleep.pause()
                 time.sleep(pause)
                 if allow_audio and self._voice_out and _speech_is_current(result_is_current):
@@ -773,7 +831,7 @@ class SubtitleRenderer:
             pass
         if on_done:
             if _speech_is_current(result_is_current):
-                self._canvas.after(0, on_done)
+                self._schedule_ui(on_done)
             else:
                 on_done()
 
@@ -2303,7 +2361,7 @@ class CompanionApp:
         now = time.time()
         self._last_direct_interaction_time = now  # Phase 2: stamp interaction clock
         self._wake_from_presence_rest()
-        if now - self._last_touch_time < TOUCH_COOLDOWN_SEC:
+        if now - self._last_touch_time < get_settings().touch_cooldown_sec:
             return   # still in cooldown, silently ignore
         self._last_touch_time = now
         # Don't interrupt an ongoing AI response or block the input box permanently
@@ -2848,6 +2906,7 @@ class CompanionApp:
                         self._subtitle = SubtitleRenderer(
                             self._sub_canvas, font_size=17,
                             bleep_player=self._bleep, voice_out=self._voice_out,
+                            schedule_ui=self._schedule_ui,
                         )
                     elif hasattr(self, "_subtitle") and self._subtitle:
                         self._subtitle._bleep = self._bleep
@@ -3747,7 +3806,7 @@ class CompanionApp:
             self._set_display_mood(effective_mood)
             # Schedule loaf.gif after idle; sleep follows another idle period
             try:
-                self._loaf_job = self.root.after(LOAF_TIMER_MS, self._enter_loaf)
+                self._loaf_job = self.root.after(get_settings().loaf_timer_ms, self._enter_loaf)
             except Exception:
                 self._loaf_job = None
         elif state == self.STATE_TALKING:
@@ -3782,7 +3841,7 @@ class CompanionApp:
                 self._play_gif("loaf.gif")
                 self._is_loafing = True
                 try:
-                    self._sleep_job = self.root.after(LOAF_TIMER_MS, self._enter_deep_sleep)
+                    self._sleep_job = self.root.after(get_settings().loaf_timer_ms, self._enter_deep_sleep)
                 except Exception:
                     self._sleep_job = None
         except Exception:
@@ -3873,7 +3932,7 @@ class CompanionApp:
                 self.root.after_cancel(self._wake_job)
             except Exception:
                 pass
-        self._wake_job = self.root.after(WAKE_DELAY_MS, self._finish_wake)
+        self._wake_job = self.root.after(get_settings().wake_delay_ms, self._finish_wake)
 
     def _finish_wake(self):
         self._wake_job = None
@@ -4275,6 +4334,7 @@ class CompanionApp:
         capability_authorization: object | None = None,
         noninterruptible: bool = False,
         request_context_epoch: int | None = None,
+        parent_slot_released: bool = False,
     ) -> object | None:
         """Reserve the single provider slot or safely queue direct input."""
         with self._ai_tick_lock:
@@ -4291,7 +4351,7 @@ class CompanionApp:
             if (
                 self._ai_busy
                 or self._speech_active
-                or (deferred_inflight and not noninterruptible)
+                or (deferred_inflight and not (noninterruptible or parent_slot_released))
             ):
                 if direct:
                     if not deferred_inflight and not self._ai_busy_noninterruptible:
@@ -4977,8 +5037,18 @@ class CompanionApp:
                 return
 
             try:
-                self._dispatch_response(response, user_message, origin=origin,
-                                        speech_is_current=speech_is_current)
+                if isinstance(response, dict) and response.get("command") == "system_info":
+                    self._dispatch_response(
+                        response, user_message, origin=origin,
+                        speech_is_current=lambda: (
+                            speech_is_current()
+                            and speech_delivery_epoch == int(getattr(self, "_continuation_ui_epoch", 0))
+                        ),
+                        release_parent_slot=lambda: self._release_ai_operation(operation_token),
+                    )
+                else:
+                    self._dispatch_response(response, user_message, origin=origin,
+                                            speech_is_current=speech_is_current)
             finally:
                 self._release_ai_operation(operation_token)
                 self._run_deferred_ai_tick_callbacks()
@@ -5165,8 +5235,7 @@ class CompanionApp:
     # ── Emotion Sound Player ──────────────────────────────────────────────────
     def _play_emotion_sound(self, emotion: str) -> None:
         """Play a Windows built-in system sound matching the emotion.
-        Falls back to a pygame beep on Linux/macOS or if winsound is unavailable."""
-        _sys = platform.system()
+        Falls back to a pygame beep if native sound is unavailable."""
         emotion = (emotion or "angry").lower()
 
         # Windows built-in sound event names
@@ -5189,19 +5258,7 @@ class CompanionApp:
                 return
             except Exception as e:
                 print(f"[SOUND] winsound failed: {e}")
-        elif _sys == "Darwin":
-            try:
-                import subprocess as _sp
-                # macOS system sounds
-                _mac = {"angry": "Basso", "error": "Basso", "happy": "Glass",
-                        "sad": "Sosumi", "notify": "Ping"}
-                snd = _mac.get(emotion, "Basso")
-                _sp.Popen(["afplay", f"/System/Library/Sounds/{snd}.aiff"])
-                print(f"[SOUND] macOS emotion sound: {snd} ({emotion})")
-                return
-            except Exception as e:
-                print(f"[SOUND] macOS afplay failed: {e}")
-        else:
+        elif IS_LINUX:
             # Linux: try paplay with freedesktop sound theme names
             try:
                 import subprocess as _sp
@@ -6242,16 +6299,20 @@ class CompanionApp:
             result_is_current=producer_is_current, request_owner=request_owner,
         )
 
-    def _report_worker_start_failure(self, request_epoch: int) -> None:
-        """End only this unstarted legacy request and restore its UI on Tk."""
+    def _report_worker_start_failure(
+        self, request_epoch: int, *, delivery_is_current: Callable[[], bool] | None = None,
+    ) -> None:
+        """Restore UI for the failed worker while its request still owns delivery."""
         failed_token = getattr(self, "_ai_operation_token", None)
-        if not self._invalidate_request_context(expected_epoch=request_epoch):
-            return
-        current = self._capture_context_validity()
+        if delivery_is_current is None:
+            if not self._invalidate_request_context(expected_epoch=request_epoch):
+                return
+            request_epoch += 1
+            delivery_is_current = self._capture_context_validity()
         def _show_failure() -> None:
             if (
-                not current()
-                or request_epoch + 1 != int(getattr(self, "_context_request_epoch", 0))
+                not delivery_is_current()
+                or request_epoch != int(getattr(self, "_context_request_epoch", 0))
                 or getattr(self, "_ai_operation_token", None) not in (None, failed_token)
             ):
                 return
@@ -6304,6 +6365,7 @@ class CompanionApp:
         notepad_context: str = "",
         suppress_read_notepad: bool = False,
         continuation_request=None,
+        parent_slot_released: bool = False,
     ):
         if continuation_request is not None:
             producer_is_current = result_is_current
@@ -6329,6 +6391,7 @@ class CompanionApp:
                 direct=False,
                 user_message=None,
                 origin=origin,
+                parent_slot_released=parent_slot_released and continuation_request is not None,
             )
             if operation_token is None:
                 return None
@@ -6463,10 +6526,11 @@ class CompanionApp:
         *,
         origin: RequestOrigin | None = None,
         speech_is_current: Callable[[], bool] | None = None,
+        release_parent_slot: Callable[[], bool] | None = None,
     ):
         from agetha.commands.command_handlers import dispatch
         dispatch(self, response, user_message, origin=origin,
-                 speech_is_current=speech_is_current)
+                 speech_is_current=speech_is_current, release_parent_slot=release_parent_slot)
 
     def _on_speech_done(
         self,
@@ -6888,24 +6952,9 @@ class CompanionApp:
         """Run only the fixed Notepad bootstrap; never the Computer Use planner."""
         result = self._build_full_mode_consent_demo(generation).run_full_mode_consent_demo()
 
-        def finish() -> None:
-            if not self._capability_consent.is_current(
-                generation, ConsentState.CONSENT_DEMO,
-            ):
-                return
-            ui = self._ensure_full_mode_consent_ui()
-            if result.typed:
-                self._show_final_full_mode_confirmation(generation)
-            else:
-                ui.show_demo_fallback(
-                    result.safe_reason,
-                    lambda proceed: (
-                        self._show_final_full_mode_confirmation(generation)
-                        if proceed else self._cancel_full_mode_consent(generation)
-                    ),
-                )
-
-        self._schedule_ui(finish)
+        self._schedule_ui(lambda: self._show_final_full_mode_confirmation(
+            generation, demo_failure_reason=None if result.typed else result.safe_reason,
+        ))
 
     def _build_full_mode_consent_demo(self, generation: int):
         """Compose the fixed Win32 Notepad demo without a general launcher API."""
@@ -7056,7 +7105,9 @@ class CompanionApp:
             shutdown_requested=lambda: bool(self._closing),
         )
 
-    def _show_final_full_mode_confirmation(self, generation: int) -> None:
+    def _show_final_full_mode_confirmation(
+        self, generation: int, *, demo_failure_reason: object | None = None,
+    ) -> None:
         if not self._capability_consent.is_current(
             generation,
             ConsentState.CONSENT_DEMO,
@@ -7073,6 +7124,7 @@ class CompanionApp:
             return
         self._ensure_full_mode_consent_ui().show_final_confirmation(
             lambda approved: self._on_final_full_mode_decision(generation, approved),
+            demo_failure_reason=demo_failure_reason,
         )
 
     def _on_final_full_mode_decision(self, generation: int, approved: bool) -> None:
@@ -7176,7 +7228,7 @@ class CompanionApp:
 
         try:
             if self._subtitle:
-                self._subtitle.stop()
+                self._subtitle.close()
         except Exception:
             pass
         for player in tuple(getattr(self, "_gif_cache", {}).values()):

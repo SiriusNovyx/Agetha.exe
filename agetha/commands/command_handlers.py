@@ -6,7 +6,6 @@ Each handler receives (app, response, ctx) and returns True if it handled the co
 from __future__ import annotations
 
 import os
-import platform
 import re
 import shlex
 import shutil
@@ -25,6 +24,7 @@ from agetha.commands.specs import (
     validate_handler_bindings,
 )
 from agetha.commands.handlers.registry import HANDLERS, HandlerFn, register
+from agetha.core.continuation_lifecycle import ContinuationLifecycle, LegacyContinuationAdapter
 from agetha.commands.handlers.support import (
     CAPABILITY_AUTHORIZATION as _CAPABILITY_AUTHORIZATION,
     DispatchCtx,
@@ -679,6 +679,7 @@ def dispatch(
     *,
     origin: RequestOrigin | None = None,
     speech_is_current: Callable[[], bool] | None = None,
+    release_parent_slot: Callable[[], bool] | None = None,
 ) -> None:
     """Route a parsed AI response to the appropriate handler."""
     if speech_is_current is not None and not speech_is_current():
@@ -705,12 +706,17 @@ def dispatch(
         _schedule_response_ui(lambda: app._set_state(app.STATE_IDLE))
         app._reschedule_screen_poll()
         return
+    producer_is_current = speech_is_current
+    if command == "system_info" and producer_is_current is None:
+        producer_is_current = _capture_context_validity(app)
     ctx = DispatchCtx(
         user_message=user_message,
         origin=resolved_origin,
         mood=response.get("mood", "neutral"),
         segments=response.get("segments", []),
         shutdown_requested=bool(response.get("shutdown", False)),
+        speech_is_current=producer_is_current,
+        release_parent_slot=release_parent_slot,
     )
 
     if response.get("groq_exhausted"):
@@ -1372,14 +1378,12 @@ def handle_target_close(app, response, ctx):
 def handle_open_app(app, response, ctx):
     app_name = response.get("app", "").strip() or response.get("app_name", "").strip()
     if app_name:
-        command = (
-            ("open", app_name)
-            if platform.system() == "Darwin"
-            else (app_name,)
-        )
+        if not (IS_WINDOWS or IS_LINUX):
+            _finish_verified_command(app, ctx, "[app launch not supported on this platform]")
+            return True
         if not guarded_launch_application(
             app,
-            command,
+            (app_name,),
             guard_approved=True,
             capability_authorization=response.get(_CAPABILITY_AUTHORIZATION),
         ):
@@ -1511,19 +1515,58 @@ def handle_open_url(app, response, ctx):
 
 @register("system_info")
 def handle_system_info(app, response, ctx):
-    context_is_current = _capture_context_validity(app)
+    producer_is_current = getattr(ctx, "speech_is_current", None)
+    if producer_is_current is None:
+        producer_is_current = _capture_context_validity(app)
+    request_epoch = int(getattr(app, "_context_request_epoch", 0))
+    delivery_epoch = int(getattr(app, "_continuation_ui_epoch", 0))
+    authorization = response.get(_CAPABILITY_AUTHORIZATION)
     info = system_info()
 
-    def _requery():
-        follow = app._ai_query(
-            "",
-            doc_content=f"System info:\n{info}",
-            request_profile="fast_tool_result",
-        )
-        if follow:
-            dispatch(app, follow, ctx.user_message, origin="tool_result")
+    getter = getattr(type(app), "_get_continuation_lifecycle", None)
+    if callable(getter):
+        lifecycle = getter(app)
+    else:
+        lifecycle = getattr(app, "_continuation_lifecycle", None)
+        if not isinstance(lifecycle, ContinuationLifecycle):
+            lifecycle = app._continuation_lifecycle = ContinuationLifecycle()
+    adapter = LegacyContinuationAdapter(lifecycle)
+    request = adapter.admit(generation=request_epoch, validity=lambda: (
+        producer_is_current()
+        and delivery_epoch == int(getattr(app, "_continuation_ui_epoch", 0))
+        and (authorization is None or _authorization_is_current(app, authorization))
+    ))
+    if request is None or not request.set_context(f"System info:\n{info}"):
+        return True
 
-    _start_app_worker(app, _requery, "system-info-requery", continuation_is_current=context_is_current)
+    release_parent_slot = getattr(ctx, "release_parent_slot", None)
+    parent_slot_released = release_parent_slot is not None and release_parent_slot()
+
+    def starter(run, failed):
+        start_worker = getattr(type(app), "_start_worker", None)
+        if callable(start_worker):
+            return start_worker(app, run, name="system-info-requery", on_start_failure=failed)
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        return worker
+
+    def failed_start():
+        report = getattr(type(app), "_report_worker_start_failure", None)
+        if callable(report):
+            report(app, request_epoch, delivery_is_current=request.delivery_is_current)
+
+    def deliver(follow, valid):
+        send = getattr(type(app), "_dispatch_response", None)
+        if callable(send):
+            send(app, follow, ctx.user_message, origin="tool_result", speech_is_current=valid)
+        else:
+            dispatch(app, follow, ctx.user_message, origin="tool_result", speech_is_current=valid)
+
+    adapter.start(request, starter, lambda payload: app._ai_query(
+        "", doc_content=payload, request_profile="fast_tool_result", preserve_user_message=True,
+        result_is_current=request.work_is_current, continuation_request=request,
+        parent_slot_released=parent_slot_released,
+    ), deliver, on_start_failure=failed_start)
     return True
 
 

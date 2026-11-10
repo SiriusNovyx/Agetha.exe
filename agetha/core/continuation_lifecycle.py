@@ -56,6 +56,15 @@ class ContinuationLifecycle:
             if self._shutdown:
                 return None
             previous = self._current
+        # Host validity can acquire its own lock. Check it outside ours.
+        try:
+            if not validity():
+                return None
+        except Exception:
+            return None
+        with self._lock:
+            if self._shutdown or self._current is not previous:
+                return None
             request = ContinuationRequest(self, identity, validity, work_validity, cleanup)
             self._current = request
         if previous is not None:
