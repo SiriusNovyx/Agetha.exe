@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agetha startup health check and launcher (Overhaul Edition v5.7.5)
+  Agetha startup health check and launcher (Overhaul Edition v5.9)
 
 .DESCRIPTION
   Verifies project files, ARM64/x64 Python compatibility, venv, packages,
@@ -48,7 +48,7 @@ function Get-AppVersion {
             }
         }
     }
-    return '5.7.5'
+    return '5.9'
 }
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = 'Gray') {
@@ -66,7 +66,7 @@ try {
     $script:AppVersion = Get-AppVersion
     $Host.UI.RawUI.WindowTitle = "Agetha.exe  -  Health Check  |  v$script:AppVersion"
 } catch {
-    $script:AppVersion = '5.7.5'
+    $script:AppVersion = '5.9'
 }
 
 function Test-GitHubUpdate {
@@ -1401,7 +1401,7 @@ if ($missingCore) {
     Wait-Key
     exit 1
 }
-Write-Ok 'Core project files confirmed (v5.7.5 modules + requirements.txt).'
+Write-Ok 'Core project files confirmed (v5.9 modules + requirements.txt).'
 Write-Host ''
 Test-GitHubUpdate
 New-AgethaDesktopShortcut

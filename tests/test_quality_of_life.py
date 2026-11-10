@@ -91,6 +91,7 @@ class TestFileDropBoundary(unittest.TestCase):
             path = Path(folder) / "gift.txt"
             path.write_text("hello", encoding="utf-8")
             app = main.CompanionApp.__new__(main.CompanionApp)
+            app._ai_tick_lock = threading.Lock()
             app._dragging_file = True
             app._last_dragged_file = ""
             app._input_box = {"state": "normal"}
@@ -115,6 +116,7 @@ class TestFileDropBoundary(unittest.TestCase):
             path = Path(folder) / ".env"
             path.write_text("API_KEY=private", encoding="utf-8")
             app = main.CompanionApp.__new__(main.CompanionApp)
+            app._ai_tick_lock = threading.Lock()
             app._dragging_file = True
             app._last_dragged_file = ""
             app._input_box = {"state": "normal"}
@@ -231,6 +233,7 @@ class TestRequestOrigins(unittest.TestCase):
     def test_real_touch_event_passes_structured_origin(self):
         import main
         app = main.CompanionApp.__new__(main.CompanionApp)
+        app._ai_tick_lock = threading.Lock()
         app._last_direct_interaction_time = 0.0
         app._last_touch_time = 0.0
         app._input_box = {"state": "normal"}
@@ -492,6 +495,7 @@ class TestThreadingAndArbitration(unittest.TestCase):
         kwargs = app._start_worker.call_args.kwargs["kwargs"]
         self.assertEqual(kwargs, {
             "user_message": "Explain this failure",
+            "accepted_context_epoch": 0,
             "origin": "terminal_sentinel",
             "explicit_screen_context": "SANITIZED SENTINEL CONTEXT",
         })

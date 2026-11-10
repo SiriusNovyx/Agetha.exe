@@ -23,7 +23,7 @@ import json
 import os
 import threading
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from agetha.utils import IS_WINDOWS, logger
 from agetha.app_config import BASE_DIR
@@ -56,7 +56,10 @@ SETTINGS_PAGES: dict[str, str] = {
 }
 
 
-def open_settings(page: str) -> tuple[bool, str]:
+def open_settings(
+    page: str, *,
+    effect_runner: Callable[[Callable[[], object]], tuple[bool, object | None]] | None = None,
+) -> tuple[bool, str]:
     """Open one allowlisted Windows Settings page. Never arbitrary URIs."""
     key = (page or "home").strip().lower().replace(" ", "")
     uri = SETTINGS_PAGES.get(key)
@@ -66,7 +69,10 @@ def open_settings(page: str) -> tuple[bool, str]:
     if not IS_WINDOWS:
         return False, "Windows Settings is only available on Windows."
     try:
-        os.startfile(uri)  # documented ms-settings: URI, from allowlist only
+        effect = lambda: os.startfile(uri)
+        performed, _value = effect_runner(effect) if effect_runner is not None else (True, effect())
+        if not performed:
+            return False, "[open_settings blocked: capability changed]"
         return True, f"Opened Windows Settings: {key} ({uri})"
     except Exception as exc:
         logger.warning(f"open_settings({key}) failed: {exc}")

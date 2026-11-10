@@ -104,6 +104,7 @@ model output.
 | [file_drop.py](../agetha/core/file_drop.py) | `PreparedFileDrop` and `prepare_file_drop()`; bounded local file validation, sensitive/binary policy, and path-safe provider metadata. |
 | [request_context.py](../agetha/core/request_context.py) | Structured request origins plus compact prompt rendering and request-profile selection. |
 | [continuation.py](../agetha/core/continuation.py) | Immutable session snapshots/decisions/resources/outcomes and thread-safe `ContinuationEngine`. Owns one bounded direct-user generation, status/tool/final transitions, the read-only allowlist, capability-scoped resources, sensitivity boundaries, cycle detection, cancellation, and shutdown. |
+| [continuation_lifecycle.py](../agetha/core/continuation_lifecycle.py) | Shared request lifecycle owner and legacy/bounded adapters. The legacy system-info route passes its original validity and optional parent-slot release through dispatch before starting its one passive follow-up. The lifecycle owns admission, worker claims and terminal publication. The host owns the provider slot and speech delivery. |
 | [read_only_tools.py](../agetha/core/read_only_tools.py) | `ReadOnlyToolExecutor`, strict feature-gated continuation adapters, sensitivity-safe outcomes, public-URL/SSRF validation, per-redirect safe-fetch contract, cancellation, redaction, and bounded process/file/memory/web results. Owns no UI, provider, or session. |
 | [observation_bus.py](../agetha/core/observation_bus.py) | `ObservationKind`, `Sensitivity`, immutable `Observation`, `ObservationEligibility`, and application-owned `ObservationBus`. Bounds/freezes metadata, clamps confidence, expires and deduplicates with monotonic time, and keeps local reaction, notification, provider, memory, and guarded-action eligibility separate. Publication performs no downstream action. |
 | [presence_etiquette.py](../agetha/core/presence_etiquette.py) | `PresenceState`, `PresenceDecision`, `PresenceUrgency`, pure `decide_presence()`, and the stateful `PresenceEtiquette` queue/backoff owner. Applies local fullscreen/presentation/game, rapid-input, quiet-hour, idle/activity, media, dismissal, minimize/sleep, dangerous-condition, and shutdown rules without monitoring or provider calls. |
@@ -163,9 +164,9 @@ Notes:
 
 - edge-tts uses a network service; pyttsx3 is local; Kokoro needs its own runtime
   and voice assets.
-- `web_rag` accepts HTTP(S) and follows redirects. It does not itself reject
-  private/loopback destinations, so the feature gate and Caution confirmation
-  remain important boundaries.
+- The legacy page-fetch path accepts HTTP(S) and follows redirects without
+  rejecting private/loopback destinations. It retains its feature gate and
+  Caution confirmation; fixed-endpoint web search uses Safe risk.
 - Tray background close is honored only when a tray is actually running.
 
 ## `agetha/computer_use`
@@ -241,7 +242,7 @@ does not modify Tk widgets.
 | [ui/__init__.py](../agetha/ui/__init__.py) | Package marker only. |
 | [display_scale.py](../agetha/ui/display_scale.py) | `resolve_ui_scale()` and `scale_px()`. Manual `UI_SCALE` clamps to 0.75-2.50; automatic scale considers display/DPI and clamps to 1.0-2.0. |
 | [dashboard.py](../agetha/ui/dashboard.py) | `open_dashboard()`, pure Compact/Full presentation/update models, trusted `open_project_link()`, and notepad read/write. Compact exposes its profile switch while hiding Full-only settings/System Monitor/Senses; Full shows applicable advanced surfaces. Profile requests are isolated from the ordinary config patch and returned to the application-owned consent transition. |
-| [full_mode_consent.py](../agetha/ui/full_mode_consent.py) | Tk-owner-thread Win95 first warning, bounded/cancellable shake or reduced-motion static cue, in-app demo-failure fallback, final confirmation, and generation-bound callback cancellation. It owns presentation only and never activates Full or performs the Notepad effect itself. |
+| [full_mode_consent.py](../agetha/ui/full_mode_consent.py) | Tk-owner-thread Win95 first warning, bounded/cancellable shake or reduced-motion static cue, final confirmation with an optional demo-failure reason, and generation-bound callback cancellation. It owns presentation only and never activates Full or performs the Notepad effect itself. |
 | [senses_panel.py](../agetha/ui/senses_panel.py) | Capability status/snapshot models, pure `collect_senses_state()`, generation-safe `SensesRefreshController`, and the Win95 `SensesPanel`. Reports effective profile/reasons plus Vision, Hearing, Memory, Network & AI, Actions, and Presence from local/configured/already-known state without process enumeration for the panel, capture, paid provider probes, key exposure, mutation, persistence, or feature startup. |
 | [typing_preview.py](../agetha/ui/typing_preview.py) | Win95 confirmation/preview for Unicode destination, character/line counts, planned method, clipboard fallback, reversibility, reasons, and bounded redacted content. Explicit preview mode has no Enter action. |
 | [terminal_sentinel_popup.py](../agetha/ui/terminal_sentinel_popup.py) | No-activation Win95 Explain/Dismiss/Ignore Pattern notification. Owns only the local surface and its callbacks; it does not call a provider or steal foreground focus itself. |
@@ -272,6 +273,19 @@ that was actually run.
 |---|---:|---|
 | [tests/__init__.py](../tests/__init__.py) | - | Test package marker. |
 | [test_atomic_persistence.py](../tests/test_atomic_persistence.py) | 9 | Atomic replacement/failure cleanup and corrupt-state repair/call-site use. |
+| [test_episodic_preservation.py](../tests/test_episodic_preservation.py) | 20 | Synthetic episodic corruption/read-denial preservation, healthy appends/caps, selective clearing and concurrent mutations. |
+| [test_audio_enqueue_ownership.py](../tests/test_audio_enqueue_ownership.py) | 9 | Single enqueue ownership across audio modes, repeated segments, expiry and fallback. |
+| [test_subtitle_delivery_lifetime.py](../tests/test_subtitle_delivery_lifetime.py) | 19 | Held draw/timer delivery, coalescing, stop/successor/close, owner-queue scheduling, completion cleanup and retained audio pause release. |
+| [test_system_platform_retirement.py](../tests/test_system_platform_retirement.py) | 17 | Retired native utility refusal and retained Windows/Linux commands plus portable Tk clipboard behavior. |
+| [test_platform_launch_presentation_retirement.py](../tests/test_platform_launch_presentation_retirement.py) | 11 | Unsupported launch/font/sound refusal and retained guarded launch, Linux font/sound, Windows sound and portable fallbacks. |
+| [test_capture_typing_platform_retirement.py](../tests/test_capture_typing_platform_retirement.py) | 10 | Unsupported display/capture/default typing refusal and retained Windows/Linux candidate/factory behavior. |
+| [test_routine_action_policy.py](../tests/test_routine_action_policy.py) | 9 | Routine commands avoid repeated confirmation; aliases agree, requested dialogs appear once, and remaining origin/profile/web-feature gates retain their behavior. |
+| [test_roleplay_prompt_flexibility.py](../tests/test_roleplay_prompt_flexibility.py) | 6 | Natural reply length, persona-template flexibility, analysis detail and preservation of longer speech segments. |
+| [test_clipboard_effect_authorization.py](../tests/test_clipboard_effect_authorization.py) | 7 | Queued clipboard authorization, missing tokens/root, and event processing outside the capability lock. |
+| [test_settings_effect_authorization.py](../tests/test_settings_effect_authorization.py) | 6 | Settings launch authorization and retained URI allowlist behavior. |
+| [test_volume_effect_authorization.py](../tests/test_volume_effect_authorization.py) | 10 | Volume launch authorization, Windows/Linux arguments, waits and timeout cleanup. |
+| [test_power_effect_authorization.py](../tests/test_power_effect_authorization.py) | 11 | Synthetic lock/power launch authorization, Linux scheduling, failure and timeout behavior. |
+| [test_autostart_effect_authorization.py](../tests/test_autostart_effect_authorization.py) | 13 | Disposable startup directory/shortcut effects, late invalidation, waits, ownership refusal and idempotence. |
 | [test_fast_mode_profile.py](../tests/test_fast_mode_profile.py) | 34 | Disabled read-only startup, activation/restoration transactions, durable cleanup-only retry, crash/cache recovery, drift/CAS preference resets, structural preservation, `.env` isolation, migration, validation, permissions, and path safety. |
 | [test_fast_mode_runtime.py](../tests/test_fast_mode_runtime.py) | 33 | Adaptive history/output profiles, complete tool/deep analysis with payload-safe retained answers, all-profile safety kernels, direct-only deep OCR, provider parity, bounded ambient events, Ollama options, pending presence context, and unchanged-ambient local skip. |
 | [test_provider_protocol.py](../tests/test_provider_protocol.py) | - | GPT-OSS model normalization, profile reasoning options, provider-neutral behavior, HTTP error classification, and response-status helpers. |
@@ -302,7 +316,7 @@ that was actually run.
 | [test_dashboard_profiles.py](../tests/test_dashboard_profiles.py) | - | Pure Compact/classic and Full/advanced presentation models plus isolation of profile transitions from ordinary config updates. |
 | [test_full_mode_consent_state.py](../tests/test_full_mode_consent_state.py) | - | Pure first/demo/final flow, persisted Full startup, out-of-order/stale rejection, cancellation, downgrade, and shutdown. |
 | [test_full_mode_consent_demo.py](../tests/test_full_mode_consent_demo.py) | - | Fixed Notepad/static warning API, target/liveness/foreground/timeout/cancel/shutdown validation, zero typing on change, and controlled fallback results. |
-| [test_full_mode_consent_ui.py](../tests/test_full_mode_consent_ui.py) | - | Accurate warnings/actions, fallback/final labels, bounded shake, reduced-motion treatment, Tk-owner enforcement, cancellation, and stale/close lifecycle. |
+| [test_full_mode_consent_ui.py](../tests/test_full_mode_consent_ui.py) | - | Accurate warnings/actions, final choice with bounded failure text, bounded shake, reduced-motion treatment, Tk-owner enforcement, cancellation, and stale/close lifecycle. |
 | [test_frozen_runtime.py](../tests/test_frozen_runtime.py) | - | Frozen shortcut arguments, current-directory independence, restored `sys.frozen` mocks, exact frozen self identity, and Unicode/window self-target refusals. |
 | [test_continuation.py](../tests/test_continuation.py) | - | Bounded status/tool/final state machine, authority/resource scoping, sensitivity, cycles, cancellation, expiry, shutdown, preemption, and late callbacks. |
 | [test_read_only_tools.py](../tests/test_read_only_tools.py) | - | Feature-gated read adapters, bounded/redacted outcomes, cancellation, file/process data minimization, and public-URL/redirect SSRF boundaries. |
@@ -329,6 +343,7 @@ that was actually run.
 | [docs/module_reference.md](module_reference.md) | This repository-wide file and symbol map. |
 | [docs/development.md](development.md) | Setup, configuration, change checklists, validation commands, and platform limits. |
 | [docs/unlimited_ocr_server.md](unlimited_ocr_server.md) | Explicit deep-OCR service configuration, loopback mock, deployment, privacy, and controlled failures. |
+| [docs/releases/v5.9.md](releases/v5.9.md) | Recovery prerelease: verified repairs, unresolved risks, and usage cautions. |
 | [docs/releases/v5.7.md](releases/v5.7.md) | Quality-of-life privacy boundaries, request origins, lifecycle coordination, command hardening, and validation results. |
 | [docs/releases/v5.5.5.md](releases/v5.5.5.md) | Fast Mode 2.0 profile, recovery, adaptive request budgets, safety boundaries, and v5.5.5 upgrade guidance. |
 | [docs/fast_mode_security.md](fast_mode_security.md) | Fast Mode threat model, platform lock behavior, post-lock validation, durability, Windows ACL limits, ambiguous-write recovery, audit events, CLI exit codes, and CI coverage. |

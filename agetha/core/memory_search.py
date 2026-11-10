@@ -117,18 +117,12 @@ def log_longterm_memory(summary: str, source: str = "system", mood: str = "") ->
     }
     line = json.dumps(record, ensure_ascii=False) + "\n"
     with _lock:
-        global _cache_entries, _cache_mtime, _cache_size
+        global _cache_mtime, _cache_size
+        _cache_mtime = None
+        _cache_size = 0
         try:
             with LONGTERM_FILE.open("a", encoding="utf-8") as fh:
                 fh.write(line)
-            _cache_entries.append(record)
-            try:
-                stat = LONGTERM_FILE.stat()
-                _cache_mtime = stat.st_mtime
-                _cache_size = stat.st_size
-            except Exception:
-                _cache_mtime = None
-                _cache_size = 0
         except Exception as exc:
             logger.warning(f"memory_search: append failed: {exc}")
 

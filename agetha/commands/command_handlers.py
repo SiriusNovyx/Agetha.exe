@@ -6,7 +6,6 @@ Each handler receives (app, response, ctx) and returns True if it handled the co
 from __future__ import annotations
 
 import os
-import platform
 import re
 import shlex
 import shutil
@@ -25,10 +24,12 @@ from agetha.commands.specs import (
     validate_handler_bindings,
 )
 from agetha.commands.handlers.registry import HANDLERS, HandlerFn, register
+from agetha.core.continuation_lifecycle import ContinuationLifecycle, LegacyContinuationAdapter
 from agetha.commands.handlers.support import (
     CAPABILITY_AUTHORIZATION as _CAPABILITY_AUTHORIZATION,
     DispatchCtx,
     call_app_ui_sync as _call_app_ui_sync,
+    capture_context_validity as _capture_context_validity,
     command_result_ok as _command_result_ok,
     finish_verified_command as _finish_verified_command,
     perform_authorized_effect as _perform_authorized_effect,
@@ -677,36 +678,51 @@ def dispatch(
     user_message: str | None = None,
     *,
     origin: RequestOrigin | None = None,
+    speech_is_current: Callable[[], bool] | None = None,
+    release_parent_slot: Callable[[], bool] | None = None,
 ) -> None:
     """Route a parsed AI response to the appropriate handler."""
+    if speech_is_current is not None and not speech_is_current():
+        return
+
+    def _schedule_response_ui(callback):
+        _schedule_app_ui(app, lambda: callback() if (
+            speech_is_current is None or speech_is_current()
+        ) else None)
+
     resolved_origin = normalize_request_origin(
         origin,
         default="ambient" if user_message is None else "user",
     )
     if not isinstance(response, dict):
         logger.warning("Blocked malformed AI response before command dispatch")
-        _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE))
+        _schedule_response_ui(lambda: app._set_state(app.STATE_IDLE))
         app._reschedule_screen_poll()
         return
     command = response.get("command", "idle")
     spec = get_command_spec(command)
     if not isinstance(command, str) or spec is None:
         logger.warning("Blocked unknown AI command before Command Guard")
-        _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE))
+        _schedule_response_ui(lambda: app._set_state(app.STATE_IDLE))
         app._reschedule_screen_poll()
         return
+    producer_is_current = speech_is_current
+    if command == "system_info" and producer_is_current is None:
+        producer_is_current = _capture_context_validity(app)
     ctx = DispatchCtx(
         user_message=user_message,
         origin=resolved_origin,
         mood=response.get("mood", "neutral"),
         segments=response.get("segments", []),
         shutdown_requested=bool(response.get("shutdown", False)),
+        speech_is_current=producer_is_current,
+        release_parent_slot=release_parent_slot,
     )
 
     if response.get("groq_exhausted"):
-        _schedule_app_ui(app, lambda: app._subtitle.show_message(
+        _schedule_response_ui(lambda: app._subtitle.show_message(
             "You reached your limit with your Groq keys", "#ff4444"))
-        _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE))
+        _schedule_response_ui(lambda: app._set_state(app.STATE_IDLE))
         app._reschedule_screen_poll()
         return
 
@@ -862,7 +878,10 @@ def dispatch(
     if resolved_origin == "ambient" and ctx.mood in app._ATTENTION_MOODS:
         app._maybe_snap_to_center(ctx.mood)
     elif resolved_origin != "terminal_sentinel" and hasattr(app, "_play_response_motion"):
-        app._play_response_motion(ctx.mood)
+        if speech_is_current is None:
+            app._play_response_motion(ctx.mood)
+        else:
+            app._play_response_motion(ctx.mood, result_is_current=speech_is_current)
 
     if command in _WINDOW_COMMANDS and not get_settings().enable_window_control:
         logger.info(f"Blocked (ENABLE_WINDOW_CONTROL=no): {command}")
@@ -947,7 +966,11 @@ def dispatch(
         and ambient_presence is not None
         and not bool(getattr(ambient_presence, "allow_voice", False))
     )
-    if not ambient_voice_blocked and app._try_short_mood_speak(command, ctx):
+    if not ambient_voice_blocked and (
+        app._try_short_mood_speak(command, ctx)
+        if speech_is_current is None
+        else app._try_short_mood_speak(command, ctx, result_is_current=speech_is_current)
+    ):
         return
 
     handler = (
@@ -982,7 +1005,8 @@ def dispatch(
 
     if command in ("wake_user", "speak") and ctx.segments:
         if response_presence is None and resolved_origin != "terminal_sentinel":
-            app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+            app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested,
+                                    result_is_current=speech_is_current)
         else:
             app._speak_and_continue(
                 ctx.segments,
@@ -992,12 +1016,15 @@ def dispatch(
                     resolved_origin != "terminal_sentinel"
                     and bool(getattr(response_presence, "allow_voice", False))
                 ),
+                result_is_current=speech_is_current,
             )
     else:
+        if speech_is_current is not None and not speech_is_current():
+            return
         app._persistent_mood = None
         if command == "idle" and not ctx.segments:
-            _schedule_app_ui(app, lambda: app._subtitle.clear())
-        _schedule_app_ui(app, lambda: app._set_state(app.STATE_IDLE, ctx.mood))
+            _schedule_response_ui(lambda: app._subtitle.clear())
+        _schedule_response_ui(lambda: app._set_state(app.STATE_IDLE, ctx.mood))
         app._reschedule_screen_poll()
 
 
@@ -1070,6 +1097,7 @@ def handle_move_window(app, response, ctx):
 
 @register("get_clipboard")
 def handle_get_clipboard(app, response, ctx):
+    context_is_current = _capture_context_validity(app)
     content = _call_app_ui_sync(app, lambda: get_clipboard(app.root))
     content = str(content or "[clipboard unavailable]")
 
@@ -1083,7 +1111,7 @@ def handle_get_clipboard(app, response, ctx):
         if follow:
             dispatch(app, follow, ctx.user_message, origin="tool_result")
 
-    _start_app_worker(app, _requery, "clipboard-requery")
+    _start_app_worker(app, _requery, "clipboard-requery", continuation_is_current=context_is_current)
     return True
 
 
@@ -1093,6 +1121,7 @@ def handle_get_clipboard(app, response, ctx):
 
 @register("read_document")
 def handle_read_document(app, response, ctx):
+    context_is_current = _capture_context_validity(app)
     doc_path = response.get("path", "").strip()
     doc_content = app._ai.read_document(doc_path) if app._ai and doc_path else "[no path]"
 
@@ -1103,7 +1132,7 @@ def handle_read_document(app, response, ctx):
         if follow:
             dispatch(app, follow, ctx.user_message, origin="tool_result")
 
-    _start_app_worker(app, _requery, "document-requery")
+    _start_app_worker(app, _requery, "document-requery", continuation_is_current=context_is_current)
     return True
 
 
@@ -1117,12 +1146,15 @@ def handle_read_file(app, response, ctx):
 
 @register("monitor_process")
 def handle_monitor_process(app, response, ctx):
+    context_is_current = _capture_context_validity(app)
     process_name = response.get("process_name", "").strip()
     if not process_name or not app._ai:
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
         return True
 
-    _schedule_app_ui(app, lambda: app._subtitle.show_message(f"Checking {process_name}…", "#888888"))
+    _schedule_app_ui(app, lambda: app._subtitle.show_message(
+        f"Checking {process_name}…", "#888888",
+    ) if context_is_current() else None)
 
     def _check():
         running = app._ai.monitor_process(process_name)
@@ -1136,7 +1168,7 @@ def handle_monitor_process(app, response, ctx):
         if follow:
             dispatch(app, follow, ctx.user_message, origin="tool_result")
 
-    _start_app_worker(app, _check, "process-monitor")
+    _start_app_worker(app, _check, "process-monitor", continuation_is_current=context_is_current)
     return True
 
 
@@ -1182,6 +1214,7 @@ def handle_emotion_sound(app, response, ctx):
 
 @register("show_dialog")
 def handle_show_dialog(app, response, ctx):
+    context_is_current = _capture_context_validity(app)
     dlg_type = response.get("dialog_type", "info").strip().lower()
     dlg_title = response.get("title", "Agetha").strip()
     dlg_msg = response.get("message", "").strip()
@@ -1198,7 +1231,7 @@ def handle_show_dialog(app, response, ctx):
                     )
                     if follow:
                         dispatch(app, follow, ctx.user_message, origin="tool_result")
-                _start_app_worker(app, _requery_yes, "dialog-requery")
+                _start_app_worker(app, _requery_yes, "dialog-requery", continuation_is_current=context_is_current)
         elif dlg_type == "warning":
             guard._native_confirm(dlg_title, dlg_msg, "warning", "okcancel", False)
         elif dlg_type == "error":
@@ -1345,14 +1378,12 @@ def handle_target_close(app, response, ctx):
 def handle_open_app(app, response, ctx):
     app_name = response.get("app", "").strip() or response.get("app_name", "").strip()
     if app_name:
-        command = (
-            ("open", app_name)
-            if platform.system() == "Darwin"
-            else (app_name,)
-        )
+        if not (IS_WINDOWS or IS_LINUX):
+            _finish_verified_command(app, ctx, "[app launch not supported on this platform]")
+            return True
         if not guarded_launch_application(
             app,
-            command,
+            (app_name,),
             guard_approved=True,
             capability_authorization=response.get(_CAPABILITY_AUTHORIZATION),
         ):
@@ -1484,18 +1515,58 @@ def handle_open_url(app, response, ctx):
 
 @register("system_info")
 def handle_system_info(app, response, ctx):
+    producer_is_current = getattr(ctx, "speech_is_current", None)
+    if producer_is_current is None:
+        producer_is_current = _capture_context_validity(app)
+    request_epoch = int(getattr(app, "_context_request_epoch", 0))
+    delivery_epoch = int(getattr(app, "_continuation_ui_epoch", 0))
+    authorization = response.get(_CAPABILITY_AUTHORIZATION)
     info = system_info()
 
-    def _requery():
-        follow = app._ai_query(
-            "",
-            doc_content=f"System info:\n{info}",
-            request_profile="fast_tool_result",
-        )
-        if follow:
-            dispatch(app, follow, ctx.user_message, origin="tool_result")
+    getter = getattr(type(app), "_get_continuation_lifecycle", None)
+    if callable(getter):
+        lifecycle = getter(app)
+    else:
+        lifecycle = getattr(app, "_continuation_lifecycle", None)
+        if not isinstance(lifecycle, ContinuationLifecycle):
+            lifecycle = app._continuation_lifecycle = ContinuationLifecycle()
+    adapter = LegacyContinuationAdapter(lifecycle)
+    request = adapter.admit(generation=request_epoch, validity=lambda: (
+        producer_is_current()
+        and delivery_epoch == int(getattr(app, "_continuation_ui_epoch", 0))
+        and (authorization is None or _authorization_is_current(app, authorization))
+    ))
+    if request is None or not request.set_context(f"System info:\n{info}"):
+        return True
 
-    _start_app_worker(app, _requery, "system-info-requery")
+    release_parent_slot = getattr(ctx, "release_parent_slot", None)
+    parent_slot_released = release_parent_slot is not None and release_parent_slot()
+
+    def starter(run, failed):
+        start_worker = getattr(type(app), "_start_worker", None)
+        if callable(start_worker):
+            return start_worker(app, run, name="system-info-requery", on_start_failure=failed)
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        return worker
+
+    def failed_start():
+        report = getattr(type(app), "_report_worker_start_failure", None)
+        if callable(report):
+            report(app, request_epoch, delivery_is_current=request.delivery_is_current)
+
+    def deliver(follow, valid):
+        send = getattr(type(app), "_dispatch_response", None)
+        if callable(send):
+            send(app, follow, ctx.user_message, origin="tool_result", speech_is_current=valid)
+        else:
+            dispatch(app, follow, ctx.user_message, origin="tool_result", speech_is_current=valid)
+
+    adapter.start(request, starter, lambda payload: app._ai_query(
+        "", doc_content=payload, request_profile="fast_tool_result", preserve_user_message=True,
+        result_is_current=request.work_is_current, continuation_request=request,
+        parent_slot_released=parent_slot_released,
+    ), deliver, on_start_failure=failed_start)
     return True
 
 
@@ -1713,9 +1784,12 @@ def handle_analyze_screen_deep(app, response, ctx):
 
     focused_only = _deep_ocr_focused_only(response)
     prompt = str(response.get("prompt", "") or "<image>document parsing.")[:2000]
+    context_is_current = _capture_context_validity(app)
     if ctx.segments:
         first = str(ctx.segments[0].get("text", "Analyzing…"))[:120]
-        _schedule_app_ui(app, lambda text=first: app._subtitle.show_message(text, "#888888"))
+        _schedule_app_ui(app, lambda text=first: app._subtitle.show_message(
+            text, "#888888",
+        ) if context_is_current() else None)
 
     def _analyze_and_requery():
         from agetha.platform.ocr_backends.base import format_deep_ocr_for_prompt

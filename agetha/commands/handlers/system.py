@@ -13,7 +13,9 @@ from agetha.utils import logger
 
 from .registry import register
 from .support import (
+    CAPABILITY_AUTHORIZATION as _CAPABILITY_AUTHORIZATION,
     finish_verified_command as _finish_verified_command,
+    perform_authorized_effect as _perform_authorized_effect,
     schedule_app_ui as _schedule_app_ui,
 )
 
@@ -24,14 +26,30 @@ def handle_set_volume(app, response, ctx):
         level = int(response.get("level", 50))
     except (TypeError, ValueError):
         level = 50
-    msg = set_volume(level, response.get("action", "set"))
+    msg = set_volume(
+        level, response.get("action", "set"),
+        effect_runner=lambda effect: _perform_authorized_effect(
+            app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+        ),
+    )
+    if msg.startswith("[set_volume blocked:"):
+        _finish_verified_command(app, ctx, msg)
+        return True
     logger.info(msg)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
 @register("set_wallpaper")
 def handle_set_wallpaper(app, response, ctx):
-    msg = set_wallpaper(response.get("path", "").strip())
+    msg = set_wallpaper(
+        response.get("path", "").strip(),
+        effect_runner=lambda effect: _perform_authorized_effect(
+            app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+        ),
+    )
+    if msg.startswith("[set_wallpaper blocked:"):
+        _finish_verified_command(app, ctx, msg)
+        return True
     if "error" in msg.lower() or "not found" in msg.lower():
         app._show_op_error(msg)
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
@@ -51,7 +69,11 @@ def handle_search_files(app, response, ctx):
 
 @register("lock_screen")
 def handle_lock_screen(app, response, ctx):
-    _finish_verified_command(app, ctx, lock_screen())
+    _finish_verified_command(app, ctx, lock_screen(
+        effect_runner=lambda effect: _perform_authorized_effect(
+            app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+        ),
+    ))
     return True
 
 
@@ -61,7 +83,12 @@ def handle_shutdown(app, response, ctx):
         delay = int(response.get("delay", 60))
     except (TypeError, ValueError):
         delay = 60
-    _finish_verified_command(app, ctx, shutdown_system(delay))
+    _finish_verified_command(app, ctx, shutdown_system(
+        delay,
+        effect_runner=lambda effect: _perform_authorized_effect(
+            app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+        ),
+    ))
     return True
 
 
@@ -71,7 +98,12 @@ def handle_restart(app, response, ctx):
         delay = int(response.get("delay", 60))
     except (TypeError, ValueError):
         delay = 60
-    _finish_verified_command(app, ctx, restart_system(delay))
+    _finish_verified_command(app, ctx, restart_system(
+        delay,
+        effect_runner=lambda effect: _perform_authorized_effect(
+            app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+        ),
+    ))
     return True
 
 
@@ -88,21 +120,27 @@ def handle_set_autostart(app, response, ctx):
         from agetha.core.audit_log import log_audit
         from agetha.commands.command_guard import CommandGuard
         enable = CommandGuard.parse_enabled(response)
+        effect_runner = lambda effect: _perform_authorized_effect(
+            app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+        )
         if enable:
-            ok, msg = autostart.enable()
+            ok, msg = autostart.enable(effect_runner=effect_runner)
             action = "autostart_enable"
         else:
-            ok, msg = autostart.disable()
+            ok, msg = autostart.disable(effect_runner=effect_runner)
             action = "autostart_disable"
         log_audit(
             action,
             {"shortcut": str(autostart.shortcut_path()), "status": autostart.validate()},
             "success" if ok else "failed",
         )
+        if msg.startswith("[autostart blocked:"):
+            _finish_verified_command(app, ctx, msg)
+            return True
         _schedule_app_ui(app, lambda: (app._show_op_success(msg) if ok else app._show_op_error(msg)))
     except Exception as exc:
         logger.warning(f"set_autostart failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Startup change failed: {exc}"))
+        _schedule_app_ui(app, lambda message=f"Startup change failed: {exc}": app._show_op_error(message))
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
@@ -112,14 +150,22 @@ def handle_open_settings(app, response, ctx):
     try:
         from agetha.platform.win_integration import open_settings
         page = response.get("page", "home") or "home"
-        ok, msg = open_settings(page)
+        ok, msg = open_settings(
+            page,
+            effect_runner=lambda effect: _perform_authorized_effect(
+                app, response.get(_CAPABILITY_AUTHORIZATION), effect,
+            ),
+        )
+        if msg.startswith("[open_settings blocked:"):
+            _finish_verified_command(app, ctx, msg)
+            return True
         if ok:
             _schedule_app_ui(app, lambda: app._show_op_success(msg))
         else:
             _schedule_app_ui(app, lambda: app._show_op_error(msg))
     except Exception as exc:
         logger.warning(f"open_settings failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Settings launch failed: {exc}"))
+        _schedule_app_ui(app, lambda message=f"Settings launch failed: {exc}": app._show_op_error(message))
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
@@ -138,13 +184,24 @@ def handle_set_theme(app, response, ctx):
         mode = (response.get("mode") or "").strip().lower()
         scope = (response.get("scope") or "both").strip().lower()
         if mode == "rollback":
-            ok, msg = rollback_theme()
+            performed, result = _perform_authorized_effect(
+                app, response.get(_CAPABILITY_AUTHORIZATION), rollback_theme,
+            )
             action = "theme_rollback"
             details = {"mode": "rollback"}
         else:
-            ok, msg = set_theme(mode, scope=scope)
+            performed, result = _perform_authorized_effect(
+                app, response.get(_CAPABILITY_AUTHORIZATION), lambda: set_theme(mode, scope=scope),
+            )
             action = "theme_change"
             details = {"mode": mode, "scope": scope}
+        if not performed:
+            _schedule_app_ui(app, lambda: app._show_op_error("Theme change blocked: capability changed."))
+            app._speak_and_continue(
+                [{"text": "That theme change was cancelled.", "pause": 0.0}], "neutral", False,
+            )
+            return True
+        ok, msg = result
         log_audit(action, details, "success" if ok else "failed")
         if ok:
             _schedule_app_ui(app, lambda: app._show_op_success(msg))
@@ -152,7 +209,7 @@ def handle_set_theme(app, response, ctx):
             _schedule_app_ui(app, lambda: app._show_op_error(msg))
     except Exception as exc:
         logger.warning(f"set_theme failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Theme change failed: {exc}"))
+        _schedule_app_ui(app, lambda message=f"Theme change failed: {exc}": app._show_op_error(message))
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True
 
@@ -168,6 +225,6 @@ def handle_recycle_bin_status(app, response, ctx):
             _schedule_app_ui(app, lambda: app._show_op_error(msg))
     except Exception as exc:
         logger.warning(f"recycle_bin_status failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Recycle Bin query failed: {exc}"))
+        _schedule_app_ui(app, lambda message=f"Recycle Bin query failed: {exc}": app._show_op_error(message))
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True

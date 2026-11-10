@@ -775,10 +775,12 @@ def _cmd_exists(cmd: str) -> bool:
 
 
 def _has_display() -> bool:
-    return bool(
-        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or
-        os.environ.get("XDG_SESSION_TYPE") or
-        platform.system() in ("Windows", "Darwin")
+    system = platform.system()
+    return system == "Windows" or (
+        system == "Linux" and bool(
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or
+            os.environ.get("XDG_SESSION_TYPE")
+        )
     )
 
 
@@ -1218,14 +1220,6 @@ def _grab_gnome_screenshot() -> "Image.Image | None":
     )
 
 
-def _grab_screencapture() -> "Image.Image | None":
-    if not PIL_OK:
-        return None
-    return _grab_temp_png(
-        lambda p: subprocess.run(["screencapture", "-x", p], capture_output=True, timeout=10).returncode == 0
-    )
-
-
 # ── ScreenReader ──────────────────────────────────────────────────────────────
 
 class ScreenReader:
@@ -1524,9 +1518,7 @@ class ScreenReader:
         head = [("mss", lambda: _grab_mss_frame(scope="virtual_desktop"))]
         if self._system == "Windows":
             return head
-        elif self._system == "Darwin":
-            return head + [("screencapture", _grab_screencapture), ("pyautogui", _grab_pyautogui)]
-        else:
+        elif self._system == "Linux":
             if _is_wayland():
                 if automatic:
                     return []
@@ -1536,6 +1528,7 @@ class ScreenReader:
                 ("scrot", _grab_scrot),
                 ("pyautogui", _grab_pyautogui),
             ]
+        return []
 
     # ── 1. Own-window HWND cache ──────────────────────────────────────────────
 

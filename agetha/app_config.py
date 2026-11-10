@@ -2041,14 +2041,33 @@ def patch_config_key(key: str, value: str) -> bool:
 
 
 _settings: AppSettings | None = None
+_settings_reload_generation = 0
+_settings_published_generation = 0
 
 
 def get_settings(reload: bool = False) -> AppSettings:
-    global _settings
-    if _settings is None or reload:
-        ensure_config_file(write_if_missing=True)
-        _settings = AppSettings(parse_config_file())
-    return _settings
+    """Return cached settings; older loads cannot replace a newer publication.
+
+    Failed loads leave the published view intact. A superseded load returns the
+    current published view rather than its stale candidate.
+    """
+    global _settings, _settings_reload_generation, _settings_published_generation
+    if _settings is not None and not reload:
+        return _settings
+    with _CONFIG_WRITE_LOCK:
+        if _settings is not None and not reload:
+            return _settings
+        _settings_reload_generation += 1
+        generation = _settings_reload_generation
+
+    # Loading may acquire Fast Mode locks; never hold the config lock here.
+    ensure_config_file(write_if_missing=True)
+    candidate = AppSettings(parse_config_file())
+    with _CONFIG_WRITE_LOCK:
+        if generation > _settings_published_generation:
+            _settings = candidate
+            _settings_published_generation = generation
+        return _settings
 
 
 def create_default_config(path: Path | None = None) -> None:

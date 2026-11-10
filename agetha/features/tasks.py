@@ -5,7 +5,7 @@ The user can ask Agetha to remember small tasks; she stores them in
 memory/tasks.json and nags about pending ones during ambient polls.
 
 Safety: read/write limited to the app's own memory/ folder — never the
-wider filesystem. Never raises to callers.
+wider filesystem. Mutations never raise; strict reads report unavailable state.
 """
 
 from __future__ import annotations
@@ -33,27 +33,41 @@ def _ensure_dir() -> None:
         pass
 
 
-def _load_unlocked() -> list[dict[str, Any]]:
-    """Read task list; caller must hold `_lock`."""
-    if not TASKS_FILE.exists():
-        return []
+def _load_unlocked() -> tuple[str, list[dict[str, Any]]]:
+    """Return load state and usable rows without writing; caller holds `_lock`."""
     try:
-        raw = json.loads(TASKS_FILE.read_text(encoding="utf-8", errors="replace"))
-        if not isinstance(raw, list):
-            raise ValueError("expected a JSON array")
-        return [t for t in raw if isinstance(t, dict) and t.get("text")]
-    except Exception as exc:
-        logger.warning(f"tasks: load failed: {exc}")
-        _save_unlocked([])
-    return []
+        raw = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "ABSENT", []
+    except OSError:
+        logger.warning("tasks: UNREADABLE; no replacement attempted")
+        return "UNREADABLE", []
+    except (ValueError, UnicodeError, RecursionError):
+        logger.warning("tasks: CORRUPT; original file preserved")
+        return "CORRUPT", []
+    if not isinstance(raw, list):
+        logger.warning("tasks: CORRUPT; expected a JSON array; original file preserved")
+        return "CORRUPT", []
+    usable = []
+    for row in raw:
+        if not isinstance(row, dict) or not isinstance(row.get("text"), str) or not row["text"]:
+            continue
+        if "done" in row and not isinstance(row["done"], bool):
+            continue
+        try:
+            int(row.get("id", 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        usable.append(row)
+    state = "VALID" if len(usable) == len(raw) else ("RECOVERABLE" if usable else "CORRUPT")
+    if state != "VALID":
+        logger.warning("tasks: %s; original file preserved; mutations unavailable", state)
+    return state, usable
 
 
 def _save_unlocked(tasks: list[dict[str, Any]]) -> None:
     """Persist task list; caller must hold `_lock`."""
-    try:
-        write_atomic(TASKS_FILE, json.dumps(tasks, indent=2, ensure_ascii=False))
-    except Exception as exc:
-        logger.warning(f"tasks: save failed: {exc}")
+    write_atomic(TASKS_FILE, json.dumps(tasks, indent=2, ensure_ascii=False))
 
 
 def _next_id(tasks: list[dict[str, Any]]) -> int:
@@ -79,7 +93,9 @@ def add_task(text: str) -> dict[str, Any] | None:
     try:
         _ensure_dir()
         with _lock:
-            tasks = _load_unlocked()
+            state, tasks = _load_unlocked()
+            if state not in ("ABSENT", "VALID"):
+                raise ValueError(f"tasks: {state}; persistence unavailable")
             record: dict[str, Any] = {
                 "id": _next_id(tasks),
                 "text": body,
@@ -104,7 +120,9 @@ def complete_task(task: str | int) -> dict[str, Any] | None:
     """Mark a task done by id or text substring. Returns record or None."""
     try:
         with _lock:
-            tasks = _load_unlocked()
+            state, tasks = _load_unlocked()
+            if state not in ("ABSENT", "VALID"):
+                raise ValueError(f"tasks: {state}; persistence unavailable")
             target: dict[str, Any] | None = None
             # Numeric id match first
             try:
@@ -134,20 +152,25 @@ def complete_task(task: str | int) -> dict[str, Any] | None:
         return None
 
 
-def get_tasks(*, include_done: bool = True, limit: int = 50) -> list[dict[str, Any]]:
-    """Return tasks (pending first, newest first within groups). Never raises."""
+def get_tasks(*, include_done: bool = True, limit: int = 50,
+              require_available: bool = False) -> list[dict[str, Any]]:
+    """Return usable tasks; strict callers receive unavailable-state errors."""
     try:
         limit = max(1, min(int(limit), 200))
     except (TypeError, ValueError):
         limit = 50
     try:
         with _lock:
-            tasks = _load_unlocked()
+            state, tasks = _load_unlocked()
+            if require_available and state not in ("ABSENT", "VALID"):
+                raise ValueError(f"tasks: {state}; persistence unavailable; original file preserved")
         if not include_done:
             tasks = [t for t in tasks if not t.get("done")]
         tasks.sort(key=lambda t: (bool(t.get("done")), -int(t.get("id", 0))))
         return tasks[:limit]
     except Exception:
+        if require_available:
+            raise
         return []
 
 

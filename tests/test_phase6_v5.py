@@ -131,7 +131,7 @@ class TestEmotionEngine(_TempStateMixin):
     def test_default_state_at_baselines(self) -> None:
         state = self.ee.load_state(now_fn=self.clock.now)
         self.assertEqual(state["version"], 1)
-        self.assertEqual(state["app_version"], "5.7.5")
+        self.assertEqual(state["app_version"], "5.9")
         self.assertEqual(state["valence"], 0.0)
         self.assertEqual(state["arousal"], 30.0)
         self.assertEqual(state["trust"], 50.0)
@@ -560,7 +560,8 @@ class TestAutostart(unittest.TestCase):
             self.assertEqual(self.autostart.validate(), self.autostart.STATUS_FOREIGN)
 
     def test_enable_and_duplicate(self) -> None:
-        def fake_write(path, target, args, workdir, icon):
+        def fake_write(path, target, args, workdir, icon, *, effect_runner=None):
+            self.assertIsNone(effect_runner)
             Path(path).write_text("stub", encoding="utf-8")
             return True
         with patch.object(self.autostart, "_write_lnk", side_effect=fake_write) as w, \
@@ -635,7 +636,8 @@ class TestAutostart(unittest.TestCase):
     def test_shortcut_creation_never_interpolates_paths(self) -> None:
         captured: dict = {}
 
-        def fake_run(script, extra_env, *, timeout):
+        def fake_run(script, extra_env, *, timeout, effect_runner=None):
+            self.assertIsNone(effect_runner)
             captured["script"] = script
             captured["env"] = extra_env
             Path(extra_env["AGETHA_LNK"]).write_text("stub", encoding="utf-8")
@@ -1116,7 +1118,7 @@ class TestCommandWiring(unittest.TestCase):
         self.assertEqual(CommandGuard.TIER_MAP.get("view_emotions"), CommandGuard.SAFE)
         self.assertEqual(CommandGuard.TIER_MAP.get("clear_emotions"), CommandGuard.CAUTION)
         self.assertEqual(CommandGuard.TIER_MAP.get("set_autostart"), CommandGuard.DANGER)
-        self.assertEqual(CommandGuard.TIER_MAP.get("open_settings"), CommandGuard.CAUTION)
+        self.assertEqual(CommandGuard.TIER_MAP.get("open_settings"), CommandGuard.SAFE)
         self.assertEqual(CommandGuard.TIER_MAP.get("set_theme"), CommandGuard.DANGER)
         self.assertEqual(CommandGuard.TIER_MAP.get("recycle_bin_status"), CommandGuard.SAFE)
 

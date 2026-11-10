@@ -126,7 +126,7 @@ class TestRequestProfiles(unittest.TestCase):
             deep_system, _turn, _messages = engine._build_prompt(
                 "", "", "deep OCR payload", request_profile="deep_analysis",
             )
-        short_rule = "each 1-8 words"
+        short_rule = "stay concise by default"
         self.assertIn(short_rule, quick_system)
         self.assertNotIn(short_rule, tool_system)
         self.assertNotIn(short_rule, deep_system)
@@ -980,7 +980,7 @@ class TestAmbientTickIntegration(unittest.TestCase):
         app._wake_from_presence_rest = MagicMock()
         app._speak_and_continue = MagicMock()
         app._observe_capture_target = MagicMock()
-        app._start_worker = lambda target_fn, *, name, args: target_fn(*args)
+        app._start_worker = lambda target_fn, *, name, args, **_kw: target_fn(*args)
         app._ai.query.side_effect = [
             {"command": "request_screen_read", "segments": [], "shutdown": False},
             {

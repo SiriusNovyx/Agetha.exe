@@ -3,7 +3,7 @@
 Guidance for humans and coding agents working on this fork.  
 **Priorities (locked):** (1) realism — she feels like a living process on this PC; (2) safety — Command Guard / confirmations / no real harm. Spectacle is optional flavor.
 
-**Version focus:** Overhaul v5.7.5 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
+**Version focus:** Overhaul v5.9 · Entry: `python main.py` (prefer `Medic_Checker.bat`)
 
 **Supported platforms:** Windows 10/11 x64; Windows 11 ARM64/Snapdragon through
 x64 Python under Prism; and Linux desktop environments through the existing
@@ -206,9 +206,8 @@ IDLE → (LOAF_TIMER) → loaf.gif → (LOAF_TIMER) → SLEEPING
 - Transparent Windows (v5): `autostart.py` (Startup shortcut only), `win_integration.py`, `status_providers.py`; tray is optional scaffold (`tray_scaffold.py`)  
 - Medic: `medic_helper.py realism` → `REALISM_OK` (covers v4+v5 APIs)
 - Language-neutral multilingual prompt contract: mirror the user's current
-  language and approximate register without inventing translation,
-  transliteration, gender markers, honorifics, cultural particles, formality, or
-  slang. Never add a global word/suffix filter. Exact user text—including
+  language and approximate register in Agetha's own voice, with the requested
+  depth. Never add a global word/suffix filter. Exact user text—including
   multilingual and mixed-script examples—remains unchanged in command payloads,
   quotations, code, and documents.
 - Polyglot Presence: exact Unicode entry, typed local observations, local

@@ -39,7 +39,7 @@ class TestCommandsRegistered(unittest.TestCase):
 
 
 class TestReadNotepadHandler(unittest.TestCase):
-    def test_handler_requeries_with_pending_notepad(self) -> None:
+    def test_handler_requeries_with_request_local_notepad(self) -> None:
         from agetha.commands.command_handlers import handle_read_notepad
 
         app = MagicMock()
@@ -55,7 +55,9 @@ class TestReadNotepadHandler(unittest.TestCase):
             with patch("agetha.commands.command_handlers.threading.Thread") as mock_thread:
                 ok = handle_read_notepad(app, response, ctx)
                 self.assertTrue(ok)
-                self.assertIn("buy milk", app._ai._pending_notepad_context)
+                mock_thread.call_args.kwargs["target"]()
+                self.assertIn("buy milk", app._ai_query.call_args.kwargs["notepad_context"])
+                self.assertTrue(app._ai_query.call_args.kwargs["suppress_read_notepad"])
                 mock_thread.assert_called_once()
 
 

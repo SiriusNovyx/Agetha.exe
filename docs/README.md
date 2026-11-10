@@ -44,7 +44,7 @@ validation target because hosted Windows runners are x64.
 | Manually validate Compact/Full/frozen | [Compact/Full manual checklist](testing/compact_full_mode_manual.md) | All 34 items begin NOT PERFORMED; source mocks and builds do not count |
 | Review deferred A–O concepts | [Polyglot Presence future roadmap](roadmap/polyglot_presence_roadmap.md) | All entries are planned / not implemented |
 | Configure explicit Unlimited-OCR | [Unlimited-OCR service guide](unlimited_ocr_server.md) | `unlimited_ocr_backend.py` |
-| Review the current release | [v5.7 release notes](releases/v5.7.md) | The linked implementation and test suites |
+| Review the current release | [v5.9 prerelease notes](releases/v5.9.md) | The linked implementation and test suites |
 
 ## Source-of-truth hierarchy
 
@@ -74,8 +74,7 @@ documentation, tests, or logs.
 - External text (OCR, web pages, memories) remains labeled as untrusted prompt
   context and must not become automatic OS instructions.
 - Language choice is presentation only: mirror the user's current language and
-  approximate register without unnecessary translation, transliteration,
-  gendered speech, honorifics, cultural particles, formality, or slang. Never
+  approximate register in Agetha's own voice, following the requested depth. Never
   globally rewrite exact user-provided, quoted, document, code, or command data.
 - `type_text` remains Caution-gated, preserves its input string, revalidates its
   intended target, and never synthesizes Enter, Return, or Tab.

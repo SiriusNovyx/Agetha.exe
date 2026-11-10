@@ -49,9 +49,10 @@ performed item. Preserve all unchecked entries as **NOT PERFORMED**.
     and no automatic Enter/submit action.
 16. [ ] **Focus change aborts typing — NOT PERFORMED.** On a safe disposable run,
     change focus before the effect boundary and confirm zero text reaches the new
-    foreground window. Continue through the in-app fallback only if desired.
-17. [ ] **Final confirmation appears — NOT PERFORMED.** After success or allowed
-    fallback, confirm **Stay in Compact Mode** and **Enable Full Mode** are shown.
+    foreground window. Confirm the final dialog explains the failed preview.
+17. [ ] **Final confirmation appears — NOT PERFORMED.** After success or failure,
+    confirm **Stay Compact** and **Enable Full Mode** appear without an intermediate
+    acknowledgement. A failed preview must include its reason.
 18. [ ] **Stay Compact leaves advanced features off — NOT PERFORMED.** Choose the
     Compact option and confirm no advanced service partially starts.
 19. [ ] **Enable Full requires the complete flow — NOT PERFORMED.** Repeat the
@@ -96,8 +97,8 @@ ARM64; do not label the former native.
     confirm Compact Mode is on and advanced systems remain inactive.
 31. [ ] **Frozen Dashboard — NOT PERFORMED.** Open it and confirm the switch and
     Compact/Full presentation models behave as in source mode.
-32. [ ] **Frozen consent UI — NOT PERFORMED.** Confirm both warnings/fallback and
-    final decision work without Python, repository helper scripts, or provider
+32. [ ] **Frozen consent UI — NOT PERFORMED.** Confirm the first warning and
+    final decision, including failure text, work without Python, repository helper scripts, or provider
     calls. Perform the Notepad typing portion only in an explicitly safe session.
 33. [ ] **Frozen self-target detection — NOT PERFORMED.** Confirm Unicode typing,
     window control, and Computer Use refuse the running `main.exe`/`Agetha.exe`

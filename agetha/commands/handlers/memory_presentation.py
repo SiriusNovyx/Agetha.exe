@@ -4,9 +4,11 @@ import threading
 
 from agetha.app_config import get_settings
 from agetha.utils import logger
+from agetha.core.continuation_lifecycle import ContinuationLifecycle, LegacyContinuationAdapter
 
 from .registry import register
 from .support import (
+    capture_context_validity as _capture_context_validity,
     schedule_app_ui as _schedule_app_ui,
     start_app_worker as _start_app_worker,
 )
@@ -60,50 +62,65 @@ def handle_view_memory(app, response, ctx):
 
 @register("search_memory")
 def handle_search_memory(app, response, ctx):
+    context_is_current = _capture_context_validity(app)
+    delivery_epoch = int(getattr(app, "_continuation_ui_epoch", 0))
+    request_epoch = int(getattr(app, "_context_request_epoch", 0))
+    getter = getattr(type(app), "_get_continuation_lifecycle", None)
+    if callable(getter):
+        lifecycle = getter(app)
+    else:
+        lifecycle = getattr(app, "_continuation_lifecycle", None)
+        if not isinstance(lifecycle, ContinuationLifecycle):
+            lifecycle = app._continuation_lifecycle = ContinuationLifecycle()
+    adapter = LegacyContinuationAdapter(lifecycle)
+    request = adapter.admit(generation=request_epoch, validity=lambda: (
+        context_is_current()
+        and delivery_epoch == int(getattr(app, "_continuation_ui_epoch", 0))
+    ))
+    if request is None:
+        return True
     if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested,
+                               result_is_current=request.delivery_is_current)
 
     if not get_settings().enable_longterm_memory:
         memory_context = "[long-term memory search is disabled in config (ENABLE_LONGTERM_MEMORY=no)]"
-
-        def _requery_disabled():
-            follow = app._ai_query(
-                ctx.user_message or "",
-                memory_search_context=memory_context,
-                suppress_search_memory=True,
-                request_profile="fast_tool_result",
-            )
-            if follow:
-                app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-
-        _start_app_worker(app, _requery_disabled, "memory-requery")
+    else:
+        query = (response.get("query") or ctx.user_message or "").strip()
+        try:
+            limit = int(response.get("limit") or get_settings().longterm_memory_max_results)
+        except (TypeError, ValueError):
+            limit = get_settings().longterm_memory_max_results
+        try:
+            from agetha.core.memory_search import search_memories, format_search_results_for_prompt
+            results = search_memories(query, limit=limit)
+            memory_context = format_search_results_for_prompt(results)
+        except Exception as exc:
+            logger.warning(f"search_memory failed: {exc}")
+            memory_context = f"[memory search error: {exc}]"
+    if not request.set_context(memory_context):
         return True
 
-    query = (response.get("query") or ctx.user_message or "").strip()
-    try:
-        limit = int(response.get("limit") or get_settings().longterm_memory_max_results)
-    except (TypeError, ValueError):
-        limit = get_settings().longterm_memory_max_results
+    def starter(run, failed):
+        start_worker = getattr(type(app), "_start_worker", None)
+        if callable(start_worker):
+            return start_worker(app, run, name="memory-requery", on_start_failure=failed)
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        return worker
 
-    try:
-        from agetha.core.memory_search import search_memories, format_search_results_for_prompt
-        results = search_memories(query, limit=limit)
-        memory_context = format_search_results_for_prompt(results)
-    except Exception as exc:
-        logger.warning(f"search_memory failed: {exc}")
-        memory_context = f"[memory search error: {exc}]"
+    def failed_start():
+        report = getattr(type(app), "_report_worker_start_failure", None)
+        if callable(report) and context_is_current():
+            report(app, request_epoch)
 
-    def _requery():
-        follow = app._ai_query(
-            ctx.user_message or "",
-            memory_search_context=memory_context,
-            suppress_search_memory=True,
-            request_profile="fast_tool_result",
-        )
-        if follow:
-            app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-
-    _start_app_worker(app, _requery, "memory-requery")
+    adapter.start(request, starter, lambda context: app._ai_query(
+        ctx.user_message or "", memory_search_context=context,
+        suppress_search_memory=True, request_profile="fast_tool_result",
+        result_is_current=request.work_is_current, continuation_request=request,
+    ), lambda follow, valid: app._dispatch_response(
+        follow, ctx.user_message, origin="tool_result", speech_is_current=valid,
+    ), on_start_failure=failed_start)
     return True
 
 @register("glitch_overlay")
@@ -151,18 +168,6 @@ def handle_glitch_overlay(app, response, ctx):
     return True
 
 
-def _set_notepad_pending(app, context: str, suppress: bool = True) -> None:
-    if app._ai is not None:
-        app._ai._pending_notepad_context = context
-        app._ai._pending_suppress_read_notepad = suppress
-
-
-def _clear_notepad_pending(app) -> None:
-    if app._ai is not None:
-        app._ai._pending_notepad_context = ""
-        app._ai._pending_suppress_read_notepad = False
-
-
 def _format_notepad_context(text: str, *, max_chars: int = 4000) -> str:
     body = (text or "").strip()
     if not body:
@@ -177,8 +182,26 @@ def _format_notepad_context(text: str, *, max_chars: int = 4000) -> str:
 
 @register("read_notepad")
 def handle_read_notepad(app, response, ctx):
+    context_is_current = _capture_context_validity(app)
+    delivery_epoch = int(getattr(app, "_continuation_ui_epoch", 0))
+    request_epoch = int(getattr(app, "_context_request_epoch", 0))
+    getter = getattr(type(app), "_get_continuation_lifecycle", None)
+    if callable(getter):
+        lifecycle = getter(app)
+    else:
+        lifecycle = getattr(app, "_continuation_lifecycle", None)
+        if not isinstance(lifecycle, ContinuationLifecycle):
+            lifecycle = app._continuation_lifecycle = ContinuationLifecycle()
+    adapter = LegacyContinuationAdapter(lifecycle)
+    request = adapter.admit(generation=request_epoch, validity=lambda: (
+        context_is_current()
+        and delivery_epoch == int(getattr(app, "_continuation_ui_epoch", 0))
+    ))
+    if request is None:
+        return True
     if ctx.segments:
-        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested,
+                               result_is_current=request.delivery_is_current)
 
     try:
         from agetha.ui.dashboard import read_notepad_text
@@ -187,21 +210,29 @@ def handle_read_notepad(app, response, ctx):
         logger.warning(f"read_notepad failed: {exc}")
         notepad_context = f"[notepad read error: {exc}]"
 
-    _set_notepad_pending(app, notepad_context)
+    if not request.set_context(notepad_context):
+        return True
 
-    def _requery():
-        try:
-            follow = app._ai_query(
-                ctx.user_message or "",
-                suppress_search_memory=True,
-                request_profile="fast_tool_result",
-            )
-            if follow:
-                app._dispatch_response(follow, ctx.user_message, origin="tool_result")
-        finally:
-            _clear_notepad_pending(app)
+    def starter(run, failed):
+        start_worker = getattr(type(app), "_start_worker", None)
+        if callable(start_worker):
+            return start_worker(app, run, name="notepad-requery", on_start_failure=failed)
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        return worker
 
-    _start_app_worker(app, _requery, "notepad-requery")
+    def failed_start():
+        report = getattr(type(app), "_report_worker_start_failure", None)
+        if callable(report) and request.delivery_is_current():
+            report(app, request_epoch)
+
+    adapter.start(request, starter, lambda context: app._ai_query(
+        ctx.user_message or "", suppress_search_memory=True,
+        request_profile="fast_tool_result", notepad_context=context, suppress_read_notepad=True,
+        result_is_current=request.work_is_current, continuation_request=request,
+    ), lambda follow, valid: app._dispatch_response(
+        follow, ctx.user_message, origin="tool_result", speech_is_current=valid,
+    ), on_start_failure=failed_start)
     return True
 
 
@@ -254,15 +285,22 @@ def handle_add_task(app, response, ctx):
             [{"text": "Remember what, exactly?", "pause": 0.0}], "thinking", False,
         )
         return True
+    failure_message = "Task could not be saved."
     try:
         from agetha.features.tasks import add_task
         record = add_task(text)
-        if record:
-            _schedule_app_ui(app, lambda: app._show_op_success(f"Task #{record['id']} saved."))
     except Exception as exc:
         logger.warning(f"add_task failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Task save failed: {exc}"))
-    app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+        record = None
+        failure_message = f"Task save failed: {exc}"
+    if record:
+        _schedule_app_ui(app, lambda: app._show_op_success(f"Task #{record['id']} saved."))
+        app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
+    else:
+        _schedule_app_ui(app, lambda message=failure_message: app._show_op_error(message))
+        app._speak_and_continue(
+            [{"text": "That task didn't save.", "pause": 0.0}], "neutral", False,
+        )
     return True
 
 
@@ -284,9 +322,9 @@ def handle_complete_task(app, response, ctx):
         _schedule_app_ui(app, lambda: app._show_op_success(f"Task #{record['id']} done."))
         app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     else:
-        _schedule_app_ui(app, lambda: app._show_op_error("No matching pending task."))
+        _schedule_app_ui(app, lambda: app._show_op_error("Task could not be completed or was not found."))
         app._speak_and_continue(
-            [{"text": "That's not on the list.", "pause": 0.0}], "thinking", False,
+            [{"text": "I couldn't mark that task done.", "pause": 0.0}], "thinking", False,
         )
     return True
 
@@ -299,7 +337,7 @@ def handle_list_tasks(app, response, ctx):
     else:
         try:
             from agetha.features.tasks import get_tasks, format_tasks_for_display
-            lines = format_tasks_for_display(get_tasks(limit=30))
+            lines = format_tasks_for_display(get_tasks(limit=30, require_available=True))
         except Exception as exc:
             logger.warning(f"list_tasks failed: {exc}")
             lines = [f"[task list error: {exc}]"]
@@ -368,6 +406,6 @@ def handle_clear_emotions(app, response, ctx):
         _schedule_app_ui(app, lambda: app._show_op_success(msg))
     except Exception as exc:
         logger.warning(f"clear_emotions failed: {exc}")
-        _schedule_app_ui(app, lambda: app._show_op_error(f"Reset failed: {exc}"))
+        _schedule_app_ui(app, lambda message=f"Reset failed: {exc}": app._show_op_error(message))
     app._speak_and_continue(ctx.segments, ctx.mood, ctx.shutdown_requested)
     return True

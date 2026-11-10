@@ -91,12 +91,25 @@ def start_tray(app: Any) -> bool:
 
         image = Image.open(ICON_PATH) if ICON_PATH.is_file() else Image.new("RGB", (16, 16), "black")
 
+        def _queue_current_ui(action) -> None:
+            def _deliver() -> None:
+                with _lock:
+                    if _tray_icon is not icon:
+                        return
+                if not getattr(app, "_closing", False):
+                    action()
+
+            app._schedule_ui(_deliver)
+
         def _open(_icon=None, _item=None) -> None:
             try:
-                restore = getattr(app, "_restore_from_tray", app.root.deiconify)
-                app.root.after(0, restore)
-                if sys.platform == "win32":
-                    app.root.after(0, lambda: app.root.attributes("-topmost", True))
+                def _restore() -> None:
+                    restore = getattr(app, "_restore_from_tray", app.root.deiconify)
+                    restore()
+                    if sys.platform == "win32":
+                        app.root.attributes("-topmost", True)
+
+                _queue_current_ui(_restore)
             except Exception:
                 pass
 
@@ -109,14 +122,18 @@ def start_tray(app: Any) -> bool:
 
         def _settings(_icon=None, _item=None) -> None:
             try:
-                app.root.after(0, getattr(app, "_open_dashboard", lambda: None))
+                _queue_current_ui(getattr(app, "_open_dashboard", lambda: None))
             except Exception:
                 pass
 
         def _exit(_icon=None, _item=None) -> None:
             stop_tray()
             try:
-                app.root.after(0, app._shutdown)
+                def _shutdown() -> None:
+                    if not getattr(app, "_closing", False):
+                        app._shutdown()
+
+                app._schedule_ui(_shutdown)
             except Exception:
                 pass
 

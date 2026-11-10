@@ -58,9 +58,9 @@ through the existing Linux paths. Shared and platform-focused tests run on
 Windows and Linux in CI. Windows-only integrations must stay feature-gated and
 Linux must degrade safely when an optional desktop utility is absent.
 
-macOS is retired and unsupported as of v5.5.5. Historical macOS branches may
-remain in source control, but macOS failures are outside release acceptance and
-must not be described as tested or supported.
+macOS is retired and unsupported as of v5.5.5. Its native platform branches have
+been removed. macOS remains outside release acceptance and must not be described
+as tested or supported.
 
 ### Required local inputs
 
@@ -243,7 +243,7 @@ behavior. Preserve these boundaries:
    service startup, capture/polling, provider planning, command preflight, and
    every effect boundary.
 5. Compact-to-Full follows the pure generation-bound sequence first warning →
-   consent demo/fallback → final confirmation. Full is inactive until final Yes.
+   consent demo → final confirmation with any failure reason. Full is inactive until final Yes.
 6. The demo API accepts no app or text. It may launch only fixed Notepad and type
    only its compiled warning after strict PID/name/creation-time/HWND/bounds/
    foreground/liveness/generation validation. It has no provider, Computer Use,
@@ -363,9 +363,9 @@ compact result.
 
 Language behavior is one general system-prompt/few-shot contract: Agetha replies
 primarily in the user's current language, preserves mixed-language conversation,
-and approximates the user's register without unnecessarily adding translation,
-transliteration, gendered speech, honorifics, cultural particles, formality, or
-slang. This presentation choice never changes command, provider, continuation,
+and approximates the user's register in Agetha's own voice. Dialogue length
+follows the requested depth rather than fixed word/segment quotas. This
+presentation choice never changes command, provider, continuation,
 process, or safety authority.
 
 Do not implement a language-specific subsystem, global regex, or post-provider
@@ -719,7 +719,7 @@ it on the named desktop and records the result.
 
 | Area | Current limitation or caveat |
 |---|---|
-| Compact/Full profiles | Compact is the default master gate. Full enables eligibility, not every feature, and does not weaken safety. The Notepad demonstration is Windows-only presentation; failure uses an in-app fallback and final consent remains required. |
+| Compact/Full profiles | Compact is the default master gate. Full enables eligibility, not every feature, and does not weaken safety. The Notepad demonstration is Windows-only presentation; the final decision includes any failure reason and remains required. |
 | Frozen executable | Existing specs provide a PyInstaller-style mechanism, but `main.spec` currently names `main.exe`, declares no data files, and is not evidence of a current build or smoke test. External assets must be staged beside the executable under the current path strategy. |
 | Platform scope | Windows and existing Linux desktop paths are supported. macOS is retired. Hosted CI cannot validate Windows ARM/Prism or every Linux compositor/desktop utility. |
 | Window alpha/chrome | Windows alpha support can vary by graphics stack; close falls back to immediate cleanup if the effect is unavailable. |

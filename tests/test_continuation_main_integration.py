@@ -483,6 +483,8 @@ class ContinuationMainIntegrationTests(unittest.TestCase):
         )
         app = main.CompanionApp.__new__(main.CompanionApp)
         app._closing = False
+        app._ai_tick_lock = threading.Lock()
+        app._cancel_event = threading.Event()
         app._continuation = engine
         app._continuation_ui_epoch = 0
         app._unresolved_context_objectives = UnresolvedContextObjectiveStore()
@@ -501,7 +503,7 @@ class ContinuationMainIntegrationTests(unittest.TestCase):
         })
         app._ai = MagicMock()
         app._speak_and_continue = MagicMock()
-        app._start_worker = lambda target, *, name, args: target(*args)
+        app._start_worker = lambda target, *, name, args, **_kw: target(*args)
 
         app._handle_continuation_decision(first)
 
@@ -509,11 +511,16 @@ class ContinuationMainIntegrationTests(unittest.TestCase):
         app._ai_query.assert_called_once()
         self.assertEqual(app._ai_query.call_args.args[0], "What am I looking at?")
         self.assertIn("missing symbol", app._ai_query.call_args.kwargs["doc_content"])
+        speech_is_current = app._speak_and_continue.call_args.kwargs["result_is_current"]
         app._speak_and_continue.assert_called_once_with(
             [{"text": "The build is missing a symbol.", "pause": 0.0}],
             "neutral",
             False,
+            result_is_current=speech_is_current,
         )
+        self.assertTrue(speech_is_current())
+        app._invalidate_continuation_ui_delivery()
+        self.assertFalse(speech_is_current())
         app._ai.record_context_continuation_turn.assert_called_once()
 
     def test_unquoted_authorized_path_stops_before_followup_instruction(self) -> None:

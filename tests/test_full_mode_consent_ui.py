@@ -148,25 +148,55 @@ class FullModeConsentUITests(unittest.TestCase):
         self.assertIn("does not bypass", spec.message)
         self.assertIn("feature settings", spec.message)
 
-    def test_demo_fallback_is_in_app_and_uses_cancel_continue(self) -> None:
+    def test_failed_demo_reason_is_part_of_the_final_mode_decision(self) -> None:
         _root, factory, ui = self.make_ui()
-
-        ui.show_demo_fallback(
-            "Notepad could not be launched.",
-            lambda _approved: None,
+        decisions: list[bool] = []
+        ui.show_final_confirmation(
+            decisions.append,
+            demo_failure_reason="Notepad could not be launched.",
         )
 
         spec = factory.views[-1].spec
-        self.assertEqual(spec.kind, ConsentDialogKind.DEMO_FALLBACK)
-        self.assertEqual(spec.negative_label, "Cancel")
-        self.assertEqual(spec.affirmative_label, "Continue")
+        self.assertEqual(spec.kind, ConsentDialogKind.FINAL_CONFIRMATION)
+        self.assertEqual(spec.negative_label, "Stay Compact")
+        self.assertEqual(spec.affirmative_label, "Enable Full Mode")
         self.assertIn("Notepad could not be launched.", spec.message)
-        self.assertIn(
-            "ARE YOU REALLY SURE YOU WANT TO CONTINUE THIS?",
-            spec.message,
+        self.assertIn("does not bypass", spec.message)
+        self.assertEqual(len(factory.views), 1)
+        factory.views[-1].decide(False)
+        factory.views[-1].decide(True)
+        self.assertEqual(decisions, [False])
+
+    def test_failed_demo_reason_is_normalized_and_capped(self) -> None:
+        _root, factory, ui = self.make_ui()
+        ui.show_final_confirmation(
+            lambda _approved: None,
+            demo_failure_reason=" \n\t" + "x" * 300 + "\n ",
         )
-        self.assertIn("No warning was typed", spec.message)
-        self.assertIn("final confirmation", spec.message)
+        self.assertTrue(factory.views[-1].spec.message.startswith("x" * 240 + "\n\n"))
+        self.assertNotIn("x" * 241, factory.views[-1].spec.message)
+
+    def test_blank_demo_failure_reason_has_an_in_app_explanation(self) -> None:
+        _root, factory, ui = self.make_ui()
+        ui.show_final_confirmation(
+            lambda _approved: None,
+            demo_failure_reason=" \n\t ",
+        )
+        self.assertIn(
+            "The fixed Notepad warning could not be completed.",
+            factory.views[-1].spec.message,
+        )
+
+    def test_failed_demo_reason_does_not_leak_into_a_later_successful_attempt(self) -> None:
+        _root, factory, ui = self.make_ui()
+        ui.show_final_confirmation(
+            lambda _approved: None,
+            demo_failure_reason="Synthetic launch failure.",
+        )
+        factory.views[-1].decide(False)
+        ui.show_final_confirmation(lambda _approved: None)
+        self.assertNotIn("Synthetic launch failure.", factory.views[-1].spec.message)
+        self.assertIn("Enable Full Mode now?", factory.views[-1].spec.message)
 
     def test_first_warning_shake_is_bounded_and_returns_to_origin(self) -> None:
         root, factory, ui = self.make_ui()

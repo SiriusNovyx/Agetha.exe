@@ -1,9 +1,11 @@
 # Agetha Mod - Overhaul Edition
 
+> **v5.9 is a recovery prerelease for testing.** Read the [verified fixes, remaining risks, and usage cautions](docs/releases/v5.9.md) before upgrading.
+
 <div align="center">
 
-![Agetha Mod Version](https://img.shields.io/badge/Version-Overhaul_v5.7.5-blue?style=for-the-badge&logo=windows95&logoColor=white)
-![Medic Checker](https://img.shields.io/badge/Medic__Checker-v5.7.5-emerald?style=for-the-badge)
+![Agetha Mod Version](https://img.shields.io/badge/Version-Overhaul_v5.9-blue?style=for-the-badge&logo=windows95&logoColor=white)
+![Medic Checker](https://img.shields.io/badge/Medic__Checker-v5.9-emerald?style=for-the-badge)
 ![Python 3.13](https://img.shields.io/badge/Python-3.13.x-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![License GPLv3](https://img.shields.io/badge/License-GPLv3-red?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/Platform-Windows_10%2F11_%7C_Linux-lightgrey?style=for-the-badge)
@@ -89,7 +91,7 @@
   - [OpenRouter (optional)](#openrouter-optional)
   - [Voice + drag-and-drop (optional)](#voice--drag-and-drop-optional)
   - [Voice output / TTS (optional)](#voice-output--tts-optional)
-- [Medic_Checker v5.7.5 (PowerShell)](#medic_checker-v575-powershell)
+- [Medic_Checker v5.9 (PowerShell)](#medic_checker-v59-powershell)
 - [Requirements](#requirements)
   - [Frozen executable caveat](#frozen-executable-caveat)
   - [Python packages (requirements.txt)](#python-packages-requirementstxt)
@@ -118,7 +120,7 @@ For a code-map-first view of the architecture, runtime flows, module ownership, 
 | **macOS** | 🔴 Deprecated | None | **Unsupported as of v5.5.5.** Historical code remains under GPLv3. |
 
 > [!WARNING]  
-> **macOS is unsupported as of v5.5.5.** Historical macOS fallback code may remain under GPLv3, but it receives no release testing, compatibility fixes, or support. Windows-only integrations such as native warning dialogs, Startup shortcuts, and Windows Settings remain feature-gated on Linux.
+> **macOS is unsupported as of v5.5.5.** The native utility, launch, font, sound, capture and default typing branches have been removed. Shared portable APIs do not imply platform support. Windows-only integrations such as native warning dialogs, Startup shortcuts, and Windows Settings remain feature-gated on Linux.
 
 ---
 
@@ -166,7 +168,7 @@ graph LR
 Turning Compact off starts an explicit two-confirmation flow:
 1. After the first confirmation, a narrow Windows-only presentation may open a validated Notepad window and type one compiled warning. It is not Computer Use, accepts no arbitrary app or text, and makes zero provider calls.
 2. Full remains disabled until the user selects **Enable Full Mode** at the final confirmation.
-3. A safe in-app fallback is used if Notepad cannot be validated. Returning to Compact is immediate and invalidates active Full work before cleanup.
+3. If the preview fails, the final confirmation explains the failure. Returning to Compact is immediate and invalidates active Full work before cleanup.
 
 The Compact Dashboard uses the existing classic/upstream-compatible basic surfaces; Full reveals only applicable advanced sections. See [`docs/compact_full_mode.md`](docs/compact_full_mode.md) and the entirely unperformed [34-item manual checklist](docs/testing/compact_full_mode_manual.md).
 
@@ -199,7 +201,7 @@ The local monitor skips Agetha's own window and configured exclusions, rejects O
 > [!IMPORTANT]
 > **Privacy Filter:** Sensitive-looking tokens, bearer credentials, private keys, passwords, session values, and recovery-code forms are redacted only when screen text is prepared for Groq, OpenRouter, or Ollama context. Local pattern matching still uses the original OCR text. Use `OCR_EXCLUDED_APPS` and `OCR_EXCLUDED_TITLE_PATTERNS` for windows that should never be captured automatically; title exclusions accept plain text or a bounded `re:` prefix.
 
-On Windows, focused capture and process names use Win32 APIs and MSS. Ubuntu Xorg supports managed Tk windows and automatic OCR through validated optional backends. GNOME Wayland supports the interactive GUI and normal minimize/restore behavior, while screen capture remains compositor-dependent and automatic OCR fails closed when unrestricted capture is unavailable. See [Linux desktop support](docs/linux_support.md). Historical macOS fallbacks remain unsupported as of v5.5.5.
+On Windows, focused capture and process names use Win32 APIs and MSS. Ubuntu Xorg supports managed Tk windows and automatic OCR through validated optional backends. GNOME Wayland supports the interactive GUI and normal minimize/restore behavior, while screen capture remains compositor-dependent and automatic OCR fails closed when unrestricted capture is unavailable. See [Linux desktop support](docs/linux_support.md). macOS is unsupported as of v5.5.5. Its native capture backend has been removed.
 
 Tesseract remains the default real-time backend; Unlimited-OCR is still used only by an explicit deep-analysis command. `OCR_LANGUAGES = eng+tha` is supported after both matching Tesseract language-data packages are installed locally.
 
@@ -207,9 +209,9 @@ Tesseract remains the default real-time backend; Unlimited-OCR is still used onl
 
 ### 🗣️ Polyglot Presence
 
-The current tree adds a local-first Polyglot Presence foundation without changing the public v5.7.5 release label:
+The tree includes the existing local-first Polyglot Presence foundation:
 
-- **Language-neutral multilingual voice** - Agetha mirrors the user's current language and approximate conversational register without inventing translation, transliteration, gendered speech, honorifics, cultural particles, formality, or slang. This is character guidance, not a global output filter: quoted text, documents, code, and exact text requested for typing remain unchanged. English, Thai, Japanese, Chinese, Korean, Arabic, Russian, French, mixed-script text, and emoji are validation vectors rather than personality preferences.
+- **Language-neutral multilingual voice** - Agetha mirrors the user's language and register in her own character voice. Replies can follow the requested depth without fixed word or segment quotas. This is character guidance, not a global output filter: quoted text, documents, code, and exact text requested for typing remain unchanged. English, Thai, Japanese, Chinese, Korean, Arabic, Russian, French, mixed-script text, and emoji are validation vectors rather than personality preferences.
 - **Universal Unicode typing** - `type_text` preserves the exact string and supports `auto`, `unicode`, `paste`, `preview`, and `paced` modes. Windows uses Win32 Unicode input first; Xorg uses guarded clipboard paste where its optional desktop tools are available; Wayland copies for a manual paste when global synthetic input is restricted. It never appends <kbd>Enter</kbd>, <kbd>Return</kbd>, or <kbd>Tab</kbd>.
 - **Observation Bus and Presence Etiquette** - bounded typed local events are kept separate from provider, memory, notification, and command eligibility. Local rules suppress or defer nonurgent interruptions during fullscreen, presentation, rapid typing, quiet hours, dismissal backoff, sleep, or shutdown without making an AI request.
 - **Terminal Sentinel** - an opt-in, empty-allowlist-by-default developer helper reuses confirmed new OCR error events. Its local notification offers **Explain**, **Dismiss**, and **Ignore Pattern**; no provider request occurs until the user selects Explain, and explanations cannot authorize model-suggested OS commands.
@@ -277,7 +279,7 @@ Before executing risky actions, Agetha displays a **native Windows MessageBox** 
 | Tier | Native Icon | Scope & Actions |
 | :---: | :---: | :--- |
 | **Safe** | - | `speak`, `open_url`, `take_screenshot`, `move_window`, `idle`, `popup`… |
-| **Caution** | ℹ️ Info | `open_file`, `set_clipboard`, `get_clipboard`, `search_files`, `set_volume`, `type_text`… |
+| **Caution** | ℹ️ Info | `open_file`, `set_clipboard`, `get_clipboard`, `fetch_webpage`, `set_wallpaper`, `type_text`… |
 | **Danger** | ⚠️ Warning | `delete_file`, `run_command`, `shutdown`, `restart`, `lock_screen`, `force_close`… |
 
 - **Process kills:** common user apps (Chrome, Notepad, etc.) close without a prompt; system processes (`explorer.exe`, `svchost.exe`, …) require confirmation.
@@ -329,7 +331,7 @@ Agetha_Mod/
 ├── config.txt              # User settings only - no API keys
 ├── .env.example            # API key template
 ├── requirements.txt
-├── Medic_Checker.ps1       # Startup health check & launcher (v5.7.5)
+├── Medic_Checker.ps1       # Startup health check & launcher (v5.9)
 ├── Medic_Checker.bat
 ├── Run_Agetha_Admin.ps1
 ├── assets/                 # GIFs, fonts, icons
@@ -493,7 +495,7 @@ Agetha responds with structured JSON commands. The AI selects actions based on c
 | `set_clipboard` / `copy_to_clipboard` | 🟡 Caution ⚠️ | Copy text to clipboard. |
 | `get_clipboard` | 🟡 Caution ⚠️ | Read clipboard into AI context. |
 | `system_info` | 🟢 Safe | CPU/RAM/disk report (requires `psutil`). |
-| `set_volume` | 🟡 Caution ⚠️ | Volume set/mute/unmute. |
+| `set_volume` | 🟢 Safe | Volume set/mute/unmute. |
 | `set_wallpaper` | 🟡 Caution ⚠️ | Change desktop wallpaper. |
 | `type_text` | 🟡 Caution ⚠️ | Enter exact Unicode text (`mode`: `auto` \| `unicode` \| `paste` \| `preview` \| `paced`; `speed`: `instant` \| `fast` \| `normal` \| `slow`; optional `restore_clipboard`). |
 | `lock_screen` | 🔴 Danger ⚠️ | Lock computer workstation. |
@@ -506,7 +508,7 @@ Agetha responds with structured JSON commands. The AI selects actions based on c
 | `request_screen_read` | 🟢 Safe | Force immediate OCR capture. |
 | `analyze_screen_deep` | 🔴 Danger ⚠️ | Explicit complex screenshot/document analysis through optional Unlimited-OCR. |
 | `search_memory` | 🟢 Safe | BM25 search of long-term memory archive (`query`, optional `limit`). |
-| `search_web` | 🟡 Caution ⚠️ | DuckDuckGo web search (`query`, optional `limit`) - requires `ENABLE_WEB_RAG=yes`. |
+| `search_web` | 🟢 Safe | DuckDuckGo web search (`query`, optional `limit`) - requires `ENABLE_WEB_RAG=yes`. |
 | `fetch_webpage` | 🟡 Caution ⚠️ | Fetch visible text from a URL (`url`) - requires `ENABLE_WEB_RAG=yes`. |
 | `glitch_overlay` | 🟢 Safe | Brief harmless CRT glitch overlay (`style`, `duration_ms`) - requires `ENABLE_GLITCH_EFFECTS=yes`. |
 | `read_notepad` | 🟢 Safe | Read dashboard notepad (`memory/notepad.txt`) into AI context. |
@@ -518,7 +520,7 @@ Agetha responds with structured JSON commands. The AI selects actions based on c
 | `view_emotions` | 🟢 Safe | Show emotional state + history popup. |
 | `clear_emotions` | 🔴 Danger ⚠️ | Reset emotional state and/or history (`entry_id` or `all`). |
 | `set_autostart` | 🔴 Danger ⚠️ | "Start Agetha when I sign in" - create/remove Startup shortcut (`enabled` true/false); requires `ENABLE_AUTOSTART_CONTROL=yes`. |
-| `open_settings` | 🟡 Caution ⚠️ | Open an allowlisted Windows Settings page (`page`). |
+| `open_settings` | 🟢 Safe | Open an allowlisted Windows Settings page (`page`). |
 | `set_theme` | 🔴 Danger ⚠️ | Set current-user Windows light/dark theme (`mode`: light/dark/rollback; `scope`: apps/system/both); requires `ENABLE_THEME_CONTROL=yes`. |
 | `recycle_bin_status` | 🟢 Safe | Aggregate Recycle Bin item count + total size (no filenames). |
 | `clear_memory` | 🔴 Danger ⚠️ | Erase episodic memory (soul.md kept); `memory_scope`: all/recent/old/keep_5. |
@@ -789,7 +791,7 @@ Web search and page fetch are **disabled by default** (`ENABLE_WEB_RAG = no`). W
 - Results are treated as **untrusted external data** and wrapped with prompt-injection warnings before the AI sees them.
 - No JavaScript execution - only static HTML text extraction.
 - Network errors degrade gracefully (empty results / error dicts); the app never crashes on fetch failure.
-- `search_web` and `fetch_webpage` require user confirmation (Caution tier) when `ENABLE_COMMAND_CONFIRMATIONS=yes`.
+- `search_web` uses Safe risk without an extra confirmation. `fetch_webpage` retains Caution confirmation when `ENABLE_COMMAND_CONFIRMATIONS=yes`.
 - Anti-recursion: after one search/fetch per user request, the AI is told not to call `search_web` or `fetch_webpage` again.
 
 #### Glitch overlay safety
@@ -968,7 +970,7 @@ Run **Medic_Checker** after enabling - it installs the package for `VOICE_TTS_EN
 
 ---
 
-## 🩺 Medic_Checker v5.7.5 (PowerShell)
+## 🩺 Medic_Checker v5.9 (PowerShell)
 
 Startup wrapper that validates your environment before launch:
 
